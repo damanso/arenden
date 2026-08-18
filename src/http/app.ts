@@ -6,6 +6,7 @@ import { pool } from '../db/pool.js';
 import { autentisera } from './middleware/autentisera.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { actionsRouter } from './routes/actions.js';
+import { vyRouter } from './routes/vy.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -25,6 +26,12 @@ export function createApp(): express.Express {
       res.status(503).json({ status: 'db_unavailable' });
     }
   });
+
+  // Etapp 2a KRAV-8: läsvyn monteras FÖRE nyckelkravet — den kräver ingen
+  // API-nyckel. Gränsen är att servern binder 127.0.0.1 (tailnet-modellen från
+  // ytor_server), precis som för /health. Vyn är ren läsyta: bara GET-rutter,
+  // inga mutationer. /api är oförändrat skyddat med bearer nedan.
+  app.use('/vy', vyRouter);
 
   app.use(
     '/api',

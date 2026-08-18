@@ -13,7 +13,8 @@
     "migrate": "tsx src/db/migrate.ts",
     "import": "tsx src/import/importeraArkiv.ts",
     "nyckel": "tsx src/scripts/skapaNyckel.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "dotenv": "^17.2.0",

@@ -1,11 +1,16 @@
-# Ärendeplattformen — Etapp 1 (skuggdrift)
+# Ärendeplattformen — Etapp 1 (skuggdrift) + Etapp 2a (läsvyn)
 
 Egen ärendeplattform som ersätter Linears API-yta för agenterna: datamodell,
 actions-API med proveniens, import av linear-arkivet och adapter. **Ingen
 cutover** — Linear är fortfarande skarp källa, och varken `~/.hermes/skills`
 eller `/opt/redovisning` rörs. Omkopplingen av de 15 skripten är Etapp 2.
 
-Kravspecen som bygget svarar mot: [`docs/KRAVSPEC-ETAPP-1.md`](docs/KRAVSPEC-ETAPP-1.md).
+Etapp 2a lägger till **läsvyn** på `/vy`: överblick, digest, sök och ärendesida
+som serverrenderad HTML i samma process. Ren läsyta — inga skrivrutter.
+
+Kravspecarna som bygget svarar mot:
+[`docs/KRAVSPEC-ETAPP-1.md`](docs/KRAVSPEC-ETAPP-1.md) ·
+[`docs/KRAVSPEC-ETAPP-2A.md`](docs/KRAVSPEC-ETAPP-2A.md).
 
 Arkitekturen är redovisningssystemets, oförändrad: transport → `executeAction` →
 actions-registret → tjänstelagret → Postgres. `src/config.ts` är enda stället som
@@ -57,9 +62,11 @@ avser.
 
 ```bash
 npm run migrate    # kör som ägarrollen via DATABASE_ADMIN_URL; återkörning = no-op
-npm run build      # tsc, ska ge noll fel
-npm test           # vitest + supertest mot RIKTIG Postgres på 5436
+npm run check      # ETT kommando för granskaren: tsc (noll fel) + hela testsviten
 ```
+
+`check` är `npm run build && npm test` — bygget och vitest/supertest mot RIKTIG
+Postgres på 5436. De två stegen kan fortfarande köras var för sig.
 
 `npm run migrate` en gång till ska svara `0 migration(er) kördes` — det är
 idempotensen (KRAV-3).
@@ -98,6 +105,46 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   -H 'content-type: application/json' -d '{"title":"nej","team_key":"LOC"}'
 ```
 
+### 7. Öppna läsvyn
+
+```bash
+open http://127.0.0.1:3002/vy          # eller i webbläsaren på maskinen
+```
+
+| Rutt | Vad den visar |
+| --- | --- |
+| `GET /vy` | **Ärenden** — öppna ärenden grupperade per projekt och team, räknare per grupp och totalt, färskast överst |
+| `GET /vy/digest` | **Vad hände** — händelser per dag, inom dagen per källa (agent/människa/system); `?dagar=7\|30\|90\|alla` |
+| `GET /vy/sok?q=...` | **Sök** — fritext över titel, beskrivning och kommentarer + fasetter `?status=&etikett=&projekt=&aktor=` |
+| `GET /vy/arende/LOC-316` | **Ärendesidan** — fälten, beskrivningen, alla kommentarer och hela historiken |
+
+Läsvyn kräver **ingen nyckel** (gränsen är att servern binder `127.0.0.1`) och är
+**ren läsyta**: bara GET-rutter, inga mutationer, inga event-rader. `/api` är
+oförändrat skyddat med bearer.
+
+Snabbkoll utan nyckel:
+
+```bash
+for v in /vy /vy/digest '/vy/sok?q=hubspot' /vy/arende/LOC-316 /vy/arende/LOC-99999; do
+  printf '%s ' "$v"; curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:3002$v"
+done     # 200 200 200 200 404
+```
+
+### 8. Exponering på tailnet — dokumenterad, INTE körd
+
+Etapp 2a **kör inte** kommandot; servern binder fortfarande enbart `127.0.0.1`.
+När vyn ska nås från Davids Mac/telefon är detta kommandot (ny port **8446** —
+8444 är redovisningen, 8445 är ytor_server):
+
+```bash
+# Endast /vy exponeras — /api och /health lämnas kvar på loopback.
+tailscale serve --bg --https=8446 --set-path=/vy http://127.0.0.1:3002/vy
+# → https://david-brain.tail743706.ts.net:8446/vy   (endast tailnet)
+
+tailscale serve status          # verifiera
+tailscale serve --https=8446 off   # ta bort
+```
+
 ---
 
 ## Vad som finns
@@ -113,6 +160,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
 | Import av arkivet | `src/import/` |
 | Adapter (TypeScript, bibliotek) | `src/adapter/index.ts` |
 | Adapter (Python, endast stdlib) | `adapter/arenden_klient.py` |
+| Läsvyn (Etapp 2a): router + mall | `src/http/routes/vy.ts`, `src/http/vy/mall.ts` |
 | Tester mot riktig Postgres | `test/` |
 
 ### Actions
@@ -163,8 +211,35 @@ for a in list_issues(state_typer=["backlog", "unstarted"])["noder"]:
 | 19 testrigg | `vitest.config.ts`, `test/env.ts` (`=`, aldrig `??=`), `test/globalSetup.ts`, `test/setup.ts` | hela sviten |
 | 20 obligatoriska testfall a–e | — | `sekvens-race` · `claim-race` · `proveniens` · `sok` · `import` |
 
+### Etapp 2a — krav → kod och test
+
+Spec: [`docs/KRAVSPEC-ETAPP-2A.md`](docs/KRAVSPEC-ETAPP-2A.md). Allt nedan i
+`test/vy.test.ts` går genom hela stacken med importfixturerna inlästa.
+
+| Krav | Kod | Test |
+| --- | --- | --- |
+| ARKITEKTUR vy-router + mall, inga nya beroenden | `src/http/routes/vy.ts`, `src/http/vy/mall.ts`, `src/http/app.ts` (`app.use('/vy', …)` före nyckelkravet), `package.json` (oförändrade beroenden) | hela `test/vy.test.ts` |
+| ARKITEKTUR ingen SQL i vylagret | routern anropar bara tjänstelagret; nya läsfrågor i `src/services/handelser.ts` (`listaSenasteHandelser`, `listaAktorer`, `arendenMedAktivitetAv`) och `src/services/arenden.ts` (`listaProjektnamn`, `listaEtikettnamn`) | `grep -nE 'SELECT .* FROM' src/http/routes/vy.ts src/http/vy/mall.ts` ger noll träffar |
+| 1 överblick, gruppering, räknare | `vyRouter.get('/')` + `gruppera()` | "GET /vy ger 200, rubriken …" |
+| 2 digest per dag och källa | `vyRouter.get('/digest')`, `listaSenasteHandelser` | "GET /vy/digest grupperar …" |
+| 3 sök + fasetter som länkparametrar | `vyRouter.get('/sok')`, `sokLank()`, `fasettgrupp()`, `arendenMedAktivitetAv` | fyra `KRAV-3`-tester (fritext, ord bara i kommentar, utan q, aktörsfasett) |
+| 4 ärendesida + 404 som HTML | `vyRouter.get('/arende/:identifier')`, `ickeFunnen()` | "GET /vy/arende/LOC-316 …", "okänt ärende ger 404 …" |
+| 5 proveniens överallt (AI Act art. 50) | `proveniens()` i `src/http/vy/mall.ts` — enda sättet att skriva ut en aktör | "agent-rad bär agent-märkningen …" (verifierar även att INGEN rad är omärkt) |
+| 6 escaping via en funktion | `esc()` i `src/http/vy/mall.ts` | "all dynamisk text escapas …" |
+| 7 svenska, rubriken "Ärenden", inga Linear-länkar | hela vylagret | "GET /vy ger 200, rubriken …" |
+| 8 säkerhetsmodellen oförändrad, tailscale-kommando dokumenterat | `src/http/app.ts`, `src/config.ts` (bind 127.0.0.1), README ovan | "/vy svarar utan nyckel medan skrivande /api utan nyckel ger 401" |
+| 9 `npm run check` | `package.json` | — (kommandot självt) |
+| 10 a–f | — | `test/vy.test.ts` |
+
+## Gränser för Etapp 2a
+
+Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
+notiser, ingen cutover. Ingen templatemotor och inga nya beroenden — express +
+template literals. Ingen klient-JS. Ingen SQL i vylagret. Ingen exponering
+utanför `127.0.0.1` (tailscale serve är dokumenterat men **inte kört**).
+
 ## Gränser för Etapp 1
 
-Ingen vy/UI, inga notiser, ingen MCP-server, inga RLS-policyer (bara
+Ingen vy/UI (den kom i Etapp 2a), inga notiser, ingen MCP-server, inga RLS-policyer (bara
 `tenant_id`-kolumnen), inga cycles/estimates/roadmaps. Inga beroenden utanför
 stacklistan i kravspecen.

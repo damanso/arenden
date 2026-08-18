@@ -189,6 +189,26 @@ export async function hamtaEllerSkapaProjekt(
   return rows[0]!.id;
 }
 
+/**
+ * Etapp 2a KRAV-3: underlag för projekt- och etikettfasetterna. Rena läsningar
+ * (vylagret får inte innehålla SQL) och samma namn som list_issues filtrerar på.
+ */
+export async function listaProjektnamn(client: PoolClient, tenantId: string): Promise<string[]> {
+  const { rows } = await client.query<{ namn: string }>(
+    'SELECT namn FROM projects WHERE tenant_id = $1 ORDER BY namn',
+    [tenantId],
+  );
+  return rows.map((r) => r.namn);
+}
+
+export async function listaEtikettnamn(client: PoolClient, tenantId: string): Promise<string[]> {
+  const { rows } = await client.query<{ namn: string }>(
+    'SELECT namn FROM labels WHERE tenant_id = $1 ORDER BY namn',
+    [tenantId],
+  );
+  return rows.map((r) => r.namn);
+}
+
 /** Söker upp en etikett utan att skapa den — sokLabel i adapterkontraktet. */
 export async function sokLabel(
   client: PoolClient,
