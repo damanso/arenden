@@ -1,0 +1,31 @@
+# Utvecklings-/skuggdriftsdatabas för ärendeplattformen (Etapp 1).
+#
+# `name:` sätter compose-projektnamnet I FILEN — det här systemet får ALDRIG
+# dela projekt, port eller volym med något annat system på maskinen (incidenten
+# 17/8: delat compose-projekt släckte fel databas). Redovisningen kör som ett
+# eget projekt på 5433; här är allting eget: projekt `arenden`, port 5435,
+# volymen `arenden-pgdata`, containernamnet `arenden-postgres`.
+#
+# Trust-auth är endast för lokal drift bunden till 127.0.0.1.
+name: arenden
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: arenden-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: arenden
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - arenden-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d arenden"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  arenden-pgdata:

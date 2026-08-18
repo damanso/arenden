@@ -1,0 +1,28 @@
+# Testdatabas för `npm test`. EGET compose-projekt (`arenden-test`), egen port
+# (5436) och egen volym — separerad från både utvecklingsdatabasen (5435) och
+# allt annat på maskinen. Testsviten släpper och återskapar databaser här; den
+# får därför aldrig kunna peka på en databas som något annat system äger.
+#
+# Startas med:  docker compose -f docker-compose.test.yml up -d
+name: arenden-test
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: arenden-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - arenden-test-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  arenden-test-pgdata:
