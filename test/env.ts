@@ -14,12 +14,20 @@ const HOST = process.env.TEST_PG_HOST ?? '127.0.0.1';
 // (utveckling) och aldrig 5433 (redovisningen).
 const PORT = process.env.TEST_PG_PORT ?? '5436';
 
+// Sätter SAMTLIGA variabler i EnvSchema (src/config.ts) — även de som har
+// default där — så att sviten är självförsörjande på ren maskin och ingen
+// utvecklar-.env kan påverka någon av dem.
 export function applyTestEnv(): void {
   process.env.NODE_ENV = 'test';
+  process.env.HOST = '127.0.0.1';
+  process.env.PORT = '3002';
   process.env.DATABASE_URL = `postgres://app@${HOST}:${PORT}/${TEST_DB_NAME}`;
   process.env.DATABASE_ADMIN_URL = `postgres://postgres@${HOST}:${PORT}/${TEST_DB_NAME}`;
   process.env.MAINTENANCE_DATABASE_URL = `postgres://postgres@${HOST}:${PORT}/postgres`;
   // Testerna gör många anrop i följd — rate-limitern testas inte här.
   process.env.RATE_LIMIT_PER_MINUTE = '100000';
   process.env.ARENDEN_API_URL = `http://127.0.0.1:3002`;
+  // Adaptern kräver en aktörsnyckel vid import (KRAV-10). Värdet är en
+  // uppenbar attrapp — tester som verkligen skriver skapar egna nycklar.
+  process.env.ARENDEN_API_KEY = 'test-nyckel-ej-giltig';
 }
