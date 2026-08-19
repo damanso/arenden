@@ -161,6 +161,7 @@ tailscale serve --https=8446 off   # ta bort
 | Adapter (TypeScript, bibliotek) | `src/adapter/index.ts` |
 | Adapter (Python, endast stdlib) | `adapter/arenden_klient.py` |
 | Läsvyn (Etapp 2a): router + mall | `src/http/routes/vy.ts`, `src/http/vy/mall.ts` |
+| Dokumentlänkar: vitlista + index, markdown/autolänkning | `src/http/vy/dokument.ts`, `src/http/vy/markdown.ts` |
 | Tester mot riktig Postgres | `test/` |
 
 ### Actions
@@ -230,6 +231,23 @@ Spec: [`docs/KRAVSPEC-ETAPP-2A.md`](docs/KRAVSPEC-ETAPP-2A.md). Allt nedan i
 | 8 säkerhetsmodellen oförändrad, tailscale-kommando dokumenterat | `src/http/app.ts`, `src/config.ts` (bind 127.0.0.1), README ovan | "/vy svarar utan nyckel medan skrivande /api utan nyckel ger 401" |
 | 9 `npm run check` | `package.json` | — (kommandot självt) |
 | 10 a–f | — | `test/vy.test.ts` |
+
+### Dokumentlänkar — krav → kod och test
+
+Spec: [`docs/KRAVSPEC-DOKUMENTLANKAR.md`](docs/KRAVSPEC-DOKUMENTLANKAR.md). Allt
+nedan i `test/dokumentlankar.test.ts`, genom hela stacken mot en testvault
+(`VAULT_PATH` → `$TMPDIR/arenden-test-vault`, satt i `test/env.ts`).
+
+| Krav | Kod | Test |
+| --- | --- | --- |
+| ARKITEKTUR vylagret, inga nya beroenden | `vyRouter.get('/dok/*sokvag')` i `src/http/routes/vy.ts`, `src/http/vy/markdown.ts` (samma `esc()`/`sida()`), `package.json` (oförändrade beroenden) | hela `test/dokumentlankar.test.ts` |
+| ARKITEKTUR filnamnsindex, asynkront vid start | `hamtaIndex()`/`startaIndexbygge()` i `src/http/vy/dokument.ts`, anropad i `src/server.ts` | "alla fyra referensmönstren blir länkar …" (indexberoende (b)/(d)) |
+| 1 dokumentsida + enkel markdown + Obsidian-länk | `renderaMarkdown()`, `/dok/*sokvag` | "vitlistat dokument renderas …", "obsidian-länken är korrekt URL-enkodad …" |
+| 2 vitlista, path traversal, realpath | `VITLISTA`, `sakerSokvag()`, `lasDokument()` i `src/http/vy/dokument.ts`, `utanforOmradet()` i routern | "allt utanför vitlistan ger 404 utan innehåll eller katalognamn" (jag.md, journal/, hälsa/, 05-Dagligt/, `..`, symlink ut, saknad fil) |
+| 3 autolänkning a–d i renderingssteget | `autolanka()` i `src/http/vy/markdown.ts`, anropad på `a.description` och `k.body` i ärendesidan | "alla fyra referensmönstren …", "tvetydigt filnamn och ej vitlistad referens förblir ren text" |
+| 4 LOC-N → `/vy/arende/LOC-N` | samma tokenisering i `markdown.ts` | "LOC-N blir intern länk, i både beskrivning och kommentar" |
+| 5 cache med TTL, en fil per request | TTL i `dokument.ts`; routern gör `hamtaIndex()` + EN `lasDokument()` | — (invariant i koden; ingen sökning per request) |
+| 6 a–e | — | `test/dokumentlankar.test.ts` |
 
 ## Gränser för Etapp 2a
 

@@ -9,7 +9,9 @@
 //      (src/services/) — samma funktioner som actions-API:t använder.
 //   3. ALL dynamisk text går genom esc() i ../vy/mall.js (KRAV-6), och varje
 //      kommentar/händelse skrivs ut med proveniens() (KRAV-5).
+import path from 'node:path';
 import { Router } from 'express';
+import { config } from '../../config.js';
 import { withTransaction } from '../../db/tx.js';
 import { NotFoundError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
@@ -31,6 +33,8 @@ import {
   type HandelseIVy,
 } from '../../services/handelser.js';
 import { listaKommentarer } from '../../services/kommentarer.js';
+import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
+import { autolanka, renderaMarkdown } from '../vy/markdown.js';
 import {
   datum,
   datumtid,
@@ -487,6 +491,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   }
   const identifier = parsad.data;
 
+  // Autolänkningen läser bara cachen (KRAV-5) — inga filsystemssökningar här.
+  const index = await hamtaIndex();
   const data = await withTransaction(async (client) => {
     const arende = await hamtaArende(client, TENANT_ID, identifier);
     return {
@@ -516,7 +522,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         `<span>${esc(datumtid(k.skapad))}</span>` +
         proveniens(k.aktor_typ, k.aktor_namn) +
         '</div>' +
-        `<div class=text>${esc(k.body)}</div></li>`,
+        `<div class=text>${autolanka(k.body, index)}</div></li>`,
     )
     .join('');
 
@@ -550,7 +556,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     (etiketter ? `<p>${etiketter}</p>` : '') +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
-      ? `<div class=text>${esc(a.description)}</div>`
+      ? `<div class=text>${autolanka(a.description, index)}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
     (kommentarer ? `<ul class=lista>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
@@ -558,6 +564,50 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     (historik ? `<ul class=lista>${historik}</ul>` : '<p class=notis>Inga händelser.</p>');
 
   res.type('html').send(sida(a.identifier, kropp));
+});
+
+// ---- Dokumentlänkar KRAV-1/2: dokumentsidan --------------------------------
+
+/**
+ * KRAV-2: ETT svar för allt som inte serveras — utanför vitlistan, path
+ * traversal, symlink ut ur vaulten, eller helt enkelt en fil som inte finns.
+ * Svaret bär varken filinnehåll, katalognamn eller den begärda sökvägen: det
+ * bekräftar aldrig att ett dokument utanför området existerar.
+ */
+function utanforOmradet(): string {
+  return sida(
+    'Hittades inte',
+    '<h1>Hittades inte</h1>' +
+      '<p class=notis>Dokumentet är utanför vyns dokumentområde.</p>' +
+      '<p><a href="/vy">Till överblicken</a></p>',
+  );
+}
+
+vyRouter.get('/dok/*sokvag', async (req, res) => {
+  // Express 5 ger wildcard-parametern som segmentlista; ta emot båda formerna.
+  const ra: unknown = req.params['sokvag'];
+  const begard = Array.isArray(ra) ? ra.join('/') : typeof ra === 'string' ? ra : '';
+
+  const rel = sakerSokvag(begard);
+  const innehall = rel === null ? null : await lasDokument(rel);
+  if (rel === null || innehall === null) {
+    res.status(404).type('html').send(utanforOmradet());
+    return;
+  }
+
+  const index = await hamtaIndex();
+  const namn = rel.slice(rel.lastIndexOf('/') + 1);
+  const obsidian =
+    `obsidian://open?vault=${encodeURIComponent(path.basename(config.VAULT_PATH))}` +
+    `&file=${encodeURIComponent(rel.slice(0, -'.md'.length))}`;
+
+  const kropp =
+    `<h1>${esc(namn)}</h1>` +
+    `<p class=summering>${esc(rel)} · ` +
+    `<a href="${esc(obsidian)}">öppna i Obsidian</a></p>` +
+    `<div class=dok>${renderaMarkdown(innehall, index)}</div>`;
+
+  res.type('html').send(sida(namn, kropp));
 });
 
 // Okänd /vy-sökväg svarar HTML — inte API:ts JSON-404 (KRAV-7).

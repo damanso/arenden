@@ -1,3 +1,6 @@
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 // Testmiljö för globalSetup (huvudprocessen) och setup.ts (varje testworker).
 //
 // VIKTIGT (KRAV-19): värdena sätts med `=` — ALDRIG `??=`. En utvecklares .env
@@ -17,8 +20,14 @@ const PORT = process.env.TEST_PG_PORT ?? '5436';
 // Sätter SAMTLIGA variabler i EnvSchema (src/config.ts) — även de som har
 // default där — så att sviten är självförsörjande på ren maskin och ingen
 // utvecklar-.env kan påverka någon av dem.
+// Testvault för dokumentlänkarna — ALDRIG den riktiga /home/hermes/brain.
+// Sökvägen är deterministisk så att globalSetup, workers och testfilen är
+// överens; test/dokumentlankar.test.ts bygger innehållet i sitt beforeAll.
+export const TEST_VAULT = path.join(tmpdir(), 'arenden-test-vault');
+
 export function applyTestEnv(): void {
   process.env.NODE_ENV = 'test';
+  process.env.VAULT_PATH = TEST_VAULT;
   process.env.HOST = '127.0.0.1';
   process.env.PORT = '3002';
   process.env.DATABASE_URL = `postgres://app@${HOST}:${PORT}/${TEST_DB_NAME}`;

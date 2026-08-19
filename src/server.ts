@@ -3,6 +3,7 @@
 import { config } from './config.js';
 import { assertAppRollArBegransad, closePool } from './db/pool.js';
 import { createApp } from './http/app.js';
+import { startaIndexbygge } from './http/vy/dokument.js';
 
 // Fail-fast: vägra ta emot trafik om DATABASE_URL pekar på en för privilegierad
 // roll — då vore append-only-spärren på events tyst avstängd.
@@ -15,6 +16,9 @@ try {
 }
 
 const app = createApp();
+// Filnamnsindexet för dokumentlänkarna värms i bakgrunden — start blockeras
+// aldrig, och en oläsbar vault ger bara noll autolänkar.
+startaIndexbygge();
 const server = app.listen(config.PORT, config.HOST, () => {
   console.log(`Ärende-API lyssnar på ${config.HOST}:${config.PORT} (${config.NODE_ENV})`);
 });

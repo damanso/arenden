@@ -22,6 +22,9 @@ const EnvSchema = z.object({
     .min(1, 'DATABASE_URL krävs (postgres://app@127.0.0.1:5435/arenden — den lågprivilegierade rollen)'),
   DATABASE_ADMIN_URL: z.string().min(1).optional(),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(120),
+  // Vaulten som dokumentlänkarna läser ur. Vyn läser ENDAST, och bara de
+  // vitlistade katalogerna i src/http/vy/dokument.ts.
+  VAULT_PATH: z.string().min(1).default('/home/hermes/brain'),
   // Adaptern (src/adapter/) ringer actions-API:t över HTTP — aldrig databasen.
   ARENDEN_API_URL: z.string().url().default('http://127.0.0.1:3002'),
   ARENDEN_API_KEY: z.string().min(1).optional(),

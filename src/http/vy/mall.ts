@@ -80,6 +80,14 @@ border:1px solid var(--linje);border-radius:10px;padding:.55rem .7rem;font:inher
 button{background:var(--accent);color:#fff;border:0;border-radius:10px;
 padding:.55rem 1.2rem;font:inherit;font-weight:600}
 .notis{color:var(--svag);font-size:.82rem;margin:.4rem 0}
+.dok{overflow-wrap:anywhere}
+.dok ul,.dok ol{padding-left:1.3rem;margin:.4rem 0}
+.dok li{margin:.15rem 0}
+.dok h4{font-size:.95rem;margin:1rem 0 .3rem;color:var(--svag)}
+.dok hr{border:0;border-top:1px solid var(--linje);margin:1.2rem 0}
+pre{background:var(--kort);border:1px solid var(--linje);border-radius:12px;
+padding:.7rem .9rem;overflow-x:auto;font-size:.85rem}
+code{font-size:.9em}
 .fot{color:var(--svag);font-size:.78rem;margin-top:2.5rem;text-align:center}
 `;
 
