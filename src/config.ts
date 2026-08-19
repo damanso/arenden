@@ -9,6 +9,8 @@
 // Servern vägrar starta med ofullständig config. Det finns inga
 // fallback-hemligheter och det ska aldrig införas några.
 import 'dotenv/config';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { z } from 'zod';
 
 const EnvSchema = z.object({
@@ -25,6 +27,11 @@ const EnvSchema = z.object({
   // Vaulten som dokumentlänkarna läser ur. Vyn läser ENDAST, och bara de
   // vitlistade katalogerna i src/http/vy/dokument.ts.
   VAULT_PATH: z.string().min(1).default('/home/hermes/brain'),
+  // CRM-kortet (src/http/vy/crm.ts) läser bas-URL, company-id och agent-token ur
+  // SAMMA fil som crm_ingest.py. Sökvägen är konfiguration — samma mönster som
+  // VAULT_PATH — så att testmiljön kan peka på en egen fil. Värdena i filen
+  // stannar i processen och når aldrig klienten.
+  CRM_KONF_PATH: z.string().min(1).default(path.join(homedir(), '.hermes', 'redovisning-mcp.json')),
   // Adaptern (src/adapter/) ringer actions-API:t över HTTP — aldrig databasen.
   ARENDEN_API_URL: z.string().url().default('http://127.0.0.1:3002'),
   ARENDEN_API_KEY: z.string().min(1).optional(),

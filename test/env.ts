@@ -25,9 +25,15 @@ const PORT = process.env.TEST_PG_PORT ?? '5436';
 // överens; test/dokumentlankar.test.ts bygger innehållet i sitt beforeAll.
 export const TEST_VAULT = path.join(tmpdir(), 'arenden-test-vault');
 
+// CRM-konfigurationen för testerna — ALDRIG ~/.hermes/redovisning-mcp.json.
+// test/crm.test.ts skriver filen i sitt beforeAll: bas-URL mot en stängd port
+// och ett uppenbart attrapptoken som testet letar efter i varje svar.
+export const TEST_CRM_KONF = path.join(tmpdir(), 'arenden-test-crm-mcp.json');
+
 export function applyTestEnv(): void {
   process.env.NODE_ENV = 'test';
   process.env.VAULT_PATH = TEST_VAULT;
+  process.env.CRM_KONF_PATH = TEST_CRM_KONF;
   process.env.HOST = '127.0.0.1';
   process.env.PORT = '3002';
   process.env.DATABASE_URL = `postgres://app@${HOST}:${PORT}/${TEST_DB_NAME}`;

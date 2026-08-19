@@ -33,6 +33,7 @@ import {
   type HandelseIVy,
 } from '../../services/handelser.js';
 import { listaKommentarer } from '../../services/kommentarer.js';
+import { crmKort, hamtaCrm, organisationFor } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
 import { autolanka, renderaMarkdown } from '../vy/markdown.js';
 import {
@@ -514,6 +515,11 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   const a = data.arende;
   const etiketter = a.labels.map((l) => `<span class=tagg>${esc(l)}</span>`).join('');
 
+  // CRM KRAV-1/5: ENDAST här, och bara när ärendet mappar till en organisation.
+  // hamtaCrm() kan aldrig kasta (KRAV-3) — värsta utfallet är fallbacktexten.
+  const org = organisationFor(a.projekt, a.title);
+  const crm = org === null ? '' : crmKort(org, await hamtaCrm(org));
+
   // KRAV-5: varje kommentar bär aktor_typ + aktor_namn ur comments-tabellen.
   const kommentarer = data.kommentarer
     .map(
@@ -554,6 +560,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         .join(' · '),
     )}</p>` +
     (etiketter ? `<p>${etiketter}</p>` : '') +
+    crm +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
       ? `<div class=text>${autolanka(a.description, index)}</div>`
