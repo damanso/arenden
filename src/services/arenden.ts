@@ -407,6 +407,24 @@ export async function uppdateraArendeState(
 }
 
 /**
+ * Beslut #24 KRAV-1: en ny kommentar RÖR ärendet. Utan detta ändras
+ * issues.uppdaterad bara av statusbyten, och en spegel (arenden_arkiv.py) kan
+ * inte använda vattenmärket för att hitta ärenden med nya kommentarer — den
+ * tvingas läsa SAMTLIGA ärenden varje körning och slår i rate-limiten.
+ * Kallas i samma transaktion som kommentaren skrivs.
+ */
+export async function rorArende(
+  client: PoolClient,
+  tenantId: string,
+  issueId: string,
+): Promise<void> {
+  await client.query('UPDATE issues SET uppdaterad = now() WHERE tenant_id = $1 AND id = $2', [
+    tenantId,
+    issueId,
+  ]);
+}
+
+/**
  * KRAV-12: agentkön. FOR UPDATE SKIP LOCKED gör att två samtidiga anrop plockar
  * OLIKA ärenden — den som kommer tvåa hoppar över den låsta raden i stället för
  * att vänta in den och sedan se ett redan claimat ärende. Tom kö = null.

@@ -125,6 +125,23 @@ describe('KRAV-11/13: actions-API:t', () => {
     expect(saknas.body.result.id).toBeNull();
   });
 
+  // Beslut #24 KRAV-1: spegeln (arenden_arkiv.py) hittar ärenden med nya
+  // kommentarer via vattenmärket issues.uppdaterad. Rörde add_comment inte
+  // ärendet måste spegeln läsa SAMTLIGA ärenden varje körning och slog i
+  // rate-limiten.
+  it('add_comment höjer ärendets uppdaterad (vattenmärket fångar kommentaren)', async () => {
+    const skapat = await kor(app, nyckel, 'create_issue', { title: 'Vattenmärke', team_key: 'LOC' });
+    const identifier = skapat.body.result.identifier as string;
+    const fore = new Date(skapat.body.result.arende.uppdaterad as string);
+
+    const kommenterat = await kor(app, nyckel, 'add_comment', { identifier, body: 'Ny kommentar.' });
+    expect(kommenterat.status).toBe(200);
+
+    const hamtat = await kor(app, nyckel, 'get_issue', { identifier });
+    const efter = new Date(hamtat.body.result.arende.uppdaterad as string);
+    expect(efter.getTime()).toBeGreaterThan(fore.getTime());
+  });
+
   it('okänt ärende ger 404 och ogiltig identifier ger 400', async () => {
     expect((await kor(app, nyckel, 'get_issue', { identifier: 'LOC-99999' })).status).toBe(404);
     expect((await kor(app, nyckel, 'get_issue', { identifier: 'inte-en-identifier' })).status).toBe(400);

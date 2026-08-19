@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { config } from '../config.js';
 import { pool } from '../db/pool.js';
+import { AppError } from '../lib/errors.js';
 import { autentisera } from './middleware/autentisera.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { actionsRouter } from './routes/actions.js';
@@ -40,6 +41,12 @@ export function createApp(): express.Express {
       limit: config.RATE_LIMIT_PER_MINUTE,
       standardHeaders: true,
       legacyHeaders: false,
+      // Beslut #24 KRAV-2: standardhandlern svarar med bibliotekets egen
+      // textkropp, som klienten inte kan tolka (den blev `okant_fel`). Vi
+      // lämnar i stället över till errorHandler — då är felkuvertet exakt
+      // detsamma som för alla andra fel: {"error":"rate_limited"}.
+      // RateLimit-*/Retry-After är redan satta när handlern kallas.
+      handler: (_req, _res, next) => next(new AppError(429, 'rate_limited')),
     }),
     autentisera,
     actionsRouter,
