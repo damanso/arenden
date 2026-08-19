@@ -14,6 +14,7 @@ import {
   claimaNastaArende,
   hamtaArende,
   listaArenden,
+  rorArende,
   skapaArende,
   sokArenden,
   sokLabel,
@@ -211,6 +212,10 @@ export const ACTIONS: RegistreradAction[] = [
     handler: async (ctx, input) => {
       const arende = await hamtaArende(ctx.client, ctx.tenantId, input.identifier);
       const kommentar = await laggTillKommentar(ctx.client, ctx.tenantId, arende.id, input.body, ctx.aktor);
+      // Beslut #24 KRAV-1: kommentaren rör moderärendet i SAMMA transaktion, så
+      // att vattenmärket (issues.uppdaterad) fångar den. Events-loggen är
+      // oförändrad — proveniensen skrivs som förr nedan.
+      await rorArende(ctx.client, ctx.tenantId, arende.id);
       await ctx.skrivHandelse({
         issueId: arende.id,
         verb: 'kommenterade',

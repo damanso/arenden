@@ -203,7 +203,7 @@ for a in list_issues(state_typer=["backlog", "unstarted"])["noder"]:
 | 10 api_keys + bearer, aktör ur nyckeln | `migrations/0006`, `src/http/middleware/autentisera.ts` | `test/proveniens.test.ts` |
 | 11 samtliga actions | `src/actions/registry.ts` | `test/actions.test.ts`, `test/sok.test.ts` |
 | 12 claim_next_issue, SKIP LOCKED | `claimaNastaArende` i `src/services/arenden.ts` | `test/claim-race.test.ts` |
-| 13 express/helmet/rate-limit, 127.0.0.1:3002 | `src/http/app.ts`, `src/server.ts` | `test/actions.test.ts` |
+| 13 express/helmet/rate-limit, 127.0.0.1:3002 | `src/http/app.ts`, `src/server.ts` | `test/actions.test.ts`, `test/ratelimit.test.ts` |
 | 14 import av arkivet | `src/import/parsaArkiv.ts`, `src/import/importeraArkiv.ts` | `test/import.test.ts` |
 | 15 LOC-numrering bevarad + setval | `importeraArende`, `sattSekvens` | `test/import.test.ts` |
 | 16 idempotent via source_ref | `ON CONFLICT` i `importeraArende`/`laggTillKommentar` | `test/import.test.ts` |
