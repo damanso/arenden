@@ -35,7 +35,7 @@ import {
 import { listaKommentarer } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm, organisationFor } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
-import { autolanka, renderaMarkdown } from '../vy/markdown.js';
+import { renderaArendetext, renderaMarkdown } from '../vy/markdown.js';
 import {
   datum,
   datumtid,
@@ -537,7 +537,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         `<span>${esc(datumtid(k.skapad))}</span>` +
         proveniens(k.aktor_typ, k.aktor_namn) +
         '</div>' +
-        `<div class=text>${autolanka(k.body, index)}</div></li>`,
+        `<div class=text>${renderaArendetext(k.body, index)}</div></li>`,
     )
     .join('');
 
@@ -572,7 +572,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     crm +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
-      ? `<div class=text>${autolanka(a.description, index)}</div>`
+      ? `<div class=text>${renderaArendetext(a.description, index)}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
     (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
