@@ -255,7 +255,7 @@ export function crmKort(org: string, lage: CrmLage | null): string {
     rubrik +
     `<p class=summering>${esc(meta)}</p>` +
     (ataganden
-      ? `<ul class=lista>${ataganden}</ul>`
+      ? `<ul class=lista role=list>${ataganden}</ul>`
       : '<p class=notis>Inga öppna åtaganden.</p>') +
     `<p><a href="${esc(lank)}">Öppna i CRM</a></p>`
   );

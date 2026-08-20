@@ -232,7 +232,7 @@ vyRouter.get('/', async (_req, res) => {
           )
           .join(''));
 
-  res.type('html').send(sida('Ärenden', kropp));
+  res.type('html').send(sida('Ärenden', kropp, 'vy'));
 });
 
 // ---- KRAV-2: digesten "vad hände" -----------------------------------------
@@ -282,7 +282,7 @@ vyRouter.get('/digest', async (req, res) => {
           const iTyp = rader.filter((h) => h.aktor_typ === typ);
           return (
             `<h3>${esc(KALLRUBRIK[typ] ?? typ)} (${esc(iTyp.length)})</h3>` +
-            `<ul class=lista>${iTyp.map(handelseRad).join('')}</ul>`
+            `<ul class=lista role=list>${iTyp.map(handelseRad).join('')}</ul>`
           );
         })
         .join('');
@@ -290,23 +290,25 @@ vyRouter.get('/digest', async (req, res) => {
     })
     .join('');
 
+  // KRAV-5: den valda fönsterlängden bär aria-current — inte bara en färg.
   const fonsterlankar = FONSTER.map(
     (f) =>
-      `<a class="fasett${f.varde === valt.varde ? ' aktiv' : ''}" ` +
+      `<a class="fasett${f.varde === valt.varde ? ' aktiv' : ''}"` +
+      `${f.varde === valt.varde ? ' aria-current=true' : ''} ` +
       `href="/vy/digest?dagar=${esc(f.varde)}">${esc(f.text)}</a>`,
   ).join('');
 
   const kropp =
     '<h1>Vad hände</h1>' +
     `<p class=summering>${esc(handelser.length)} händelser — fönster: ${esc(valt.text)}.</p>` +
-    '<div class=fasetter><div class=grupp><span class=namn>Visa äldre</span><br>' +
-    `${fonsterlankar}</div></div>` +
+    '<div class=fasetter><div class=grupp><span class=namn>Visa äldre</span>' +
+    `<div class=chips>${fonsterlankar}</div></div></div>` +
     (handelser.length >= TAK_DIGEST
       ? `<p class=notis>Taket ${esc(TAK_DIGEST)} händelser är nått — äldre rader i fönstret visas inte.</p>`
       : '') +
     (handelser.length === 0 ? '<p class=notis>Inga händelser i fönstret.</p>' : dagar);
 
-  res.type('html').send(sida('Vad hände', kropp));
+  res.type('html').send(sida('Vad hände', kropp, 'digest'));
 });
 
 // ---- KRAV-3: sök med fasetter ---------------------------------------------
@@ -324,9 +326,10 @@ function fasettgrupp(
       const aktiv = val[nyckel] === alt.varde;
       // En aktiv fasett länkar till samma sida MINUS filtret — så tas den bort.
       const href = sokLank(val, nyckel, aktiv ? undefined : alt.varde);
+      // KRAV-5: aktiv fasett märks för uppläsning, inte bara med accentfärgen.
       return (
-        `<a class="fasett${aktiv ? ' aktiv' : ''}" href="${esc(href)}">` +
-        `${esc(alt.text)}${aktiv ? ' ×' : ''}</a>`
+        `<a class="fasett${aktiv ? ' aktiv' : ''}"${aktiv ? ' aria-current=true' : ''} ` +
+        `href="${esc(href)}">${esc(alt.text)}${aktiv ? ' ×' : ''}</a>`
       );
     })
     .join('');
@@ -334,7 +337,10 @@ function fasettgrupp(
     totalt > alternativ.length
       ? ` <span class=summering>(visar ${esc(alternativ.length)} av ${esc(totalt)})</span>`
       : '';
-  return `<div class=grupp><span class=namn>${esc(namn)}</span>${kapat}<br>${lankar}</div>`;
+  return (
+    `<div class=grupp><span class=namn>${esc(namn)}</span>${kapat}` +
+    `<div class=chips>${lankar}</div></div>`
+  );
 }
 
 const AKTIVA_NAMN: { nyckel: Fasettnyckel; namn: string }[] = [
@@ -405,8 +411,8 @@ vyRouter.get('/sok', async (req, res) => {
     .map(({ nyckel, namn }) => {
       const varde = nyckel === 'status' ? STATE_TEXT[status!] : val[nyckel]!;
       return (
-        `<a class="fasett aktiv" href="${esc(sokLank(val, nyckel, undefined))}">` +
-        `${esc(namn)}: ${esc(varde)} ×</a>`
+        `<a class="fasett aktiv" aria-current=true ` +
+        `href="${esc(sokLank(val, nyckel, undefined))}">${esc(namn)}: ${esc(varde)} ×</a>`
       );
     })
     .join('');
@@ -419,14 +425,17 @@ vyRouter.get('/sok', async (req, res) => {
   const kropp =
     '<h1>Sök</h1>' +
     '<form class=sok method=get action="/vy/sok">' +
-    `<input type=search name=q value="${esc(val.q)}" ` +
+    // Etiketten är osynlig men uppläst — platshållaren är ingen etikett (WCAG 3.3.2).
+    '<label class=dold for=q>Sök i titlar, beskrivningar och kommentarer</label>' +
+    `<input type=search id=q name=q value="${esc(val.q)}" ` +
     'placeholder="Sök i titlar, beskrivningar och kommentarer">' +
     `${doldaFalt}<button type=submit>Sök</button></form>` +
     (raQ !== undefined && q === undefined
       ? '<p class=notis>Sökordet kunde inte tolkas (för långt eller otillåtna tecken) och ignorerades.</p>'
       : '') +
     (aktiva
-      ? `<div class=fasetter><div class=grupp><span class=namn>Aktiva filter</span><br>${aktiva}</div></div>`
+      ? '<div class=fasetter><div class=grupp><span class=namn>Aktiva filter</span>' +
+        `<div class=chips>${aktiva}</div></div></div>`
       : '') +
     '<div class=fasetter>' +
     fasettgrupp(
@@ -466,7 +475,7 @@ vyRouter.get('/sok', async (req, res) => {
           : '') +
         (antal === 0 ? '<p class=notis>Inga träffar.</p>' : resultat));
 
-  res.type('html').send(sida('Sök', kropp));
+  res.type('html').send(sida('Sök', kropp, 'sok'));
 });
 
 // ---- KRAV-4: ärendesidan ---------------------------------------------------
@@ -566,9 +575,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       ? `<div class=text>${autolanka(a.description, index)}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
-    (kommentarer ? `<ul class=lista>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
+    (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
     `<h2>Historik (${esc(data.handelser.length)})</h2>` +
-    (historik ? `<ul class=lista>${historik}</ul>` : '<p class=notis>Inga händelser.</p>');
+    (historik ? `<ul class=lista role=list>${historik}</ul>` : '<p class=notis>Inga händelser.</p>');
 
   res.type('html').send(sida(a.identifier, kropp));
 });
