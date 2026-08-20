@@ -17,6 +17,9 @@ import { esc } from './mall.js';
 // Mönstren delas mellan de två lägena och plockas isär via namngivna grupper.
 const WIKI = String.raw`\[\[(?<mal>[^\[\]|#]+)(?:#[^\[\]|]*)?(?:\|(?<alias>[^\[\]]*))?\]\]`;
 const SOKVAG = String.raw`(?<sokvag>[\p{L}\p{N}_][\p{L}\p{N}_.\-/]*\.md)\b`;
+// KRAV-1: originalnamnet på ett speglat kunddokument. Samma teckenklass som
+// SOKVAG men UTAN '/', så i en längre Drive-sökväg matchas bara sista segmentet.
+const FILNAMN = String.raw`(?<filnamn>[\p{L}\p{N}_][\p{L}\p{N}_.\-]*\.(?:docx|pdf|pptx|xlsx))\b`;
 const ARENDE = String.raw`\b(?<arende>LOC-\d+)\b`;
 const KOD = String.raw`\x60(?<kod>[^\x60\n]+)\x60`;
 const FET = String.raw`\*\*(?<fet>[^*\n]+)\*\*`;
@@ -24,9 +27,12 @@ const MDLANK = String.raw`\[(?<mdtext>[^\[\]]+)\]\((?<mdurl>[^()\s]+)\)`;
 
 // Ärendetexter: BARA länkar. Ingen fetstil — ärendebeskrivningarna visas som de
 // är skrivna (pre-wrap), precis som i etapp 2a.
-const LANKAR = new RegExp(`${WIKI}|${SOKVAG}|${ARENDE}`, 'gu');
+const LANKAR = new RegExp(`${WIKI}|${SOKVAG}|${FILNAMN}|${ARENDE}`, 'gu');
 // Dokumentsidan: samma länkar plus den lilla markdownen.
-const MARKDOWN = new RegExp(`${KOD}|${FET}|${WIKI}|${MDLANK}|${SOKVAG}|${ARENDE}`, 'gu');
+const MARKDOWN = new RegExp(
+  `${KOD}|${FET}|${WIKI}|${MDLANK}|${SOKVAG}|${FILNAMN}|${ARENDE}`,
+  'gu',
+);
 
 export function dokUrl(rel: string): string {
   return `/vy/dok/${rel.split('/').map(encodeURIComponent).join('/')}`;
@@ -74,6 +80,7 @@ function ersatt(
     return dokumentlank(url, text, hel, index);
   }
   if (g['sokvag'] !== undefined) return dokumentlank(g['sokvag'], g['sokvag'], hel, index);
+  if (g['filnamn'] !== undefined) return spegellank(g['filnamn'], hel, index);
   if (g['arende'] !== undefined) {
     return `<a href="/vy/arende/${esc(g['arende'])}">${esc(g['arende'])}</a>`;
   }
@@ -91,6 +98,26 @@ function dokumentlank(
   // vilken annan text som helst.
   if (rel === null) return esc(hel);
   return `<a href="${esc(dokUrl(rel))}">${esc(text)}</a>`;
+}
+
+// ---- KRAV-2: speglade kunddokument ----------------------------------------
+
+/** Speglingen dokument_index.py skriver till — enda katalogen som får länkas. */
+const KUNDDOKUMENT = '03-Resurser/kunddokument/';
+const ORIGINALANDELSE = /\.(?:docx|pdf|pptx|xlsx)$/;
+
+/**
+ * `Konsultavtal_NVR_Locollabs.docx` → spegeln under kunddokument. KRAV-3: ett
+ * ospeglat eller tvetydigt originalnamn förblir ren text — ingen markering,
+ * ingen titel, och ingen filsystemsåtkomst; bara det redan byggda indexet.
+ */
+function spegellank(namn: string, hel: string, index: Dokumentindex): string {
+  const spegel = `${namn.replace(ORIGINALANDELSE, '')}.md`.normalize('NFC').toLowerCase();
+  const traffar = (index.filnamn.get(spegel) ?? []).filter((rel) =>
+    rel.normalize('NFC').startsWith(KUNDDOKUMENT),
+  );
+  if (traffar.length !== 1) return esc(hel);
+  return `<a href="${esc(dokUrl(traffar[0]!))}">${esc(namn)}</a>`;
 }
 
 /** Referens → vaultrelativ sökväg, eller null när den inte får länkas. */

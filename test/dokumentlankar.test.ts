@@ -16,6 +16,7 @@ const UTANFOR = path.join(tmpdir(), 'arenden-test-utanfor-vaulten.md');
 
 const BESLUTSFLODE = '02-Områden/ledningsgrupp/beslutsflode.md';
 const MOTESANALYS = '02-Områden/hermes/motesanalys-zeynep-2026-08-12.md';
+const SPEGEL_NVR = '03-Resurser/kunddokument/Nordic Vision Retail/Konsultavtal_NVR_Locollabs.md';
 
 /** URL till dokumentsidan, kodad som en webbläsare gör. */
 function dokvag(rel: string): string {
@@ -33,6 +34,8 @@ describe('Dokumentlänkar KRAV-1..6', () => {
   let agentnyckel: string;
   /** Ärende vars beskrivning bär alla fyra referensmönstren. */
   let refererande: string;
+  /** Ärende vars beskrivning bär originaländelser (.docx) — speglade och inte. */
+  let kunddokument: string;
 
   beforeAll(async () => {
     await rm(TEST_VAULT, { recursive: true, force: true });
@@ -65,6 +68,16 @@ describe('Dokumentlänkar KRAV-1..6', () => {
     await skrivFil('01-Projekt/dubbel.md', 'ett\n');
     await skrivFil('03-Resurser/dubbel.md', 'två\n');
 
+    // Speglade kunddokument: dokument_index.py lägger Drive-filerna som
+    // 03-Resurser/kunddokument/<kund>/<stam>.md.
+    await skrivFil(SPEGEL_NVR, '# Konsultavtal_NVR_Locollabs.docx\n\nSpegel av Drive-filen.\n');
+    // Samma stam speglad hos TVÅ kunder = tvetydigt.
+    await skrivFil(
+      '03-Resurser/kunddokument/Nordic Vision Retail/Prislista_2026.md',
+      'NVR:s prislista\n',
+    );
+    await skrivFil('03-Resurser/kunddokument/Acme AB/Prislista_2026.md', 'Acmes prislista\n');
+
     // Utanför vitlistan — får aldrig serveras eller bekräftas.
     await skrivFil('jag.md', 'HEMLIGT-JAG\n');
     await skrivFil('journal/2026-08-19.md', 'HEMLIGT-JOURNAL\n');
@@ -96,6 +109,18 @@ describe('Dokumentlänkar KRAV-1..6', () => {
       team_key: 'LOC',
     });
     refererande = skapat.body.result.identifier;
+
+    const kundskapat = await kor(app, agentnyckel, 'create_issue', {
+      title: 'Ärende med kunddokument',
+      description: [
+        'Konsultavtal_NVR_Locollabs.docx',
+        'Drive 01_Kunder/Nordic Vision Retail/Fas 1/Avtal/Konsultavtal_NVR_Locollabs.docx',
+        'Ospeglat: hemlig-rapport.docx',
+        'Tvetydigt: Prislista_2026.docx',
+      ].join('\n'),
+      team_key: 'LOC',
+    });
+    kunddokument = kundskapat.body.result.identifier;
 
     await kor(app, agentnyckel, 'add_comment', {
       identifier: refererande,
@@ -234,6 +259,37 @@ describe('Dokumentlänkar KRAV-1..6', () => {
     // KRAV-6e: autolänkningen ersätter esc() — injektionen är fortsatt escapad.
     expect(svar.text).not.toContain('<img src=x');
     expect(svar.text).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+  });
+
+  // ---- speglade kunddokument (A1..A3) --------------------------------------
+
+  it('A1: originalnamn med .docx länkar till spegeln — även sist i en Drive-sökväg', async () => {
+    const svar = await request(app).get(`/vy/arende/${kunddokument}`);
+    expect(svar.status).toBe(200);
+
+    // Båda raderna ger EXAKT samma länk: bara sista segmentet matchas, så
+    // Drive-sökvägens katalogdel blir kvar som (escapad) text.
+    const lank = `<a href="${dokvag(SPEGEL_NVR)}">Konsultavtal_NVR_Locollabs.docx</a>`;
+    expect(svar.text.split(lank).length - 1).toBe(2);
+    expect(svar.text).toContain(`Avtal/${lank}`);
+  });
+
+  it('A2: ospeglat .docx-namn förblir ren text — ingen länk, ingen markering', async () => {
+    const svar = await request(app).get(`/vy/arende/${kunddokument}`);
+
+    expect(svar.text).toContain('Ospeglat: hemlig-rapport.docx');
+    expect(svar.text).not.toContain('hemlig-rapport.md');
+    expect(svar.text).not.toContain('>hemlig-rapport.docx</a>');
+  });
+
+  it('A3: samma stam speglad hos två kunder är tvetydig — ingen av dem länkas', async () => {
+    const svar = await request(app).get(`/vy/arende/${kunddokument}`);
+
+    expect(svar.text).toContain('Tvetydigt: Prislista_2026.docx');
+    expect(svar.text).not.toContain(
+      dokvag('03-Resurser/kunddokument/Nordic Vision Retail/Prislista_2026.md'),
+    );
+    expect(svar.text).not.toContain(dokvag('03-Resurser/kunddokument/Acme AB/Prislista_2026.md'));
   });
 
   // ---- (c) LOC-N och kommentarer -------------------------------------------
