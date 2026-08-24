@@ -104,7 +104,7 @@ describe('Etapp 2a KRAV-1..10: Davids läsvy', () => {
     expect(svar.text).toContain('Backlog');
     expect(svar.text).toContain('ILT-Education');
     expect(svar.text).toContain('Väntar-extern');
-    expect(svar.text).toContain('Väntar på:** Daniel');
+    expect(svar.text).toContain('<strong>Väntar på:</strong> Daniel');
     expect(svar.text).toContain('importerade ärendet');
   });
 
