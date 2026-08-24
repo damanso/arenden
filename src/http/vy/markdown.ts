@@ -205,8 +205,12 @@ const MAX_TECKEN = 200_000;
 const MAX_DJUP = 6;
 
 // Steg 2, inline. KOD står FÖRST och vinner alltid: inne i kod inline sker
-// varken markdown eller autolänkning (KRAV-6) — `LOC-339` i en kodsnutt är
-// text, `LOC-339` i en rubrik är en länk.
+// aldrig markdown — en asterisk i ett kodexempel ska stå kvar som asterisk.
+// LÄNKNING sker däremot (beslut #42, David 2026-08-24): `LOC-339` i en kodsnutt
+// blir en länk, precis som `LOC-339` i en rubrik. Ursprungliga KRAV-6 förbjöd
+// båda, vilket antog att en sökväg i backticks är ett exempel — i den här
+// datan är den nästan alltid en referens, och regeln kostade 18,9 % av
+// länkarna.
 //
 // Den dubbla backticken finns för att en kodsnutt ska kunna innehålla en
 // enkel backtick. Lookaheaden `(?!\x60\x60)` gör inte bara mönstret korrekt
@@ -384,8 +388,16 @@ function inline(saker: string, index: Dokumentindex, djup: number): string {
   for (const m of saker.matchAll(INLINE)) {
     ut += lankaEscapad(saker.slice(sist, m.index), index, LANKAR);
     const g = m.groups!;
-    if (g['kod2'] !== undefined) ut += `<code>${kodspan(g['kod2'])}</code>`;
-    else if (g['kod1'] !== undefined) ut += `<code>${g['kod1']}</code>`;
+    // Beslut #42 (David, 2026-08-24): sökvägar och ärendenummer i backticks
+    // SKA länkas. Formatering sker fortfarande aldrig i kod — innehållet går
+    // genom lankaEscapad med LANKAR (bara länkmönstren), aldrig genom INLINE.
+    // Mätt före ändringen: 55 av 291 länkar (18,9 %) föll bort på den gamla
+    // regeln, i 31 av 336 ärenden.
+    if (g['kod2'] !== undefined) {
+      ut += `<code>${lankaEscapad(kodspan(g['kod2']), index, LANKAR)}</code>`;
+    } else if (g['kod1'] !== undefined) {
+      ut += `<code>${lankaEscapad(g['kod1'], index, LANKAR)}</code>`;
+    }
     else if (g['fet2'] !== undefined) ut += `<strong>${inline(g['fet2'], index, djup + 1)}</strong>`;
     else if (g['kursiv'] !== undefined) ut += `<em>${inline(g['kursiv'], index, djup + 1)}</em>`;
     else ut += `<em>${inline(g['kursivu']!, index, djup + 1)}</em>`;

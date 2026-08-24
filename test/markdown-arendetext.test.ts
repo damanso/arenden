@@ -248,11 +248,26 @@ describe('KRAV-3: escape sker FÖRE omvandlingen', () => {
   });
 });
 
-describe('KRAV-6: kod inline är fredad, allt annat är det inte', () => {
-  it('LOC-339 i en kodsnutt förblir text', () => {
+describe('KRAV-6 efter beslut #42: kod fredas från FORMATERING, inte från länkning', () => {
+  it('LOC-339 i en kodsnutt LÄNKAS (beslut #42) men formateras inte', () => {
     const html = utfall('Se `LOC-339` i loggen');
-    expect(html).toBe('<p>Se <code>LOC-339</code> i loggen</p>');
-    expect(html).not.toContain('href="/vy/arende/LOC-339"');
+    expect(html).toBe(
+      '<p>Se <code><a href="/vy/arende/LOC-339">LOC-339</a></code> i loggen</p>',
+    );
+  });
+
+  it('markdown inne i kod sker ALDRIG, inte ens efter beslut #42', () => {
+    // Det är den halvan av gamla KRAV-6 som står kvar: en asterisk i ett
+    // kodexempel ska stå kvar som asterisk.
+    expect(utfall('Kör `**inte fet**` i skalet')).not.toContain('<strong>');
+    expect(utfall('Skriv `*stjärna*` exakt så')).not.toContain('<em>');
+  });
+
+  it('R5-sökvägar länkas inte heller i kod', () => {
+    // Vitlistan i dokument.ts gäller oförändrat: beslut #42 vidgade vad som
+    // FÅR länkas, aldrig vad som får nås.
+    const html = utfall('Se `jag.md` och `journal/x.md`');
+    expect(html).not.toContain('href="/vy/dok/');
   });
 
   it('LOC-339 i en rubrik blir en länk', () => {
@@ -271,10 +286,12 @@ describe('KRAV-6: kod inline är fredad, allt annat är det inte', () => {
     expect(html).toBe('<p><code>**inte fet** och *inte kursiv*</code></p>');
   });
 
-  it('dokumentreferens i kod inline länkas inte', () => {
+  it('dokumentreferens i kod inline länkas (beslut #42)', () => {
     const html = utfall('`plan.md` men plan.md');
-    expect(html).toContain('<code>plan.md</code>');
-    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toContain('<code><a href=');
+    // Bägge länkas nu — före beslut #42 var det en. Mätt över hela korpusen
+    // gav regeln tillbaka 55 av 291 länkar (18,9 %).
+    expect(html.match(/<a /g)).toHaveLength(2);
   });
 });
 
