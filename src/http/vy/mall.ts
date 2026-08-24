@@ -244,17 +244,36 @@ border:var(--p-linje-1) solid var(--knapp-yta);border-radius:var(--falt-radie);
 padding:0 var(--p-rym-5);font-family:inherit;font-size:var(--brodtext);
 font-weight:var(--p-vikt-2);cursor:pointer}
 
-/* ---- Dokumentsidan ---- */
+/* ---- Renderat innehåll: dokumentsidan (.dok) och ärendetexten (.text) ---- */
 .dok{overflow-wrap:anywhere}
 /* Dokumentets första rubrik står redan under sidans h1 — ingen linje ovanför den. */
 .dok>h2:first-child{margin-top:0;padding-top:0;border-top:0}
-.dok p,.dok li{max-width:var(--p-matt)}
-.dok ul,.dok ol{padding-left:var(--p-rym-5);margin:0 0 var(--p-rym-4)}
-.dok li{margin:0 0 var(--p-rym-1)}
-.dok h4{font-size:var(--rubrik-3);font-weight:var(--p-vikt-2);color:var(--text-svag);
-margin:var(--p-rym-5) 0 var(--p-rym-2)}
-.dok hr{border:0;border-top:var(--p-linje-1) solid var(--linje);
-margin:var(--p-rym-6) 0}
+/* Ärendetexten ligger i ett kort: första och sista blocket bär ingen egen luft. */
+.text>:first-child{margin-top:0}
+.text>:last-child,.text blockquote>:last-child,.text li>:last-child{margin-bottom:0}
+.dok p,.dok li,.text li{max-width:var(--p-matt)}
+.dok ul,.dok ol,.text ul,.text ol{padding-left:var(--p-rym-5);margin:0 0 var(--p-rym-4)}
+.dok li,.text li{margin:0 0 var(--p-rym-1)}
+/* KRAV-8: innehållets rubriknivåer delar EN typstorlek. Typskalan har fyra, och
+   en femte är förbjuden — så nivåerna skiljs åt med vikt, färg och versalisering
+   i stället. Ingen av dem får heller bli lika stor som sidans egen h2: läsaren
+   ska aldrig tro att en rubrik ur en kommentar är en rubrik i vyn.
+   h3 behöver ingen egen regel — den globala h3 säger redan rätt sak.
+   Versalerna sätts med text-transform, aldrig i strängen: skärmläsaren ska läsa
+   ordet, inte bokstäverna. */
+.dok h4,.text h4{font-size:var(--rubrik-3);font-weight:var(--p-vikt-2);
+color:var(--text-svag);margin:var(--p-rym-5) 0 var(--p-rym-2)}
+.text h5{font-size:var(--meta);font-weight:var(--p-vikt-2);color:var(--text-svag);
+line-height:var(--p-rad-1);text-transform:uppercase;letter-spacing:var(--p-spar-vid);
+margin:var(--p-rym-4) 0 var(--p-rym-1)}
+.dok hr,.text hr{border:0;border-top:var(--p-linje-1) solid var(--linje)}
+.dok hr{margin:var(--p-rym-6) 0}
+.text hr{margin:var(--p-rym-5) 0}
+/* Citatet är INNEHÅLL, inte metatext: full textfärg, aldrig --text-svag. Det är
+   linjen som bär betydelsen — färg ensam räcker inte (WCAG 1.4.1), och linjen
+   ligger på 3.7:1 mot pappret och 4.0:1 mot kolet (WCAG 1.4.11). */
+.text blockquote{margin:0 0 var(--p-rym-4);padding-left:var(--p-rym-3);
+border-left:var(--p-linje-2) solid var(--linje);color:var(--text)}
 pre{background:var(--yta-sankt);border:var(--p-linje-1) solid var(--linje);
 border-radius:var(--falt-radie);padding:var(--p-rym-3) var(--p-rym-4);
 overflow-x:auto;font-family:var(--p-mono);font-size:var(--meta);
