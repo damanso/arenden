@@ -15,8 +15,7 @@ export async function seedaTeam(key = 'LOC', namn = 'Locollabs'): Promise<Team> 
 
 /** Mintar en nyckel direkt i databasen — samma väg som `npm run nyckel`. */
 export async function nyNyckel(aktor: Aktor): Promise<string> {
-  const { nyckel } = await skapaNyckel(pool, TENANT_ID, aktor);
-  return nyckel;
+  return withTransaction(async (client) => (await skapaNyckel(client, TENANT_ID, aktor)).nyckel);
 }
 
 export function kor(app: Express, nyckel: string, action: string, input: unknown = {}): Test {

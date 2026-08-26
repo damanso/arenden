@@ -271,8 +271,23 @@ describe('Etapp 2a KRAV-1..10: Davids läsvy', () => {
     expect((efter.body.result.handelser as unknown[]).length).toBe(antalFore);
   });
 
-  it('KRAV: POST mot vyn finns inte', async () => {
+  // K-1 (Davids beslut #64): Etapp 2a:s avgränsning "inga POST-rutter under
+  // /vy" är medvetet upphävd. Det som ERSATTE den kontrolleras här och i
+  // test/rattelser.test.ts: en okänd POST-sökväg finns fortfarande inte, och en
+  // POST mot en RIKTIG skrivrutt utan session skriver ingenting.
+  it('K-1: okänd POST-sökväg under /vy finns fortfarande inte', async () => {
     const svar = await request(app).post('/vy/arende/LOC-316').send({ title: 'nej' });
     expect(svar.status).toBe(404);
+  });
+
+  it('K-1: POST mot en riktig skrivrutt utan session avvisas', async () => {
+    const svar = await request(app)
+      .post('/vy/arende/LOC-316/kommentar')
+      .type('form')
+      .send({ body: 'Utan inloggning ska detta inte gå.' });
+
+    expect(svar.status).toBe(401);
+    const efter = await request(app).get('/vy/arende/LOC-316');
+    expect(efter.text).not.toContain('Utan inloggning ska detta inte gå.');
   });
 });

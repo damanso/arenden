@@ -47,7 +47,10 @@ describe('KRAV-8/10/20c: proveniens och append-only', () => {
 
   it('inaktiverad nyckel ger 401', async () => {
     const nyckel = await nyNyckel({ typ: 'agent', namn: 'avstangd' });
-    // Deaktivering är en ops-åtgärd (app-rollen saknar UPDATE på api_keys).
+    // K-1 gav app-rollen UPDATE (aktiv) på api_keys, så deaktivering går numera
+    // via actionen revoke_api_key (test/rattelser.test.ts). Här görs den som
+    // ägaren, eftersom det här provet handlar om NYCKELUPPSLAGET och inte om
+    // vägen dit — en 401 ska bli 401 oavsett hur nyckeln stängdes av.
     const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
     await admin.connect();
     await admin.query("UPDATE api_keys SET aktiv = false WHERE aktor_namn = 'avstangd'");

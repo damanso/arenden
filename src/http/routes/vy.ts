@@ -39,7 +39,7 @@ import {
   listaSenasteHandelser,
   type HandelseIVy,
 } from '../../services/handelser.js';
-import { listaKommentarer } from '../../services/kommentarer.js';
+import { listaBorttagnaKommentarer, listaKommentarer } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm, organisationFor } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
 import { renderaArendetext, renderaMarkdown } from '../vy/markdown.js';
@@ -55,8 +55,29 @@ import {
   sida,
   verbText,
 } from '../vy/mall.js';
+import { sessionsAktor } from '../vy/session.js';
+import {
+  borttagnaAvsnitt,
+  etikettrad,
+  kommentarsverktyg,
+  monteraSkrivrutter,
+  notisrad,
+  nyKommentarForm,
+  skrivlage,
+} from '../vy/skrivning.js';
 
 export const vyRouter = Router();
+
+// K-1 (Davids beslut #64): Etapp 2a:s avgränsning "inga POST-rutter under /vy"
+// är MEDVETET bruten — vyn ska gå att fylla på och rätta i. Invariant 1 ovan
+// gäller därför inte längre ordagrant: GET skriver fortfarande aldrig något,
+// men POST gör det, genom executeAction precis som /api och först efter
+// CSRF-kontroll och en session som härletts ur en API-nyckel.
+//
+// Monteras FÖRST: formulärparsern (express.urlencoded) ligger i
+// monteraSkrivrutter och måste registreras före rutterna som läser en
+// formulärkropp.
+monteraSkrivrutter(vyRouter);
 
 // Öppet = allt som inte är avslutat eller avbrutet (KRAV-1).
 const OPPNA: StateTyp[] = ['backlog', 'unstarted', 'started'];
@@ -174,6 +195,11 @@ const BYTESVERB = new Set([
   'andrade_deadline',
   'andrade_milstolpe',
   'andrade_foralder',
+  // K-1. Kommentarsrättelsen står MEDVETET inte här: dess payload bär
+  // gammal_text/ny_text, inte fran/till, just för att en 5 000 teckens
+  // kommentar inte ska renderas som "A → B" på en digestrad.
+  'andrade_projektnamn',
+  'andrade_etikettnamn',
 ]);
 
 /** Ett payloadvärde som text — null blir det uttryckliga "ingen", inte tomt. */
@@ -274,7 +300,7 @@ function gruppera(arenden: Arende[]): Grupp[] {
   return [...grupper.values()].sort((a, b) => b.senast - a.senast);
 }
 
-vyRouter.get('/', async (_req, res) => {
+vyRouter.get('/', async (req, res) => {
   const resultat = await withTransaction((client) =>
     listaArenden(client, TENANT_ID, { stateTyper: OPPNA, limit: TAK_ARENDEN }),
   );
@@ -303,7 +329,7 @@ vyRouter.get('/', async (_req, res) => {
           )
           .join(''));
 
-  res.type('html').send(sida('Ärenden', kropp, 'vy'));
+  res.type('html').send(sida('Ärenden', notisrad(req) + kropp, 'vy', sessionsAktor(req)));
 });
 
 // ---- KRAV-2: digesten "vad hände" -----------------------------------------
@@ -379,7 +405,7 @@ vyRouter.get('/digest', async (req, res) => {
       : '') +
     (handelser.length === 0 ? '<p class=notis>Inga händelser i fönstret.</p>' : dagar);
 
-  res.type('html').send(sida('Vad hände', kropp, 'digest'));
+  res.type('html').send(sida('Vad hände', kropp, 'digest', sessionsAktor(req)));
 });
 
 // ---- KRAV-3: sök med fasetter ---------------------------------------------
@@ -546,7 +572,7 @@ vyRouter.get('/sok', async (req, res) => {
           : '') +
         (antal === 0 ? '<p class=notis>Inga träffar.</p>' : resultat));
 
-  res.type('html').send(sida('Sök', kropp, 'sok'));
+  res.type('html').send(sida('Sök', kropp, 'sok', sessionsAktor(req)));
 });
 
 // ---- KRAV-4: ärendesidan ---------------------------------------------------
@@ -585,6 +611,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       barn: await barnFor(client, TENANT_ID, arende.id),
       relationer: await relationerFor(client, TENANT_ID, arende.id),
       bilagor: await bilagorFor(client, TENANT_ID, arende.id),
+      // K-1: de mjukt borttagna — endast id och tidpunkt, aldrig text/aktör.
+      borttagna: await listaBorttagnaKommentarer(client, TENANT_ID, arende.id),
     };
   }).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
@@ -598,7 +626,11 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   }
 
   const a = data.arende;
-  const etiketter = a.labels.map((l) => `<span class=tagg>${esc(l)}</span>`).join('');
+  // K-1: skrivläget. Aktören kommer ur sessionen, som i sin tur kommer ur en
+  // API-nyckel (src/http/vy/session.ts) — aldrig ur ett formulärfält.
+  const aktor = sessionsAktor(req);
+  const retur = arendeUrl(a.identifier);
+  const etiketter = etikettrad(aktor, a.identifier, a.labels);
 
   // CRM KRAV-1/5: ENDAST här, och bara när ärendet mappar till en organisation.
   // hamtaCrm() kan aldrig kasta (KRAV-3) — värsta utfallet är fallbacktexten.
@@ -613,7 +645,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         `<span>${esc(datumtid(k.skapad))}</span>` +
         proveniens(k.aktor_typ, k.aktor_namn) +
         '</div>' +
-        `<div class=text>${renderaArendetext(k.body, index)}</div></li>`,
+        `<div class=text>${renderaArendetext(k.body, index)}</div>` +
+        kommentarsverktyg(aktor, k, retur) +
+        '</li>',
     )
     .join('');
 
@@ -654,7 +688,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         .join(' · '),
     )}</p>` +
     foralderrad +
-    (etiketter ? `<p>${etiketter}</p>` : '') +
+    etiketter +
+    notisrad(req) +
+    skrivlage(aktor, retur) +
     crm +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
@@ -675,10 +711,12 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       : '') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
     (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
+    nyKommentarForm(aktor, a.identifier) +
+    borttagnaAvsnitt(aktor, data.borttagna, retur) +
     `<h2>Historik (${esc(data.handelser.length)})</h2>` +
     (historik ? `<ul class=lista role=list>${historik}</ul>` : '<p class=notis>Inga händelser.</p>');
 
-  res.type('html').send(sida(a.identifier, kropp));
+  res.type('html').send(sida(a.identifier, kropp, undefined, aktor));
 });
 
 // ---- Dokumentlänkar KRAV-1/2: dokumentsidan --------------------------------
@@ -722,7 +760,7 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
     `<a href="${esc(obsidian)}">öppna i Obsidian</a></p>` +
     `<div class=dok>${renderaMarkdown(innehall, index)}</div>`;
 
-  res.type('html').send(sida(namn, kropp));
+  res.type('html').send(sida(namn, kropp, undefined, sessionsAktor(req)));
 });
 
 // Okänd /vy-sökväg svarar HTML — inte API:ts JSON-404 (KRAV-7).

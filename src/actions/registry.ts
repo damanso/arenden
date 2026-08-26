@@ -18,9 +18,12 @@ import {
   hamtaArende,
   listaArenden,
   rorArende,
+  dopOmEtikett,
+  dopOmProjekt,
   skapaArende,
   sokArenden,
   sokLabel,
+  taBortEtikettFranArende,
   uppdateraArendeFalt,
   uppdateraArendeState,
   type Falt,
@@ -32,7 +35,15 @@ import {
   relationerFor,
 } from '../services/relationer.js';
 import { listaHandelser } from '../services/handelser.js';
-import { laggTillKommentar, listaKommentarer } from '../services/kommentarer.js';
+import {
+  aterstallKommentar,
+  hamtaKommentar,
+  laggTillKommentar,
+  listaKommentarer,
+  rattaKommentar,
+  taBortKommentar,
+} from '../services/kommentarer.js';
+import { aterkallaNyckel } from '../services/nycklar.js';
 import { listaStates } from '../services/team.js';
 
 export interface ActionContext {
@@ -394,6 +405,175 @@ export const ACTIONS: RegistreradAction[] = [
         payload: { identifier: arende.identifier, state: arende.state_namn },
       });
       return arende;
+    },
+  }),
+
+  // ---- K-1: rättningsvägarna ----------------------------------------------
+  //
+  // Gemensamt för alla sex: de RÄTTAR, de raderar inte historik. Varje av dem
+  // skriver en händelserad med aktören (ur nyckeln, aldrig ur indata) och det
+  // GAMLA värdet — annars hade vi bytt ett permanent fel mot en osynlig ändring.
+  // Även no-op-fallen loggas, av samma skäl som tom_ko: ett korrekt svar får
+  // inte fällas av proveniens-tvånget i executeAction.
+
+  def({
+    name: 'update_comment',
+    title: 'Rätta en kommentars text',
+    sensitivity: 'write',
+    inputSchema: z.object({ kommentar_id: UuidSchema, body: safeText(20_000) }).strict(),
+    handler: async (ctx, input) => {
+      const fore = await hamtaKommentar(ctx.client, ctx.tenantId, input.kommentar_id);
+      if (fore.borttagen === null && fore.body === input.body) {
+        await ctx.skrivHandelse({
+          issueId: fore.issue_id,
+          verb: 'kommentaren_oforandrad',
+          payload: { kommentar_id: fore.id },
+        });
+        return { kommentar: fore, andrad: false };
+      }
+      const { kommentar, gammalText } = await rattaKommentar(
+        ctx.client,
+        ctx.tenantId,
+        input.kommentar_id,
+        input.body,
+      );
+      await ctx.skrivHandelse({
+        issueId: kommentar.issue_id,
+        verb: 'rattade_kommentar',
+        // gammal_text/ny_text — inte fran/till. Fältnamnen fran/till renderas
+        // som "A → B" i digesten, och en 5 000 teckens kommentar hör inte hemma
+        // på en rad där. Hela värdet finns här; vyn visar det inte.
+        payload: { kommentar_id: kommentar.id, gammal_text: gammalText, ny_text: kommentar.body },
+      });
+      return { kommentar, andrad: true };
+    },
+  }),
+
+  def({
+    name: 'delete_comment',
+    title: 'Ta bort en kommentar (mjuk radering)',
+    sensitivity: 'write',
+    inputSchema: z.object({ kommentar_id: UuidSchema }).strict(),
+    handler: async (ctx, input) => {
+      const fore = await hamtaKommentar(ctx.client, ctx.tenantId, input.kommentar_id);
+      const { kommentar, andrad } = await taBortKommentar(
+        ctx.client,
+        ctx.tenantId,
+        input.kommentar_id,
+      );
+      await ctx.skrivHandelse({
+        issueId: kommentar.issue_id,
+        verb: andrad ? 'tog_bort_kommentar' : 'kommentaren_var_redan_borttagen',
+        // HELA den borttagna raden bevaras här: texten OCH proveniensen den bar.
+        // Det är den enda platsen den syns efter borttagningen, och det är rätt
+        // plats — events är append-only.
+        payload: andrad
+          ? {
+              kommentar_id: kommentar.id,
+              gammal_text: fore.body,
+              gammal_aktor_typ: fore.aktor_typ,
+              gammal_aktor_namn: fore.aktor_namn,
+            }
+          : { kommentar_id: kommentar.id },
+      });
+      return { kommentar_id: kommentar.id, andrad };
+    },
+  }),
+
+  def({
+    name: 'restore_comment',
+    title: 'Återställ en borttagen kommentar',
+    sensitivity: 'write',
+    inputSchema: z.object({ kommentar_id: UuidSchema }).strict(),
+    handler: async (ctx, input) => {
+      const { kommentar, andrad } = await aterstallKommentar(
+        ctx.client,
+        ctx.tenantId,
+        input.kommentar_id,
+      );
+      await ctx.skrivHandelse({
+        issueId: kommentar.issue_id,
+        verb: andrad ? 'aterstallde_kommentar' : 'kommentaren_var_inte_borttagen',
+        payload: { kommentar_id: kommentar.id },
+      });
+      return { kommentar_id: kommentar.id, andrad };
+    },
+  }),
+
+  def({
+    name: 'remove_label',
+    title: 'Ta bort en etikett från ett ärende',
+    sensitivity: 'write',
+    inputSchema: z.object({ identifier: IdentifierSchema, label: safeText(100) }).strict(),
+    handler: async (ctx, input) => {
+      const arende = await hamtaArende(ctx.client, ctx.tenantId, input.identifier);
+      const togsBort = await taBortEtikettFranArende(
+        ctx.client,
+        ctx.tenantId,
+        arende.id,
+        input.label,
+      );
+      await ctx.skrivHandelse({
+        issueId: arende.id,
+        verb: togsBort ? 'tog_bort_etikett' : 'etiketten_fanns_inte',
+        payload: { identifier: arende.identifier, etikett: input.label },
+      });
+      return { identifier: arende.identifier, etikett: input.label, andrad: togsBort };
+    },
+  }),
+
+  def({
+    name: 'rename_project',
+    title: 'Rätta ett projektnamn',
+    sensitivity: 'write',
+    inputSchema: z.object({ fran: safeText(200), till: safeText(200) }).strict(),
+    handler: async (ctx, input) => {
+      const resultat = await dopOmProjekt(ctx.client, ctx.tenantId, input.fran, input.till);
+      const andrad = input.fran !== input.till;
+      await ctx.skrivHandelse({
+        issueId: null,
+        verb: andrad ? 'andrade_projektnamn' : 'namnet_oforandrat',
+        payload: { projekt_id: resultat.id, fran: resultat.fran, till: resultat.till },
+      });
+      return { ...resultat, andrad };
+    },
+  }),
+
+  def({
+    name: 'rename_label',
+    title: 'Rätta ett etikettnamn',
+    sensitivity: 'write',
+    inputSchema: z.object({ fran: safeText(100), till: safeText(100) }).strict(),
+    handler: async (ctx, input) => {
+      const resultat = await dopOmEtikett(ctx.client, ctx.tenantId, input.fran, input.till);
+      const andrad = input.fran !== input.till;
+      await ctx.skrivHandelse({
+        issueId: null,
+        verb: andrad ? 'andrade_etikettnamn' : 'namnet_oforandrat',
+        payload: { etikett_id: resultat.id, fran: resultat.fran, till: resultat.till },
+      });
+      return { ...resultat, andrad };
+    },
+  }),
+
+  def({
+    name: 'revoke_api_key',
+    title: 'Återkalla en API-nyckel',
+    sensitivity: 'write',
+    inputSchema: z.object({ nyckel_id: UuidSchema }).strict(),
+    handler: async (ctx, input) => {
+      const { nyckel, andrad } = await aterkallaNyckel(ctx.client, ctx.tenantId, input.nyckel_id);
+      await ctx.skrivHandelse({
+        issueId: null,
+        verb: andrad ? 'aterkallade_nyckel' : 'nyckeln_var_redan_aterkallad',
+        // Identiteten som återkallades — ALDRIG hashen, aldrig nyckeln.
+        payload: {
+          nyckel_id: nyckel.id,
+          nyckelns_aktor_typ: nyckel.aktor_typ,
+          nyckelns_aktor_namn: nyckel.aktor_namn,
+        },
+      });
+      return { nyckel_id: nyckel.id, aktiv: nyckel.aktiv, andrad };
     },
   }),
 ];

@@ -249,6 +249,38 @@ nedan i `test/dokumentlankar.test.ts`, genom hela stacken mot en testvault
 | 5 cache med TTL, en fil per request | TTL i `dokument.ts`; routern gör `hamtaIndex()` + EN `lasDokument()` | — (invariant i koden; ingen sökning per request) |
 | 6 a–e | — | `test/dokumentlankar.test.ts` |
 
+### K-1 — rättningsvägar och skrivvägen i vyn (Davids beslut #64)
+
+Etapp 2a:s avgränsning *"ingen skrivfunktion från vyn (inga POST-rutter under
+`/vy`)"* är **medvetet upphävd**, och bara den. Läsning kräver fortfarande ingen
+nyckel; skrivning kräver en session, och en session kan bara födas ur en giltig
+API-nyckel. Aktören härleds alltså ur en nyckel även i webbläsaren — precis som
+på `/api` (KRAV-10).
+
+Principen i rättigheterna: **rätta får man, radera historik får man inte.**
+`events` är oförändrad — ingen ny rättighet, ingen ny trigger, ingen ny väg in.
+
+| Vad | Hur | Kod | Test |
+| --- | --- | --- | --- |
+| Kommentarstext | UPDATE (mjuk historik: gamla texten i händelseraden) | `rattaKommentar`, action `update_comment` | "en kommentar går att rätta …" |
+| Kommentar bort | MJUK radering (`comments.borttagen`), går att ångra | `taBortKommentar`/`aterstallKommentar`, `delete_comment`/`restore_comment` | "mjuk borttagning: borta ur vy, sök och aktörsfasett …" |
+| Etikett på ärende | HÅRD DELETE på `issue_labels` (kopplingsrad utan eget innehåll) | `taBortEtikettFranArende`, `remove_label` | "en etikett går att ta bort …" |
+| Projekt-/etikettnamn | UPDATE endast på `namn` — DELETE ges aldrig | `dopOmProjekt`/`dopOmEtikett`, `rename_project`/`rename_label` | "ett felstavat etikettnamn …", "ett projektnamn …" |
+| Nyckel | `aktiv = false` — aldrig DELETE | `aterkallaNyckel`, `revoke_api_key` | "en nyckel går att återkalla …" |
+| Proveniens (`aktor_typ`/`aktor_namn`) | **Går inte att ändra.** Kolumn-GRANT (42501) för app-rollen OCH trigger (P0001) för ägaren — två oberoende linjer, som för `events` | `migrations/0011_rattelser.sql` | "app-rollen får 42501 …", "ÄGARROLLEN får P0001 …" |
+| Aktör för vyskrivningar | Session ur API-nyckel, kaka HttpOnly + SameSite=Strict + Path=/vy | `src/http/vy/session.ts` | "utan session skrivs ingenting …", "sessionskakan är HttpOnly …" |
+| CSRF | `Sec-Fetch-Site` måste vara `same-origin` om satt + `Origin`-jämförelse (samma som `/opt/redovisning`) + SameSite=Strict | `kravSammaUrsprung` | "CSRF: främmande Origin …", "CSRF: Sec-Fetch-Site …" |
+| JS-fritt | Formulär + POST + 303-redirect. CSP `script-src 'none'` (var helmets default `'self'` före K-1) | `src/http/vy/skrivning.ts`, `src/http/app.ts` | "vyn är JS-fri och CSP:n förbjuder skript" |
+| Nyckelutfärdning | Ansluter som `app` (inte ägaren) och skriver `skapade_aktorsidentitet` i samma transaktion. Nyckeln går till en 0600-fil, aldrig till stdout | `src/scripts/skapaNyckel.ts` | "npm run nyckel: skapar som app-rollen …" |
+
+```bash
+# Utfärda en människonyckel. Nyckeln skrivs ALDRIG i terminalen.
+npm run nyckel -- manniska "David Mancilla"
+# → skriver /home/hermes/.arenden/nycklar/<...>.nyckel (0600) och visar sökvägen.
+#   Läs den en gång och radera: cat '<fil>' && shred -u '<fil>'
+# Logga in i vyn med den på /vy/logga-in. Rättelser: /vy/rattelser
+```
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

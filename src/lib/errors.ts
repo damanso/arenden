@@ -24,6 +24,17 @@ export class UnauthenticatedError extends AppError {
   }
 }
 
+/**
+ * K-1: nekat p.g.a. ursprung (CSRF) eller saknad rattighet. Egen klass sa att
+ * skrivrutterna i vyn kan skilja "du ar inte inloggad" (401) fran "det har
+ * anropet kom inte fran vyn" (403) — tva helt olika saker for den som lasar.
+ */
+export class ForbiddenError extends AppError {
+  constructor(code = 'forbidden', message?: string) {
+    super(403, code, message);
+  }
+}
+
 export class BadRequestError extends AppError {
   constructor(code = 'bad_request', message?: string) {
     super(400, code, message);

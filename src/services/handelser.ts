@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { ClientBase, PoolClient } from 'pg';
 import type { Aktor } from '../lib/aktor.js';
 import type { AktorTyp } from '../lib/validation.js';
 
@@ -16,9 +16,14 @@ export interface Handelse {
  * Skriver en rad i den append-only loggen (KRAV-8). Anropas ALLTID med samma
  * `client` som mutationen, alltså i samma transaktion — event och verkan lever
  * och dör tillsammans.
+ *
+ * Parametertypen är `ClientBase` (inte `PoolClient`) enbart för att
+ * nyckelskriptet ska kunna använda SAMMA funktion med sin `pg.Client`. Två
+ * ställen som skriver event-rader är två ställen som kan glida isär; det här är
+ * det enda.
  */
 export async function skrivHandelse(
-  client: PoolClient,
+  client: ClientBase,
   tenantId: string,
   aktor: Aktor,
   handelse: { issueId: string | null; verb: string; payload?: unknown },
@@ -54,7 +59,8 @@ export async function listaHandelser(
 
 // ---- Läsfrågor för läsvyn (Etapp 2a) --------------------------------------
 // Vylagret får inte innehålla SQL. Frågorna nedan finns därför HÄR, och de är
-// rena läsningar — vyn skriver aldrig en rad.
+// rena läsningar — vyn skriver aldrig en rad utanför sina POST-rutter (K-1),
+// som går via actions precis som /api.
 
 export interface HandelseIVy extends Handelse {
   /** 'LOC-316' — härledd som överallt annars, aldrig lagrad. */
@@ -98,6 +104,11 @@ export interface AktorMedAktivitet {
 /**
  * Aktörerna som FAKTISKT lämnat spår — underlag för aktör-fasetten (KRAV-3).
  * Både händelser och kommentarer räknas: det är aktiviteten David söker i.
+ *
+ * K-1: borttagna kommentarer räknas INTE. Fasetten är ingången till "vem har
+ * gjort något här", och en aktör vars enda spår är en borttagen kommentar ska
+ * inte stå kvar i den listan. (Det var precis så LOC-255:s tre falska
+ * "personer" — importens sektionsrubriker — dök upp bland människorna.)
  */
 export async function listaAktorer(
   client: PoolClient,
@@ -108,7 +119,8 @@ export async function listaAktorer(
     `SELECT aktor_typ, aktor_namn, count(*)::int AS antal
        FROM (SELECT aktor_typ, aktor_namn FROM events WHERE tenant_id = $1
              UNION ALL
-             SELECT aktor_typ, aktor_namn FROM comments WHERE tenant_id = $1) x
+             SELECT aktor_typ, aktor_namn FROM comments
+              WHERE tenant_id = $1 AND borttagen IS NULL) x
       GROUP BY aktor_typ, aktor_namn
       ORDER BY antal DESC, aktor_namn
       LIMIT $2`,
@@ -120,7 +132,7 @@ export async function listaAktorer(
 /**
  * KRAV-3: aktör-fasetten filtrerar på AKTIVITET, inte på ett fält hos ärendet —
  * ärenden har ingen aktör. Returnerar id:n för de ärenden där aktören skrivit
- * en händelse eller en kommentar.
+ * en händelse eller en (icke borttagen) kommentar.
  */
 export async function arendenMedAktivitetAv(
   client: PoolClient,
@@ -134,7 +146,8 @@ export async function arendenMedAktivitetAv(
         AND (EXISTS (SELECT 1 FROM events e
                       WHERE e.issue_id = i.id AND e.aktor_namn = $2)
              OR EXISTS (SELECT 1 FROM comments c
-                         WHERE c.issue_id = i.id AND c.aktor_namn = $2))`,
+                         WHERE c.issue_id = i.id AND c.aktor_namn = $2
+                           AND c.borttagen IS NULL))`,
     [tenantId, aktorNamn],
   );
   return rows.map((r) => r.id);

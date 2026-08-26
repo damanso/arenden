@@ -9,6 +9,8 @@
 //      kommer ur events/comments-kolumnerna (aktor_typ + aktor_namn) — aldrig
 //      ur fri text — och ingen rad lämnas omärkt.
 
+import type { Aktor } from '../../lib/aktor.js';
+
 const ERSATTNING: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',
@@ -281,6 +283,39 @@ line-height:var(--p-rad-1)}
 code{font-family:var(--p-mono);font-size:var(--meta);background:var(--yta-sankt);
 border-radius:var(--p-radie-1);padding:0 var(--p-rym-1)}
 
+/* ---- K-1: skrivytan. Formulär och knappar — inte en rad skript. ---- */
+.hornet{display:flex;gap:var(--p-rym-3);align-items:center}
+.jag{text-decoration:none}
+.kvitto{color:var(--text);border-left:var(--p-linje-2) solid var(--accent);
+padding-left:var(--p-rym-3)}
+form.skrivform{margin:0 0 var(--p-rym-4)}
+textarea{display:block;width:100%;max-width:var(--p-matt);appearance:none;
+background:var(--kort-yta);color:var(--text);
+border:var(--p-linje-1) solid var(--linje);border-radius:var(--falt-radie);
+padding:var(--p-rym-3);font-family:inherit;font-size:var(--brodtext);
+line-height:var(--p-rad-2);resize:vertical}
+input[type=text],input[type=password]{flex:1 1 var(--p-falt);
+min-height:var(--falt-hojd);appearance:none;background:var(--kort-yta);
+color:var(--text);border:var(--p-linje-1) solid var(--linje);
+border-radius:var(--falt-radie);padding:0 var(--p-rym-3);font-family:inherit;
+font-size:var(--brodtext)}
+label[for=nyckel]{display:block;font-size:var(--meta);color:var(--text-svag);
+margin-bottom:var(--p-rym-1)}
+.skrivrad{display:flex;gap:var(--p-rym-3);align-items:center;flex-wrap:wrap;
+margin-top:var(--p-rym-2)}
+.skrivrad .meta{color:var(--text-svag);font-size:var(--meta);
+line-height:var(--p-rad-1)}
+button.mild{background:var(--kort-yta);color:var(--text);
+border:var(--p-linje-1) solid var(--linje);font-weight:var(--p-vikt-1)}
+details.rattelse{margin:var(--p-rym-3) 0 0}
+details.rattelse summary{display:flex;align-items:center;min-height:var(--p-traff);
+cursor:pointer;color:var(--accent);font-size:var(--meta)}
+.taggar{display:flex;flex-wrap:wrap;gap:var(--p-rym-1);margin:0 0 var(--p-rym-4)}
+form.taggform{margin:0}
+button.tagg{cursor:pointer;font-family:inherit;font-weight:var(--p-vikt-1)}
+form.namnform{display:flex;gap:var(--p-rym-2);flex-wrap:wrap;align-items:center;
+margin:0}
+
 /* ---- Tillstånd. Hover bara med riktig pekare, rörelse bara om den tillåts. ---- */
 @media(hover:hover){
 .kort:hover{border-color:var(--accent)}
@@ -296,13 +331,15 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 }
 `;
 
-/** Navigationen är samma tre ytor överallt — ordningen ändras aldrig (WCAG 3.2.3). */
-export type Yta = 'vy' | 'digest' | 'sok';
+/** Navigationen är samma ytor överallt — ordningen ändras aldrig (WCAG 3.2.3). */
+export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser';
 
 const YTOR: { vag: string; text: string; yta: Yta }[] = [
   { vag: '/vy', text: 'Ärenden', yta: 'vy' },
   { vag: '/vy/digest', text: 'Vad hände', yta: 'digest' },
   { vag: '/vy/sok', text: 'Sök', yta: 'sok' },
+  // K-1. Lagd SIST: de tre befintliga ytorna byter aldrig plats.
+  { vag: '/vy/rattelser', text: 'Rättelser', yta: 'rattelser' },
 ];
 
 /**
@@ -312,7 +349,20 @@ const YTOR: { vag: string; text: string; yta: Yta }[] = [
  * `aktiv` märker den yta man står på med aria-current (KRAV-5). Sidor utanför
  * de tre ytorna — ärendet, dokumentet, 404 — lämnar den osatt.
  */
-export function sida(titel: string, kropp: string, aktiv?: Yta): string {
+/**
+ * K-1: `aktor` är TRE tillstånd, inte två.
+ *   Aktor      — inloggad; märket visar vem skrivningar bokförs som.
+ *   null       — utloggad på en sida där det går att logga in.
+ *   undefined  — sidan vet inte (felsidor). Då står ingenting alls i hörnet:
+ *                hellre tyst än ett påstående om inloggningsläget som kan vara
+ *                fel.
+ */
+export function sida(
+  titel: string,
+  kropp: string,
+  aktiv?: Yta,
+  aktor?: Aktor | null,
+): string {
   const nav = YTOR.map(
     (y) => `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>${esc(y.text)}</a>`,
   ).join('');
@@ -323,10 +373,17 @@ export function sida(titel: string, kropp: string, aktiv?: Yta): string {
     `<title>${esc(titel)} — Ärenden</title><style>${CSS}</style></head><body>` +
     '<a class=hoppa href="#innehall">Hoppa till innehållet</a>' +
     `<header><nav aria-label="Vyns ytor">${nav}</nav>` +
+    '<div class=hornet>' +
+    (aktor === undefined
+      ? ''
+      : aktor === null
+        ? '<a class=jag href="/vy/logga-in">Logga in</a>'
+        : `<a class=jag href="/vy/logga-in">${proveniens(aktor.typ, aktor.namn)}</a>`) +
     `<span class=tid><span class=dold>Renderad </span>${esc(klockslag(new Date()))}</span>` +
-    '</header>' +
+    '</div></header>' +
     `<main id=innehall tabindex=-1>${kropp}</main>` +
-    '<footer class=fot>Läsyta. Ingenting här ändrar något.<br>' +
+    '<footer class=fot>Läsning kräver ingen nyckel. Ändringar kräver inloggning ' +
+    'och lämnar alltid aktör och gammalt värde i händelseloggen.<br>' +
     'Ärendeplattformen är källan — inga länkar till Linear.</footer></body></html>'
   );
 }
@@ -414,6 +471,21 @@ const VERB: Record<string, string> = {
   lank_fanns_redan: 'länken fanns redan',
   lade_till_bilaga: 'lade till en dokumentlänk',
   bilagan_fanns_redan: 'dokumentlänken fanns redan',
+  // K-1: rättningsvägarna.
+  rattade_kommentar: 'rättade en kommentar',
+  kommentaren_oforandrad: 'lämnade kommentaren oförändrad',
+  tog_bort_kommentar: 'tog bort en kommentar',
+  kommentaren_var_redan_borttagen: 'kommentaren var redan borttagen',
+  aterstallde_kommentar: 'återställde en kommentar',
+  kommentaren_var_inte_borttagen: 'kommentaren var inte borttagen',
+  tog_bort_etikett: 'tog bort en etikett',
+  etiketten_fanns_inte: 'etiketten fanns inte på ärendet',
+  andrade_projektnamn: 'rättade projektnamnet',
+  andrade_etikettnamn: 'rättade etikettnamnet',
+  namnet_oforandrat: 'lämnade namnet oförändrat',
+  aterkallade_nyckel: 'återkallade en nyckel',
+  nyckeln_var_redan_aterkallad: 'nyckeln var redan återkallad',
+  skapade_aktorsidentitet: 'utfärdade en aktörsidentitet',
 };
 
 export function verbText(verb: string): string {

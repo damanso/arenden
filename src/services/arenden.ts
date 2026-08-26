@@ -629,7 +629,8 @@ export async function sokArenden(
             GREATEST(
               ts_rank(i.sokvektor, q.tsq),
               COALESCE((SELECT max(ts_rank(c.sokvektor, q.tsq)) FROM comments c
-                         WHERE c.issue_id = i.id AND c.sokvektor @@ q.tsq), 0)
+                         WHERE c.issue_id = i.id AND c.sokvektor @@ q.tsq
+                           AND c.borttagen IS NULL), 0)
             ) AS rang,
             CASE WHEN i.sokvektor @@ q.tsq THEN 'arende' ELSE 'kommentar' END AS traff_i
        FROM issues i
@@ -639,10 +640,98 @@ export async function sokArenden(
       WHERE i.tenant_id = $1
         AND (i.sokvektor @@ q.tsq
              OR EXISTS (SELECT 1 FROM comments c
-                         WHERE c.issue_id = i.id AND c.sokvektor @@ q.tsq))
+                         WHERE c.issue_id = i.id AND c.sokvektor @@ q.tsq
+                           AND c.borttagen IS NULL))
       ORDER BY rang DESC, i.skapad DESC
       LIMIT $3`,
     [tenantId, fraga, limit],
   );
   return rows;
+}
+
+// ---- K-1: rättningsvägar för etiketter och namn ----------------------------
+
+/**
+ * Tar bort EN etikett från ETT ärende. HÅRD borttagning, till skillnad från
+ * kommentarens mjuka: raden i issue_labels är en ren kopplingsrad utan eget
+ * innehåll, och hela dess betydelse — "ärendet bar etiketten X" — ryms i
+ * händelseraden som anroparen skriver. En borttagen-flagga här hade tvingat in
+ * ett filter i varje etikettfråga i systemet utan att bevara något.
+ *
+ * Etiketten SJÄLV rörs inte: den finns kvar för andra ärenden.
+ * Returnerar false om ärendet inte bar etiketten (idempotent — dubbelklick i
+ * webbläsaren ska inte bli en felsida).
+ */
+export async function taBortEtikettFranArende(
+  client: PoolClient,
+  tenantId: string,
+  issueId: string,
+  etikett: string,
+): Promise<boolean> {
+  const { rowCount } = await client.query(
+    `DELETE FROM issue_labels
+      WHERE tenant_id = $1 AND issue_id = $2
+        AND label_id = (SELECT id FROM labels WHERE tenant_id = $1 AND namn = $3)`,
+    [tenantId, issueId, etikett],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Byter NAMN på ett projekt eller en etikett — inget annat. Radering ges aldrig:
+ * ett felstavat namn är ett stavfel, medan ett borttaget projekt är en händelse
+ * med följder för ärendena som pekar på det (migration 0011).
+ *
+ * `tabell` är inte fri text: den kommer ur unionen nedan och interpoleras därför
+ * aldrig från indata.
+ */
+async function dopOm(
+  client: PoolClient,
+  tenantId: string,
+  tabell: 'projects' | 'labels',
+  fran: string,
+  till: string,
+): Promise<{ id: string; fran: string; till: string }> {
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT id FROM ${tabell} WHERE tenant_id = $1 AND namn = $2`,
+    [tenantId, fran],
+  );
+  const rad = rows[0];
+  if (!rad) throw new NotFoundError(tabell === 'projects' ? 'projekt' : 'etikett');
+
+  if (fran !== till) {
+    const upptaget = await client.query(
+      `SELECT 1 FROM ${tabell} WHERE tenant_id = $1 AND namn = $2`,
+      [tenantId, till],
+    );
+    // UNIQUE-villkoret är den riktiga spärren; den här kontrollen finns för att
+    // svaret ska bli ett begripligt fel i stället för ett databasfel i vyn.
+    if ((upptaget.rowCount ?? 0) > 0) {
+      throw new BadRequestError('namnet_upptaget', 'ett annat objekt heter redan så');
+    }
+    await client.query(`UPDATE ${tabell} SET namn = $3 WHERE tenant_id = $1 AND id = $2`, [
+      tenantId,
+      rad.id,
+      till,
+    ]);
+  }
+  return { id: rad.id, fran, till };
+}
+
+export function dopOmProjekt(
+  client: PoolClient,
+  tenantId: string,
+  fran: string,
+  till: string,
+): Promise<{ id: string; fran: string; till: string }> {
+  return dopOm(client, tenantId, 'projects', fran, till);
+}
+
+export function dopOmEtikett(
+  client: PoolClient,
+  tenantId: string,
+  fran: string,
+  till: string,
+): Promise<{ id: string; fran: string; till: string }> {
+  return dopOm(client, tenantId, 'labels', fran, till);
 }
