@@ -1,0 +1,67 @@
+{
+  "hamtad": "2026-08-26T10:56:00Z",
+  "antal": 3,
+  "varfor": "Fixtur for K-2/K-3. Samma form som den fullstandiga hamtningen ur Linear (linear-fullstandig-2026-08-26.json): identifier, priority + priorityLabel, dueDate, parent/children, relations/inverseRelations, attachments och projectMilestone. Identifierarna motsvarar arkivfixturerna i test/fixtures/arkiv/.",
+  "arenden": [
+    {
+      "identifier": "LOC-88",
+      "title": "Ellie Engström — Global HR",
+      "priority": 2,
+      "priorityLabel": "High",
+      "dueDate": "2026-07-20",
+      "estimate": null,
+      "state": { "name": "In Progress", "type": "started" },
+      "parent": null,
+      "children": { "nodes": [{ "identifier": "LOC-316" }] },
+      "relations": { "nodes": [] },
+      "inverseRelations": { "nodes": [{ "type": "related", "issue": { "identifier": "LOC-329" } }] },
+      "attachments": {
+        "nodes": [
+          {
+            "title": "Mötesprep Ellie — definitionslager + co-build",
+            "url": "https://docs.google.com/document/d/PROV-ETT/edit",
+            "subtitle": null,
+            "createdAt": "2026-06-25T09:00:00.000Z"
+          },
+          {
+            "title": "Gapanalys: v28 mot de åtta blocken",
+            "url": "https://docs.google.com/document/d/PROV-TVA/edit",
+            "subtitle": "skickad 26/6",
+            "createdAt": "2026-06-26T08:00:00.000Z"
+          }
+        ]
+      },
+      "projectMilestone": { "name": "M1 · G2 på näsan" }
+    },
+    {
+      "identifier": "LOC-316",
+      "title": "[Väntar-extern] Daniel — Besked om ILT-konto",
+      "priority": 0,
+      "priorityLabel": "No priority",
+      "dueDate": null,
+      "estimate": null,
+      "state": { "name": "Backlog", "type": "backlog" },
+      "parent": { "identifier": "LOC-88", "title": "Ellie Engström — Global HR" },
+      "children": { "nodes": [] },
+      "relations": { "nodes": [{ "type": "blocks", "relatedIssue": { "identifier": "LOC-329" } }] },
+      "inverseRelations": { "nodes": [] },
+      "attachments": { "nodes": [] },
+      "projectMilestone": null
+    },
+    {
+      "identifier": "LOC-329",
+      "title": "Högsta numret i arkivet",
+      "priority": 1,
+      "priorityLabel": "Urgent",
+      "dueDate": null,
+      "estimate": null,
+      "state": { "name": "Done", "type": "completed" },
+      "parent": null,
+      "children": { "nodes": [] },
+      "relations": { "nodes": [{ "type": "related", "relatedIssue": { "identifier": "LOC-88" } }] },
+      "inverseRelations": { "nodes": [{ "type": "blocks", "issue": { "identifier": "LOC-316" } }] },
+      "attachments": { "nodes": [] },
+      "projectMilestone": null
+    }
+  ]
+}

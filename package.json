@@ -12,6 +12,7 @@
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate.ts",
     "import": "tsx src/import/importeraArkiv.ts",
+    "aterlas": "tsx src/import/aterlasLinear.ts",
     "nyckel": "tsx src/scripts/skapaNyckel.ts",
     "test": "vitest run",
     "check": "npm run build && npm test"

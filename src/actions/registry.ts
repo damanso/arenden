@@ -2,15 +2,18 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Aktor } from '../lib/aktor.js';
 import {
+  HttpUrlSchema,
   IdentifierSchema,
   IsoDateSchema,
   PrioritySchema,
+  RelationTypSchema,
   StateTypSchema,
   TeamKeySchema,
   UuidSchema,
   safeText,
 } from '../lib/validation.js';
 import {
+  barnFor,
   claimaNastaArende,
   hamtaArende,
   listaArenden,
@@ -18,8 +21,16 @@ import {
   skapaArende,
   sokArenden,
   sokLabel,
+  uppdateraArendeFalt,
   uppdateraArendeState,
+  type Falt,
 } from '../services/arenden.js';
+import {
+  bilagorFor,
+  laggTillBilaga,
+  laggTillRelation,
+  relationerFor,
+} from '../services/relationer.js';
 import { listaHandelser } from '../services/handelser.js';
 import { laggTillKommentar, listaKommentarer } from '../services/kommentarer.js';
 import { listaStates } from '../services/team.js';
@@ -79,6 +90,18 @@ function def<I>(d: ActionDef<I>): RegistreradAction {
 
 const LimitSchema = z.coerce.number().int().min(1).max(100).default(50);
 
+/**
+ * Ett verb per fält, inte ett gemensamt 'andrade_falt'. Digesten och
+ * ärendehistoriken ska kunna läsas utan att öppna payloaden — "ändrade
+ * prioritet" säger något, "ändrade fält" gör det inte.
+ */
+const VERB_FOR_FALT: Record<Falt, string> = {
+  priority: 'andrade_prioritet',
+  due_date: 'andrade_deadline',
+  milstolpe: 'andrade_milstolpe',
+  foralder: 'andrade_foralder',
+};
+
 export const ACTIONS: RegistreradAction[] = [
   def({
     name: 'list_issues',
@@ -116,6 +139,11 @@ export const ACTIONS: RegistreradAction[] = [
         arende,
         kommentarer: await listaKommentarer(ctx.client, ctx.tenantId, arende.id),
         handelser: await listaHandelser(ctx.client, ctx.tenantId, arende.id),
+        // K-3: strukturen runt ärendet. Föräldern ligger redan på arende
+        // (foralder_identifier); barn, relationer och bilagor läses här.
+        barn: await barnFor(ctx.client, ctx.tenantId, arende.id),
+        relationer: await relationerFor(ctx.client, ctx.tenantId, arende.id),
+        bilagor: await bilagorFor(ctx.client, ctx.tenantId, arende.id),
       };
     },
   }),
@@ -201,6 +229,127 @@ export const ACTIONS: RegistreradAction[] = [
         payload: { identifier: arende.identifier, fran, till: till.namn, typ: till.typ },
       });
       return arende;
+    },
+  }),
+
+  def({
+    name: 'update_issue',
+    title: 'Uppdatera ärendets fält (prioritet, deadline, milstolpe, förälder)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        // null nollställer fältet, undefined (utelämnat) rör det inte.
+        priority: PrioritySchema.nullable().optional(),
+        due: IsoDateSchema.nullable().optional(),
+        milstolpe: safeText(200).nullable().optional(),
+        parent: IdentifierSchema.nullable().optional(),
+        bara_om_osatt: z.boolean().default(false),
+      })
+      .strict()
+      .refine(
+        (v) =>
+          v.priority !== undefined ||
+          v.due !== undefined ||
+          v.milstolpe !== undefined ||
+          v.parent !== undefined,
+        { message: 'ange minst ett fält att uppdatera (priority, due, milstolpe eller parent)' },
+      ),
+    handler: async (ctx, input) => {
+      const { arende, andringar } = await uppdateraArendeFalt(ctx.client, ctx.tenantId, input.identifier, {
+        ...(input.priority !== undefined ? { priority: input.priority } : {}),
+        ...(input.due !== undefined ? { due: input.due } : {}),
+        ...(input.milstolpe !== undefined ? { milstolpe: input.milstolpe } : {}),
+        ...(input.parent !== undefined ? { parent: input.parent } : {}),
+        bara_om_osatt: input.bara_om_osatt,
+      });
+
+      // EN händelserad per FAKTISKT ändrat fält. Det är hela poängen med K-2:
+      // arendehem.py ändrade 16 ärenden med rå SQL och lämnade tretton utan
+      // spår. Går ändringen den här vägen är spåret inte valfritt — den som
+      // skriver utan att logga får sin transaktion tillbakarullad av
+      // executeAction.
+      for (const a of andringar) {
+        await ctx.skrivHandelse({
+          issueId: arende.id,
+          verb: VERB_FOR_FALT[a.falt],
+          payload: { identifier: arende.identifier, falt: a.falt, fran: a.fran, till: a.till },
+        });
+      }
+      if (andringar.length === 0) {
+        // Ingen mutation skedde (värdet var redan satt, eller redan detsamma).
+        // Samma mönster som tom_ko i claim_next_issue: vi loggar FÖRSÖKET, för
+        // annars fälls ett korrekt no-op-svar av proveniens-tvånget.
+        await ctx.skrivHandelse({
+          issueId: arende.id,
+          verb: 'arendet_oforandrat',
+          payload: { identifier: arende.identifier },
+        });
+      }
+      return { arende, andringar };
+    },
+  }),
+
+  def({
+    name: 'link_issues',
+    title: 'Länka två ärenden (relaterat eller blockerar)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        fran: IdentifierSchema,
+        till: IdentifierSchema,
+        typ: RelationTypSchema,
+        source_ref: safeText(300).optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const fran = await hamtaArende(ctx.client, ctx.tenantId, input.fran);
+      const till = await hamtaArende(ctx.client, ctx.tenantId, input.till);
+      const { relation, nyskapad } = await laggTillRelation(ctx.client, ctx.tenantId, {
+        fran_issue_id: fran.id,
+        till_issue_id: till.id,
+        typ: input.typ,
+        ...(input.source_ref ? { source_ref: input.source_ref } : {}),
+      });
+      await ctx.skrivHandelse({
+        issueId: fran.id,
+        verb: nyskapad ? 'lankade_arenden' : 'lank_fanns_redan',
+        payload: { identifier: fran.identifier, till: till.identifier, typ: input.typ },
+      });
+      return { relation, nyskapad };
+    },
+  }),
+
+  def({
+    name: 'add_attachment',
+    title: 'Lägg till en dokumentlänk på ett ärende',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        titel: safeText(300),
+        url: HttpUrlSchema,
+        undertitel: safeText(300).nullable().optional(),
+        source_ref: safeText(2400).optional(),
+        skapad: z.string().datetime({ offset: true }).optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const arende = await hamtaArende(ctx.client, ctx.tenantId, input.identifier);
+      const { bilaga, nyskapad } = await laggTillBilaga(ctx.client, ctx.tenantId, {
+        issue_id: arende.id,
+        titel: input.titel,
+        url: input.url,
+        ...(input.undertitel !== undefined ? { undertitel: input.undertitel } : {}),
+        ...(input.source_ref ? { source_ref: input.source_ref } : {}),
+        ...(input.skapad ? { skapad: input.skapad } : {}),
+      });
+      await ctx.skrivHandelse({
+        issueId: arende.id,
+        verb: nyskapad ? 'lade_till_bilaga' : 'bilagan_fanns_redan',
+        payload: { identifier: arende.identifier, titel: bilaga.titel, url: bilaga.url },
+      });
+      return { bilaga, nyskapad };
     },
   }),
 

@@ -53,6 +53,29 @@ export const IsoDateSchema = z
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, 'ogiltigt kalenderdatum');
 
+// Bilagans adress. ENDAST http/https: en bilagerad renderas som en <a href>, och
+// ett `javascript:`- eller `data:`-schema hade blivit körbar kod i Davids
+// webbläsare. Schemat kontrolleras vid skrivningen OCH vid renderingen
+// (sakerUrl i vy/mall.ts) — den som bara har en av dem har ingen.
+export const HttpUrlSchema = z
+  .string()
+  .min(1)
+  .max(2000)
+  .refine((v) => {
+    let u: URL;
+    try {
+      u = new URL(v);
+    } catch {
+      return false;
+    }
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  }, 'adressen måste vara en absolut http- eller https-URL');
+
+// Linears relationstyper som arkivet faktiskt bär. 'related' är SYMMETRISK
+// (A–B är samma relation som B–A), 'blocks' är RIKTAD (A blockerar B).
+export const RelationTypSchema = z.enum(['related', 'blocks']);
+export type RelationTyp = z.infer<typeof RelationTypSchema>;
+
 export function delaIdentifier(identifier: string): { teamKey: string; nummer: number } {
   const delar = /^([A-Z][A-Z0-9]{0,9})-(\d+)$/.exec(identifier);
   if (!delar) throw new Error(`ogiltig identifier: ${identifier}`);

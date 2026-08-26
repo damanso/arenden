@@ -404,8 +404,49 @@ const VERB: Record<string, string> = {
   kommenterade: 'kommenterade',
   claimade_arende: 'plockade ärendet ur kön',
   tom_ko: 'fann kön tom',
+  // K-2/K-3
+  andrade_prioritet: 'ändrade prioritet',
+  andrade_deadline: 'ändrade deadline',
+  andrade_milstolpe: 'ändrade milstolpe',
+  andrade_foralder: 'ändrade förälder',
+  arendet_oforandrat: 'lämnade ärendet oförändrat',
+  lankade_arenden: 'länkade ärenden',
+  lank_fanns_redan: 'länken fanns redan',
+  lade_till_bilaga: 'lade till en dokumentlänk',
+  bilagan_fanns_redan: 'dokumentlänken fanns redan',
 };
 
 export function verbText(verb: string): string {
   return VERB[verb] ?? verb.replace(/_/g, ' ');
+}
+
+// ---- K-3: bilagor och relationer -------------------------------------------
+
+/**
+ * Andra försvarslinjen mot ett farligt schema i en bilagas adress
+ * (HttpUrlSchema är den första, vid skrivningen). Returnerar null för allt som
+ * inte är absolut http/https — då renderas titeln som ren text i stället för
+ * som en länk. En `javascript:`-URL i ett href är körbar kod i Davids
+ * webbläsare, och att bara kontrollera den vid skrivningen vore att lita på att
+ * ingen rad någonsin kommit in någon annan väg.
+ */
+export function sakerUrl(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
+}
+
+/**
+ * Relationens innebörd SEDD FRÅN det ärende sidan visar. 'blocks' är riktad, så
+ * samma rad betyder olika saker i de två ändarna; 'related' är symmetrisk och
+ * betyder detsamma i båda.
+ */
+export function relationText(typ: string, riktning: 'fran' | 'till'): string {
+  if (typ === 'blocks') return riktning === 'fran' ? 'blockerar' : 'blockeras av';
+  if (typ === 'related') return 'relaterat till';
+  return typ;
 }

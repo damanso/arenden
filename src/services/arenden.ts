@@ -15,8 +15,15 @@ export interface Arende {
   labels: string[];
   priority: number | null;
   due_date: string | null;
+  milstolpe: string | null;
   claimad_av: string | null;
   source_ref: string | null;
+  /** K-3: förälderns id, identifier och titel — NULL för ett rotärende. */
+  foralder_id: string | null;
+  foralder_identifier: string | null;
+  foralder_titel: string | null;
+  /** Antal direkta delärenden. 0 för de flesta; 21 för sändkön LOC-69. */
+  antal_barn: number;
   skapad: Date;
   uppdaterad: Date;
 }
@@ -35,8 +42,13 @@ const KOLUMNER = `
   p.namn AS projekt,
   i.priority,
   to_char(i.due_date, 'YYYY-MM-DD') AS due_date,
+  i.milstolpe,
   i.claimad_av,
   i.source_ref,
+  i.foralder_id,
+  CASE WHEN f.id IS NULL THEN NULL ELSE ft.key || '-' || f.sequence_number END AS foralder_identifier,
+  f.title AS foralder_titel,
+  (SELECT count(*)::int FROM issues b WHERE b.foralder_id = i.id) AS antal_barn,
   i.skapad,
   i.uppdaterad,
   COALESCE((
@@ -45,11 +57,17 @@ const KOLUMNER = `
      WHERE il.issue_id = i.id
   ), '{}'::text[]) AS labels`;
 
+// Föräldern joinas in i stället för att slås upp per rad i anropande kod —
+// annars hade överblickens 312 kort blivit 312 extra frågor. LEFT JOIN på en
+// främmande nyckel mot primärnyckeln kan aldrig mångfaldiga raderna, så
+// keyset-pagineringen i listaArenden påverkas inte.
 const FRAN = `
   FROM issues i
   JOIN teams t ON t.id = i.team_id
   JOIN workflow_states s ON s.id = i.state_id
-  LEFT JOIN projects p ON p.id = i.project_id`;
+  LEFT JOIN projects p ON p.id = i.project_id
+  LEFT JOIN issues f ON f.id = i.foralder_id
+  LEFT JOIN teams ft ON ft.id = f.team_id`;
 
 export async function hamtaArendeViaId(
   client: PoolClient,
@@ -404,6 +422,130 @@ export async function uppdateraArendeState(
   ]);
 
   return { arende: await hamtaArendeViaId(client, tenantId, arende.id), fran: arende.state_namn, till: state };
+}
+
+// ---- K-2/K-3: fältuppdateringar -------------------------------------------
+
+/** Fälten update_issue kan skriva. Namnen är kolumnnamnen — inget översättningslager. */
+export type Falt = 'priority' | 'due_date' | 'milstolpe' | 'foralder';
+
+export interface Faltandring {
+  falt: Falt;
+  fran: string | number | null;
+  till: string | number | null;
+}
+
+export interface FaltInput {
+  /** 1–4 enligt Linears skala. null nollställer. undefined = rör inte fältet. */
+  priority?: number | null;
+  due?: string | null;
+  milstolpe?: string | null;
+  /** Förälderns identifier, t.ex. 'LOC-69'. null lyfter ut ärendet ur hierarkin. */
+  parent?: string | null;
+  /**
+   * Skriv ENDAST fält som är tomma i dag. Återläsningen av Linear-arkivet får
+   * aldrig skriva över en prioritet som satts efter cutovern (26 ärenden bär
+   * en). Spärren sitter HÄR, i samma transaktion som läsningen — inte i
+   * skriptet, där den hade varit en kapplöpning mellan läsning och skrivning.
+   */
+  bara_om_osatt?: boolean;
+}
+
+/**
+ * K-2: prioritet och deadline (och K-3: milstolpe och förälder) på ett
+ * befintligt ärende. Returnerar exakt vilka fält som FAKTISKT ändrades — det är
+ * den listan actionen skriver händelserader ur, så loggen kan aldrig påstå en
+ * ändring som inte skedde.
+ */
+export async function uppdateraArendeFalt(
+  client: PoolClient,
+  tenantId: string,
+  identifier: string,
+  input: FaltInput,
+): Promise<{ arende: Arende; andringar: Faltandring[] }> {
+  const arende = await hamtaArende(client, tenantId, identifier);
+  const baraOmOsatt = input.bara_om_osatt === true;
+
+  // Föräldern anges som identifier utåt men lagras som id — slå upp den först,
+  // så att ett okänt LOC-nummer blir 404 i stället för en främmandenyckelkrasch.
+  let nyForalderId: string | null | undefined;
+  if (input.parent !== undefined) {
+    nyForalderId = input.parent === null ? null : (await hamtaArende(client, tenantId, input.parent)).id;
+  }
+
+  const andringar: Faltandring[] = [];
+  const satt = (falt: Falt, nuvarande: string | number | null, nytt: string | number | null): boolean => {
+    if (baraOmOsatt && nuvarande !== null) return false;
+    if (nuvarande === nytt) return false;
+    andringar.push({ falt, fran: nuvarande, till: nytt });
+    return true;
+  };
+
+  const skrivPriority = input.priority !== undefined && satt('priority', arende.priority, input.priority);
+  const skrivDue = input.due !== undefined && satt('due_date', arende.due_date, input.due);
+  const skrivMilstolpe =
+    input.milstolpe !== undefined && satt('milstolpe', arende.milstolpe, input.milstolpe);
+  const skrivForalder =
+    nyForalderId !== undefined &&
+    satt('foralder', arende.foralder_identifier, nyForalderId === null ? null : input.parent!);
+
+  if (andringar.length === 0) return { arende, andringar };
+
+  await client.query(
+    `UPDATE issues
+        SET priority    = CASE WHEN $3::bool THEN $4::int  ELSE priority    END,
+            due_date    = CASE WHEN $5::bool THEN $6::date ELSE due_date    END,
+            milstolpe   = CASE WHEN $7::bool THEN $8::text ELSE milstolpe   END,
+            foralder_id = CASE WHEN $9::bool THEN $10::uuid ELSE foralder_id END,
+            uppdaterad  = now()
+      WHERE tenant_id = $1 AND id = $2`,
+    [
+      tenantId,
+      arende.id,
+      skrivPriority,
+      input.priority ?? null,
+      skrivDue,
+      input.due ?? null,
+      skrivMilstolpe,
+      input.milstolpe ?? null,
+      skrivForalder,
+      nyForalderId ?? null,
+    ],
+  );
+
+  return { arende: await hamtaArendeViaId(client, tenantId, arende.id), andringar };
+}
+
+/** Delärendena, i ärendenummerordning. Ett steg ned — inte hela underträdet. */
+export async function barnFor(
+  client: PoolClient,
+  tenantId: string,
+  issueId: string,
+): Promise<Arende[]> {
+  const { rows } = await client.query<Arende>(
+    `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND i.foralder_id = $2
+      ORDER BY i.sequence_number`,
+    [tenantId, issueId],
+  );
+  return rows;
+}
+
+/**
+ * Slår upp ärenden på source_ref. Återläsningen av arkivet behöver kopplingen
+ * source_ref → ärende, och den MÅSTE läsas ur databasen: att räkna ut
+ * identifier ur strängen 'linear-arkiv:LOC-201' vore att läsa en proxy för
+ * kopplingen i stället för kopplingen.
+ */
+export async function listaArendenMedSourceRef(
+  client: PoolClient,
+  tenantId: string,
+  sourceRefs: string[],
+): Promise<Arende[]> {
+  const { rows } = await client.query<Arende>(
+    `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND i.source_ref = ANY($2::text[])`,
+    [tenantId, sourceRefs],
+  );
+  return rows;
 }
 
 /**

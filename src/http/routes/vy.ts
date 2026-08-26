@@ -17,6 +17,7 @@ import { NotFoundError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
 import { IdentifierSchema, StateTypSchema, safeText, type StateTyp } from '../../lib/validation.js';
 import {
+  barnFor,
   hamtaArende,
   listaArenden,
   listaEtikettnamn,
@@ -25,6 +26,12 @@ import {
   type Arende,
   type Soktraff,
 } from '../../services/arenden.js';
+import {
+  bilagorFor,
+  relationerFor,
+  type Bilaga,
+  type Relation,
+} from '../../services/relationer.js';
 import {
   arendenMedAktivitetAv,
   listaAktorer,
@@ -43,6 +50,8 @@ import {
   klockslag,
   prioNamn,
   proveniens,
+  relationText,
+  sakerUrl,
   sida,
   verbText,
 } from '../vy/mall.js';
@@ -131,6 +140,11 @@ function arendeKort(a: Arende): string {
       a.state_namn,
       prioNamn(a.priority),
       a.due_date ? `senast ${a.due_date}` : null,
+      a.milstolpe,
+      // K-3: hierarkin syns redan i överblicken — annars ser sändköns 21 barn
+      // ut som 21 lösa ärenden.
+      a.foralder_identifier ? `del av ${a.foralder_identifier}` : null,
+      a.antal_barn > 0 ? `${a.antal_barn} delärenden` : null,
       a.claimad_av ? `plockat av ${a.claimad_av}` : null,
       `uppdaterat ${datum(a.uppdaterad)}`,
     ]) +
@@ -151,12 +165,69 @@ function traffKort(t: Soktraff): string {
   );
 }
 
+// Verb vars payload bär ett värdebyte (fran → till). 'andrade_status' fanns
+// sedan Etapp 2a; K-2/K-3 lägger till fältändringarna, som skrivs med samma
+// payloadform och därför kan visas med samma kod.
+const BYTESVERB = new Set([
+  'andrade_status',
+  'andrade_prioritet',
+  'andrade_deadline',
+  'andrade_milstolpe',
+  'andrade_foralder',
+]);
+
+/** Ett payloadvärde som text — null blir det uttryckliga "ingen", inte tomt. */
+function bytesvarde(varde: unknown): string | null {
+  if (varde === null) return 'ingen';
+  if (typeof varde === 'string') return varde;
+  if (typeof varde === 'number') return String(varde);
+  return null;
+}
+
 /** Detaljer ur payloaden (jsonb) — läses typsäkert och skrivs alltid escapat. */
 function handelseDetalj(verb: string, payload: unknown): string {
-  if (verb !== 'andrade_status' || typeof payload !== 'object' || payload === null) return '';
+  if (!BYTESVERB.has(verb) || typeof payload !== 'object' || payload === null) return '';
   const p = payload as { fran?: unknown; till?: unknown };
-  if (typeof p.fran !== 'string' || typeof p.till !== 'string') return '';
-  return ` ${esc(p.fran)} → ${esc(p.till)}`;
+  // 'fran' saknas helt (inte null) ⇒ payloaden bär inget byte att visa.
+  if (!('fran' in p) || !('till' in p)) return '';
+  const fran = bytesvarde(p.fran);
+  const till = bytesvarde(p.till);
+  if (fran === null || till === null) return '';
+  return ` ${esc(fran)} → ${esc(till)}`;
+}
+
+// ---- K-3: bilagor, delärenden och relationer -------------------------------
+
+/**
+ * Dokumentlänken. url:en går genom sakerUrl() FÖRE esc(): esc gör en farlig
+ * adress ofarlig att visa men inte ofarlig att klicka på, och det är klicket
+ * som betyder något här. Utan giltigt http/https-schema blir raden ren text.
+ */
+function bilageRad(b: Bilaga): string {
+  const url = sakerUrl(b.url);
+  const titel = esc(b.titel);
+  const huvud = url
+    ? `<a href="${esc(url)}" rel="noopener noreferrer" target=_blank>${titel}</a>`
+    : titel;
+  return (
+    '<li class=rad><div class=huvud>' +
+    huvud +
+    (url ? `<span>${esc(new URL(url).hostname)}</span>` : '<span>ingen giltig adress</span>') +
+    '</div>' +
+    (b.undertitel ? `<div class=text>${esc(b.undertitel)}</div>` : '') +
+    '</li>'
+  );
+}
+
+/** Relationen sedd från det ärende sidan visar (relationText avgör riktningen). */
+function relationRad(r: Relation): string {
+  return (
+    '<li class=rad><div class=huvud>' +
+    `<span>${esc(relationText(r.typ, r.riktning))}</span>` +
+    `<a href="${esc(arendeUrl(r.motpart_identifier))}">${esc(r.motpart_identifier)}</a>` +
+    '</div>' +
+    `<div class=text>${esc(r.motpart_titel)}</div></li>`
+  );
 }
 
 /** KRAV-5: varje händelserad bär aktor_typ + aktor_namn ur databasen. */
@@ -509,6 +580,11 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       arende,
       kommentarer: await listaKommentarer(client, TENANT_ID, arende.id),
       handelser: await listaHandelser(client, TENANT_ID, arende.id),
+      // K-3: strukturen runt ärendet — delärenden, relationer och de
+      // dokumentlänkar som annars inte finns någon annanstans.
+      barn: await barnFor(client, TENANT_ID, arende.id),
+      relationer: await relationerFor(client, TENANT_ID, arende.id),
+      bilagor: await bilagorFor(client, TENANT_ID, arende.id),
     };
   }).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
@@ -552,6 +628,14 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     )
     .join('');
 
+  // K-3: föräldern är en LÄNK och kan därför inte ligga i den escapade
+  // summeringssträngen — den får en egen rad ovanför beskrivningen.
+  const foralderrad =
+    a.foralder_identifier === null
+      ? ''
+      : `<p class=summering>Del av <a href="${esc(arendeUrl(a.foralder_identifier))}">` +
+        `${esc(a.foralder_identifier)}</a> — ${esc(a.foralder_titel ?? '')}</p>`;
+
   const kropp =
     `<h1>${esc(a.identifier)} — ${esc(a.title)}</h1>` +
     `<p class=summering>${esc(
@@ -559,6 +643,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         a.state_namn,
         prioNamn(a.priority),
         a.due_date ? `senast ${a.due_date}` : null,
+        a.milstolpe,
         a.projekt ?? 'utan projekt',
         `team ${a.team_key}`,
         a.claimad_av ? `plockat av ${a.claimad_av}` : null,
@@ -568,12 +653,26 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         .filter((d): d is string => d !== null)
         .join(' · '),
     )}</p>` +
+    foralderrad +
     (etiketter ? `<p>${etiketter}</p>` : '') +
     crm +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
       ? `<div class=text>${renderaArendetext(a.description, index)}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
+    // Bilagorna står FÖRE kommentarerna: det är dokumentlänkarna David letade
+    // efter 19/8, och trettio av dem finns ingen annanstans i systemet.
+    (data.bilagor.length > 0
+      ? `<h2>Bilagor (${esc(data.bilagor.length)})</h2>` +
+        `<ul class=lista role=list>${data.bilagor.map(bilageRad).join('')}</ul>`
+      : '') +
+    (data.barn.length > 0
+      ? `<h2>Delärenden (${esc(data.barn.length)})</h2>` + data.barn.map(arendeKort).join('')
+      : '') +
+    (data.relationer.length > 0
+      ? `<h2>Relationer (${esc(data.relationer.length)})</h2>` +
+        `<ul class=lista role=list>${data.relationer.map(relationRad).join('')}</ul>`
+      : '') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
     (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
     `<h2>Historik (${esc(data.handelser.length)})</h2>` +
