@@ -36,6 +36,11 @@ import {
 } from '../services/relationer.js';
 import { listaHandelser } from '../services/handelser.js';
 import {
+  listaKundkopplingar,
+  sattKundkoppling,
+  type KopplingStatus,
+} from '../services/kundkoppling.js';
+import {
   aterstallKommentar,
   hamtaKommentar,
   laggTillKommentar,
@@ -124,6 +129,7 @@ export const ACTIONS: RegistreradAction[] = [
         team_key: TeamKeySchema.optional(),
         label: safeText(100).optional(),
         projekt: safeText(200).optional(),
+        kund_id: UuidSchema.optional(),
         cursor: z.string().min(1).max(200).optional(),
         limit: LimitSchema,
       })
@@ -134,6 +140,7 @@ export const ACTIONS: RegistreradAction[] = [
         ...(input.team_key ? { teamKey: input.team_key } : {}),
         ...(input.label ? { label: input.label } : {}),
         ...(input.projekt ? { projekt: input.projekt } : {}),
+        ...(input.kund_id ? { kundId: input.kund_id } : {}),
         ...(input.cursor ? { cursor: input.cursor } : {}),
         limit: input.limit,
       }),
@@ -519,6 +526,54 @@ export const ACTIONS: RegistreradAction[] = [
         payload: { identifier: arende.identifier, etikett: input.label },
       });
       return { identifier: arende.identifier, etikett: input.label, andrad: togsBort };
+    },
+  }),
+
+  // ---- K-4: kund <-> ärende -------------------------------------------------
+
+  def({
+    name: 'list_project_customers',
+    title: 'Projektens kundkopplingar',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listaKundkopplingar(ctx.client, ctx.tenantId),
+  }),
+
+  def({
+    name: 'set_project_customer',
+    title: 'Koppla ett projekt till en kund i redovisningen',
+    sensitivity: 'write',
+    // kund_id är ETT UUID, aldrig ett namn. Det är hela poängen: ett namn hade
+    // matchat "Hermes" mot en arkiverad, tom CRM-post och knutit 33 ärenden
+    // till den utan att någon sett det.
+    inputSchema: z
+      .object({
+        projekt: safeText(200),
+        status: z.enum(['kopplad', 'intern', 'oavgjord']),
+        kund_id: UuidSchema.nullable().optional(),
+        kund_kalla: safeText(50).nullable().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const resultat = await sattKundkoppling(ctx.client, ctx.tenantId, input.projekt, {
+        status: input.status as KopplingStatus,
+        kund_id: input.kund_id ?? null,
+        kund_kalla: input.kund_kalla ?? null,
+      });
+      // KRAV-10: samma transaktion som mutationen, och aktören kommer ur
+      // nyckeln - aldrig ur indata. Vem som knöt en kund till ett projekt är
+      // precis den sortens beslut som måste gå att läsa i efterhand.
+      await ctx.skrivHandelse({
+        issueId: null,
+        verb: resultat.andrad ? 'andrade_kundkoppling' : 'kundkoppling_oforandrad',
+        payload: {
+          projekt_id: resultat.projekt_id,
+          projekt: resultat.projekt,
+          fore: resultat.fore,
+          efter: resultat.efter,
+        },
+      });
+      return resultat;
     },
   }),
 

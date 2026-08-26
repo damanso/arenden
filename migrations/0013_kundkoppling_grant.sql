@@ -1,0 +1,12 @@
+-- K-4, forts.: app-rollen får skriva kopplingsfälten — och bara dem.
+--
+-- Migration 0012 lade till kolumnerna. Den gav dem INTE någon UPDATE-rätt, och
+-- eftersom projects bara har GRANT SELECT, INSERT på tabellnivå (0003) plus
+-- GRANT UPDATE (namn) (0011) kunde tjänsten läsa kopplingen men aldrig sätta
+-- den. Provet fällde det: "permission denied for table projects".
+--
+-- Rätten ges per KOLUMN, precis som för comments(body, borttagen) och
+-- projects(namn). Det är inte en formalitet: med tabellbred UPDATE hade
+-- app-rollen samtidigt fått rätten att skriva om tenant_id och skapad, och
+-- det som aldrig GRANT:as finns inte.
+GRANT UPDATE (kund_id, kund_kalla, koppling_status, kund_kopplad_at) ON projects TO app;

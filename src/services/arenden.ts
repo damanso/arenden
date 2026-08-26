@@ -12,6 +12,8 @@ export interface Arende {
   state_namn: string;
   state_typ: StateTyp;
   projekt: string | null;
+  /** K-4: projektets kund i redovisningen (customers.id). null = okopplat. */
+  kund_id: string | null;
   labels: string[];
   priority: number | null;
   due_date: string | null;
@@ -40,6 +42,7 @@ const KOLUMNER = `
   s.namn AS state_namn,
   s.typ AS state_typ,
   p.namn AS projekt,
+  p.kund_id,
   i.priority,
   to_char(i.due_date, 'YYYY-MM-DD') AS due_date,
   i.milstolpe,
@@ -121,6 +124,12 @@ export interface ListaFilter {
   teamKey?: string;
   label?: string;
   projekt?: string;
+  /**
+   * K-4, andra riktningen: alla ärenden vars PROJEKT är kopplat till den
+   * här kunden (redovisningens customers.id). Filtret går på id och aldrig
+   * på namn - det är hela skillnaden mot den tabell som togs bort.
+   */
+  kundId?: string;
   cursor?: string;
   limit: number;
 }
@@ -145,6 +154,7 @@ export async function listaArenden(
               SELECT 1 FROM issue_labels il JOIN labels l ON l.id = il.label_id
                WHERE il.issue_id = i.id AND l.namn = $4))
         AND ($5::text IS NULL OR p.namn = $5)
+        AND ($9::uuid IS NULL OR p.kund_id = $9::uuid)
         AND ($6::timestamptz IS NULL OR (i.skapad, i.id) < ($6::timestamptz, $7::uuid))
       ORDER BY i.skapad DESC, i.id DESC
       LIMIT $8`,
@@ -157,6 +167,7 @@ export async function listaArenden(
       efter?.skapad ?? null,
       efter?.id ?? null,
       filter.limit + 1,
+      filter.kundId ?? null,
     ],
   );
 

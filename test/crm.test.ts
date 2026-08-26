@@ -4,8 +4,9 @@ import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../src/http/app.js';
 import { withTransaction } from '../src/db/tx.js';
-import { crmAnrop, nollstallCrmCache, organisationFor } from '../src/http/vy/crm.js';
+import { crmAnrop, nollstallCrmCache } from '../src/http/vy/crm.js';
 import { hamtaEllerSkapaProjekt } from '../src/services/arenden.js';
+import { sattKundkoppling } from '../src/services/kundkoppling.js';
 import { TEST_CRM_KONF } from './env.js';
 import { kor, nyNyckel, seedaTeam, TENANT_ID } from './helpers.js';
 
@@ -15,6 +16,23 @@ import { kor, nyNyckel, seedaTeam, TENANT_ID } from './helpers.js';
 const STANGD_PORT = 'http://127.0.0.1:1';
 const TESTTOKEN = 'TESTTOKEN-FAR-ALDRIG-SYNAS-I-HTML';
 const TESTBOLAG = '00000000-0000-4000-8000-000000000000';
+
+/**
+ * Kundens id i redovisningen. Ett UUID och inget annat - testet ska inte
+ * kunna passera med ett namn ens av misstag.
+ */
+const TESTKUND = '11111111-2222-4333-8444-555555555555';
+
+async function kopplaKund(projekt: string, kundId: string | null): Promise<void> {
+  await withTransaction(async (client) => {
+    await sattKundkoppling(
+      client,
+      TENANT_ID,
+      projekt,
+      kundId === null ? { status: 'intern' } : { status: 'kopplad', kund_id: kundId },
+    );
+  });
+}
 
 async function sattProjekt(identifier: string, projekt: string): Promise<void> {
   await withTransaction(async (client) => {
@@ -66,6 +84,7 @@ describe('CRM-koppling KRAV-1..6', () => {
     });
     mappat = ett.body.result.identifier;
     await sattProjekt(mappat, 'NVR-001');
+    await kopplaKund('NVR-001', TESTKUND);
     await kor(app, agentnyckel, 'add_comment', {
       identifier: mappat,
       body: 'Avstämning bokad.',
@@ -78,28 +97,31 @@ describe('CRM-koppling KRAV-1..6', () => {
     });
     omappat = tva.body.result.identifier;
     await sattProjekt(omappat, 'Hermes');
+    // Hermes ar INTERNT. Det ar ocksa namnet pa en arkiverad, tom
+    // CRM-organisation - fallan en namnmatchning gar rakt i.
+    await kopplaKund('Hermes', null);
   });
 
   // ---- (a) mappningen ------------------------------------------------------
 
-  it('KRAV-1/6a: projektträff, titelfallback, internt och okänt projekt', () => {
-    // (a) projektfältet slås upp i tabellen.
-    expect(organisationFor('NVR-001', 'Vad som helst')).toBe('Nordic Vision Retail AB');
-    expect(organisationFor('ILT-Education', 'Vad som helst')).toBe('ILT Inläsningstjänst AB');
+  it('K-4/6a: kortet följer kund_id — aldrig namnet', async () => {
+    nollstallCrmCache();
 
-    // (b) fallback: titeln bär organisationsnamnet exakt.
-    expect(organisationFor(null, 'Möte med Synologen AB om avtalet')).toBe('Synologen AB');
-    expect(organisationFor('Okänt projekt', 'Offert till IAMAI AB')).toBe('IAMAI AB');
+    // Projektet Hermes har SAMMA NAMN som en organisation i CRM. Den posten är
+    // arkiverad, har noll interaktioner och noll personer, och en namnmatchning
+    // hade knutit ärendet till den utan ett ord. Utan kund_id: inget kort, och
+    // framför allt INGEN hämtning.
+    const utan = await request(app).get(`/vy/arende/${omappat}`);
+    expect(utan.status).toBe(200);
+    expect(utan.text).not.toContain('CRM');
+    expect(crmAnrop()).toBe(0);
 
-    // Interna projekt mappas ALDRIG — inte ens när titeln nämner en kund.
-    for (const internt of ['Hermes', 'Locollabs', 'Mentalutveckling', 'Privat']) {
-      expect(organisationFor(internt, 'Avstämning med Synologen AB')).toBeNull();
-    }
-
-    // Okänt projekt utan namn i titeln, och delvis namn, ger ingen organisation.
-    expect(organisationFor('Okänt projekt', 'Vanlig rubrik')).toBeNull();
-    expect(organisationFor(null, 'Synologen utan bolagsform')).toBeNull();
-    expect(organisationFor(null, '')).toBeNull();
+    // Samma sida, samma sorts ärende — men projektet har ett kund_id. Först då
+    // hämtas CRM över huvud taget.
+    const med = await request(app).get(`/vy/arende/${mappat}`);
+    expect(med.status).toBe(200);
+    expect(med.text).toContain('<h2>CRM</h2>');
+    expect(crmAnrop()).toBe(1);
   });
 
   // ---- (b) felvägen på riktigt ---------------------------------------------
@@ -109,7 +131,11 @@ describe('CRM-koppling KRAV-1..6', () => {
 
     expect(svar.status).toBe(200);
     expect(svar.headers['content-type']).toMatch(/text\/html/);
-    expect(svar.text).toContain('CRM — Nordic Vision Retail AB');
+    // Ingen organisationsrubrik nar vi inte natt CRM: namnet hamtas ur
+    // svaret, och nagot svar finns inte. Att skriva ut ett namn har vore
+    // att pasta nagot vi inte vet.
+    expect(svar.text).toContain('<h2>CRM</h2>');
+    expect(svar.text).not.toContain('CRM — ');
     expect(svar.text).toContain('CRM-data ej tillgänglig just nu');
 
     // Sidans övriga innehåll renderas FULLSTÄNDIGT: titel, beskrivning,
