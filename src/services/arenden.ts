@@ -219,6 +219,27 @@ export async function hamtaEllerSkapaProjekt(
 }
 
 /**
+ * K-10: slår upp ett projekt UTAN att skapa det. null = finns inte.
+ *
+ * Skillnaden mot hamtaEllerSkapaProjekt är hela poängen med den här vägen.
+ * arendehem.py gick förbi plattformen för att sätta project_id; skulle den
+ * vägen skapa projekt på beställning hade ett stavfel i en titeltagg blivit en
+ * ny rad i projektregistret i stället för ett fel — och registret hade fyllts
+ * av det verktyg som var tänkt att läsa det.
+ */
+export async function sokProjekt(
+  client: PoolClient,
+  tenantId: string,
+  namn: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ id: string }>(
+    'SELECT id FROM projects WHERE tenant_id = $1 AND namn = $2',
+    [tenantId, namn],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
  * Etapp 2a KRAV-3: underlag för projekt- och etikettfasetterna. Rena läsningar
  * (vylagret får inte innehålla SQL) och samma namn som list_issues filtrerar på.
  */
@@ -438,7 +459,7 @@ export async function uppdateraArendeState(
 // ---- K-2/K-3: fältuppdateringar -------------------------------------------
 
 /** Fälten update_issue kan skriva. Namnen är kolumnnamnen — inget översättningslager. */
-export type Falt = 'priority' | 'due_date' | 'milstolpe' | 'foralder';
+export type Falt = 'priority' | 'due_date' | 'milstolpe' | 'foralder' | 'projekt';
 
 export interface Faltandring {
   falt: Falt;
@@ -453,6 +474,11 @@ export interface FaltInput {
   milstolpe?: string | null;
   /** Förälderns identifier, t.ex. 'LOC-69'. null lyfter ut ärendet ur hierarkin. */
   parent?: string | null;
+  /**
+   * K-10: projektets NAMN, t.ex. 'ILT-Education'. null tar bort ärendet ur
+   * projektet. Projektet måste redan finnas — se sokProjekt nedan.
+   */
+  projekt?: string | null;
   /**
    * Skriv ENDAST fält som är tomma i dag. Återläsningen av Linear-arkivet får
    * aldrig skriva över en prioritet som satts efter cutovern (26 ärenden bär
@@ -484,6 +510,19 @@ export async function uppdateraArendeFalt(
     nyForalderId = input.parent === null ? null : (await hamtaArende(client, tenantId, input.parent)).id;
   }
 
+  // K-10: projektet anges som NAMN utåt och lagras som id. Ett okänt namn blir
+  // 404 — aldrig ett nytt projekt (se sokProjekt).
+  let nyttProjektId: string | null | undefined;
+  if (input.projekt !== undefined) {
+    if (input.projekt === null) {
+      nyttProjektId = null;
+    } else {
+      const funnet = await sokProjekt(client, tenantId, input.projekt);
+      if (funnet === null) throw new NotFoundError('projekt');
+      nyttProjektId = funnet;
+    }
+  }
+
   const andringar: Faltandring[] = [];
   const satt = (falt: Falt, nuvarande: string | number | null, nytt: string | number | null): boolean => {
     if (baraOmOsatt && nuvarande !== null) return false;
@@ -500,6 +539,11 @@ export async function uppdateraArendeFalt(
     nyForalderId !== undefined &&
     satt('foralder', arende.foralder_identifier, nyForalderId === null ? null : input.parent!);
 
+  // Jämförelsen görs på NAMNET, inte på id:t: det är namnet som står i
+  // händelseraden, och fran/till måste vara samma sorts värde som läsaren ser.
+  const skrivProjekt =
+    nyttProjektId !== undefined && satt('projekt', arende.projekt, input.projekt ?? null);
+
   if (andringar.length === 0) return { arende, andringar };
 
   await client.query(
@@ -508,6 +552,7 @@ export async function uppdateraArendeFalt(
             due_date    = CASE WHEN $5::bool THEN $6::date ELSE due_date    END,
             milstolpe   = CASE WHEN $7::bool THEN $8::text ELSE milstolpe   END,
             foralder_id = CASE WHEN $9::bool THEN $10::uuid ELSE foralder_id END,
+            project_id  = CASE WHEN $11::bool THEN $12::uuid ELSE project_id  END,
             uppdaterad  = now()
       WHERE tenant_id = $1 AND id = $2`,
     [
@@ -521,6 +566,8 @@ export async function uppdateraArendeFalt(
       input.milstolpe ?? null,
       skrivForalder,
       nyForalderId ?? null,
+      skrivProjekt,
+      nyttProjektId ?? null,
     ],
   );
 
@@ -745,4 +792,222 @@ export function dopOmEtikett(
   till: string,
 ): Promise<{ id: string; fran: string; till: string }> {
   return dopOm(client, tenantId, 'labels', fran, till);
+}
+
+// ---- K-9: "vad ligger på mig" ---------------------------------------------
+//
+// Ärendeplattformen har FEM läsrutter och ingen som svarar på den frågan. Den
+// här delen är underlaget till den sjätte.
+//
+// DET SOM INTE FINNS, och som därför inte får låtsas finnas: `issues` har
+// INGET ansvarigfält. Det finns `claimad_av`, och den kolumnen är agentköns —
+// den är NULL på samtliga 339 ärenden. En vy som byggde "mitt" på claimad_av
+// hade renderat en tom sida, och en tom sida läses som "inget ligger på dig".
+// Det är en osann tom sida, alltså exakt veckans fel: proxyn (kolumnen) lästes
+// i stället för det man ville veta.
+//
+// Därför är varje hög här ett PÅSTÅENDE OM ETT SPÅR eller ETT FÄLT, aldrig om
+// ett ansvar, och regeln skrivs ut i vyn bredvid rubriken. Två av högarna är
+// inte alls personliga (deadline och orörda); det står i deras regel.
+//
+// SYSTEMSPÅR RÄKNAS INTE SOM AKTIVITET. `linear-import` och
+// `linear-aterlasning` har rört 143 av de 177 öppna ärendena senast. Räknades
+// de skulle "någon annan skrev sist" bli sant om nästan allt, och högen hade
+// betytt "återläsningen kördes i natt" i stället för "någon väntar på dig".
+
+export interface MittArende extends Arende {
+  sist_aktor_typ: string | null;
+  sist_aktor_namn: string | null;
+  sist_tidpunkt: Date | null;
+  /** Har aktören själv ett icke-systemspår på ärendet? (skiftlägesokänt) */
+  jag_har_spar: boolean;
+}
+
+export type Hognyckel = 'vantar_pa_mig' | 'jag_rorde_sist' | 'plockat' | 'forfaller' | 'orort';
+
+export interface Hog {
+  nyckel: Hognyckel;
+  rubrik: string;
+  /** Regeln i klartext. Renderas ALLTID bredvid rubriken. */
+  regel: string;
+  /** false = högen handlar inte om aktören alls. */
+  personlig: boolean;
+  arenden: MittArende[];
+}
+
+export interface MittLage {
+  /** Aktörens namn, eller null när ingen är vald. */
+  aktor: string | null;
+  oppna: number;
+  hogar: Hog[];
+  /**
+   * Namn i proveniensen som är samma namn som aktörens sånär som på skiftläge.
+   * MÄTT, inte antaget: nyckeln bär "David Mancilla", kommentarernas proveniens
+   * bär "david mancilla". En skiftlägeskänslig jämförelse hade gett noll träffar
+   * och sett ut som ett tomt läge. Proveniensen är oföränderlig (0011), så de
+   * går inte att slå ihop i efterhand — de viks ihop vid LÄSNING, och att de
+   * viks ihop står på sidan.
+   */
+  andra_stavningar: string[];
+  /** Alla namn som har minst ett icke-systemspår — underlag för aktörsvalet. */
+  aktorer_med_spar: { aktor_typ: string; aktor_namn: string; antal: number }[];
+}
+
+/** Öppna tillstånd. Samma tre som läsvyns överblick — en definition, inte två. */
+export const OPPNA_TYPER: StateTyp[] = ['backlog', 'unstarted', 'started'];
+
+const SPARFRAGA = `
+  WITH oppna AS (
+    SELECT i.id FROM issues i JOIN workflow_states s ON s.id = i.state_id
+     WHERE i.tenant_id = $1 AND s.typ = ANY($2::text[])
+  ),
+  spar AS (
+    SELECT e.issue_id, e.tidpunkt, e.aktor_typ, e.aktor_namn
+      FROM events e
+     WHERE e.tenant_id = $1 AND e.aktor_typ <> 'system'
+       AND e.issue_id IN (SELECT id FROM oppna)
+    UNION ALL
+    SELECT c.issue_id, c.skapad, c.aktor_typ, c.aktor_namn
+      FROM comments c
+     WHERE c.tenant_id = $1 AND c.aktor_typ <> 'system' AND c.borttagen IS NULL
+       AND c.issue_id IN (SELECT id FROM oppna)
+  ),
+  sist AS (
+    SELECT DISTINCT ON (issue_id) issue_id, tidpunkt, aktor_typ, aktor_namn
+      FROM spar ORDER BY issue_id, tidpunkt DESC
+  )`;
+
+/**
+ * Alla öppna ärenden med sitt senaste icke-systemspår. EN fråga — vyn får
+ * aldrig slå upp spåret per ärende (177 kort hade blivit 177 extra frågor).
+ */
+export async function oppnaMedSpar(
+  client: PoolClient,
+  tenantId: string,
+  aktorNamn: string | null,
+): Promise<MittArende[]> {
+  const { rows } = await client.query<MittArende>(
+    `${SPARFRAGA}
+     SELECT ${KOLUMNER},
+            sist.aktor_typ  AS sist_aktor_typ,
+            sist.aktor_namn AS sist_aktor_namn,
+            sist.tidpunkt   AS sist_tidpunkt,
+            EXISTS (SELECT 1 FROM spar sp
+                     WHERE sp.issue_id = i.id
+                       AND lower(sp.aktor_namn) = lower($3::text)) AS jag_har_spar
+       ${FRAN}
+       LEFT JOIN sist ON sist.issue_id = i.id
+      WHERE i.tenant_id = $1 AND s.typ = ANY($2::text[])
+      ORDER BY i.uppdaterad DESC, i.id DESC`,
+    [tenantId, OPPNA_TYPER, aktorNamn],
+  );
+  return rows;
+}
+
+/** Namnen som faktiskt lämnat spår på ÖPPNA ärenden — underlag för aktörsvalet. */
+export async function aktorerMedSpar(
+  client: PoolClient,
+  tenantId: string,
+): Promise<{ aktor_typ: string; aktor_namn: string; antal: number }[]> {
+  const { rows } = await client.query<{ aktor_typ: string; aktor_namn: string; antal: number }>(
+    `${SPARFRAGA}
+     SELECT aktor_typ, aktor_namn, count(*)::int AS antal
+       FROM spar GROUP BY aktor_typ, aktor_namn
+      ORDER BY antal DESC, aktor_namn`,
+    [tenantId, OPPNA_TYPER],
+  );
+  return rows;
+}
+
+function samma(a: string | null, b: string | null): boolean {
+  return a !== null && b !== null && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * K-9: högarna. `idag` skickas in (aldrig new Date() här inne) så att provet
+ * kan mäta deadlinegränsen utan att vänta på att kalendern går framåt.
+ */
+export function byggMittLage(
+  arenden: MittArende[],
+  aktorNamn: string | null,
+  aktorer: { aktor_typ: string; aktor_namn: string; antal: number }[],
+  idag: string,
+  deadlinefonster = 7,
+): MittLage {
+  const grans = new Date(`${idag}T00:00:00Z`);
+  grans.setUTCDate(grans.getUTCDate() + deadlinefonster);
+  const gransText = grans.toISOString().slice(0, 10);
+
+  const vantar = arenden.filter(
+    (a) => a.jag_har_spar && a.sist_aktor_namn !== null && !samma(a.sist_aktor_namn, aktorNamn),
+  );
+  const rorde = arenden.filter((a) => samma(a.sist_aktor_namn, aktorNamn));
+  const plockat = arenden.filter((a) => samma(a.claimad_av, aktorNamn));
+  const forfaller = arenden
+    .filter((a) => a.due_date !== null && a.due_date <= gransText)
+    .sort((a, b) => (a.due_date! < b.due_date! ? -1 : a.due_date! > b.due_date! ? 1 : 0));
+  const orort = arenden.filter((a) => a.sist_aktor_namn === null);
+
+  const andra = aktorNamn === null
+    ? []
+    : [...new Set(
+        aktorer
+          .map((x) => x.aktor_namn)
+          .filter((n) => n !== aktorNamn && n.toLowerCase() === aktorNamn.toLowerCase()),
+      )];
+
+  return {
+    aktor: aktorNamn,
+    oppna: arenden.length,
+    andra_stavningar: andra,
+    aktorer_med_spar: aktorer,
+    hogar: [
+      {
+        nyckel: 'vantar_pa_mig',
+        rubrik: 'Någon annan skrev sist',
+        regel:
+          'Öppna ärenden där du själv har lämnat ett spår och där det SENASTE ' +
+          'spåret är någon annans. Det är inte en tilldelning — det är ett ' +
+          'påstående om ordningen i händelseloggen.',
+        personlig: true,
+        arenden: vantar,
+      },
+      {
+        nyckel: 'jag_rorde_sist',
+        rubrik: 'Du skrev sist',
+        regel: 'Öppna ärenden där det senaste spåret är ditt. Bollen ligger inte hos någon annan.',
+        personlig: true,
+        arenden: rorde,
+      },
+      {
+        nyckel: 'plockat',
+        rubrik: 'Plockat av dig ur agentkön',
+        regel:
+          'Öppna ärenden med claimad_av = ditt namn. Kolumnen är agentköns och ' +
+          'är NULL på samtliga ärenden i dag — en tom hög här betyder att kön ' +
+          'inte används, inte att inget ligger på dig.',
+        personlig: true,
+        arenden: plockat,
+      },
+      {
+        nyckel: 'forfaller',
+        rubrik: `Deadline passerad eller inom ${deadlinefonster} dagar`,
+        regel:
+          'Öppna ärenden med ett due_date som redan passerat eller infaller ' +
+          `inom ${deadlinefonster} dagar. GÄLLER ALLA — ärenden har ingen ägare, ` +
+          'så den här högen är inte din, den är hela teamets.',
+        personlig: false,
+        arenden: forfaller,
+      },
+      {
+        nyckel: 'orort',
+        rubrik: 'Ingen har rört dem',
+        regel:
+          'Öppna ärenden utan ett enda spår från en människa eller en agent — ' +
+          'bara importens och återläsningens systemrader. GÄLLER ALLA.',
+        personlig: false,
+        arenden: orort,
+      },
+    ],
+  };
 }

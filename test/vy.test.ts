@@ -115,7 +115,8 @@ describe('Etapp 2a KRAV-1..10: Davids läsvy', () => {
     expect(svar.text).toContain('<h2>Kommentarer (2)</h2>');
     expect(svar.text).toContain('Send-redo klientdoc skickad till Ellie');
     expect(svar.text).toContain('david mancilla');
-    expect(svar.text).toContain('<h2>Historik (1)</h2>');
+    // K-10 vag 3: 1 importrad + 1 rad per importerad kommentar (LOC-88 har 2).
+    expect(svar.text).toContain('<h2>Historik (3)</h2>');
   });
 
   // ---- (c) söket -----------------------------------------------------------

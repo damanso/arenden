@@ -110,7 +110,7 @@ export async function importeraArkiv(
           'SELECT count(*)::text AS n FROM comments WHERE source_ref = $1',
           [k.source_ref],
         );
-        await laggTillKommentar(
+        const kommentar = await laggTillKommentar(
           client,
           TENANT_ID,
           id,
@@ -118,8 +118,25 @@ export async function importeraArkiv(
           { typ: 'manniska', namn: k.forfattare },
           { source_ref: k.source_ref, ...(k.tidpunkt ? { skapad: k.tidpunkt } : {}) },
         );
-        if (fore.rows[0]!.n === '0') resultat.nya_kommentarer += 1;
-        else resultat.oforandrade_kommentarer += 1;
+        if (fore.rows[0]!.n === '0') {
+          resultat.nya_kommentarer += 1;
+          // K-10 väg 3. Verbet är importens eget: den KOMMENTERADE inte, den
+          // förde in någon annans kommentar. Payloaden bär kommentarens egen
+          // proveniens, så att raden går att läsa utan att slå upp comments.
+          await skrivHandelse(client, TENANT_ID, IMPORTAKTOR, {
+            issueId: id,
+            verb: 'importerade_kommentar',
+            payload: {
+              identifier,
+              kommentar_id: kommentar.id,
+              source_ref: k.source_ref,
+              kommentarens_aktor_typ: 'manniska',
+              kommentarens_aktor_namn: k.forfattare,
+            },
+          });
+        } else {
+          resultat.oforandrade_kommentarer += 1;
+        }
       }
     }
 

@@ -17,13 +17,18 @@ import { NotFoundError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
 import { IdentifierSchema, StateTypSchema, safeText, type StateTyp } from '../../lib/validation.js';
 import {
+  aktorerMedSpar,
   barnFor,
+  byggMittLage,
   hamtaArende,
   listaArenden,
   listaEtikettnamn,
   listaProjektnamn,
+  oppnaMedSpar,
   sokArenden,
   type Arende,
+  type Hog,
+  type MittArende,
   type Soktraff,
 } from '../../services/arenden.js';
 import {
@@ -200,7 +205,23 @@ const BYTESVERB = new Set([
   // kommentar inte ska renderas som "A → B" på en digestrad.
   'andrade_projektnamn',
   'andrade_etikettnamn',
+  // K-10: ärendets projekt. Skiljs från 'andrade_projektnamn', som byter namn
+  // PÅ ett projekt — det här flyttar ett ärende mellan två.
+  'andrade_projekt',
 ]);
+
+/**
+ * K-10: skälet, när raden bär ett. Frivilligt fält, så de allra flesta rader
+ * (och ALLA historiska) saknar det — och en rad utan skäl renderas som förr,
+ * inte som "skäl: —". Ett tomt skäl på varje rad hade lärt läsaren att hoppa
+ * över fältet.
+ */
+function handelseSkal(payload: unknown): string {
+  if (typeof payload !== 'object' || payload === null || !('skal' in payload)) return '';
+  const skal = (payload as { skal?: unknown }).skal;
+  if (typeof skal !== 'string' || skal === '') return '';
+  return `<div class=text><b>Skäl:</b> ${esc(skal)}</div>`;
+}
 
 /** Ett payloadvärde som text — null blir det uttryckliga "ingen", inte tomt. */
 function bytesvarde(varde: unknown): string | null {
@@ -269,6 +290,7 @@ function handelseRad(h: HandelseIVy): string {
     lank +
     '</div>' +
     (h.arende_titel ? `<div class=text>${esc(h.arende_titel)}</div>` : '') +
+    handelseSkal(h.payload) +
     '</li>'
   );
 }
@@ -406,6 +428,134 @@ vyRouter.get('/digest', async (req, res) => {
     (handelser.length === 0 ? '<p class=notis>Inga händelser i fönstret.</p>' : dagar);
 
   res.type('html').send(sida('Vad hände', kropp, 'digest', sessionsAktor(req)));
+});
+
+// ---- K-9: ärendeplattformens EGEN ingång -----------------------------------
+//
+// "Vad ligger på mig". Ärendeplattformen hade fem läsrutter och ingen som
+// svarade på den frågan; redovisningens dashboard var den enda överblicken och
+// visar bara redovisning.
+//
+// OBEROENDET ÄR EGENSKAPEN, inte en bieffekt. Rutten läser ENBART den här
+// plattformens egen databas. Den slår inte upp något på 3001 (redovisningen)
+// eller 8650 (Hermes-ytan), varken för data eller för en länk. Går någon av
+// dem ner svarar den här sidan exakt likadant — och det är mätt, inte påstått
+// (~/.hermes/prov/systemoberoende.py).
+//
+// Högarnas REGLER står utskrivna bredvid rubrikerna. Skälet är att ingen av
+// dem är en tilldelning: plattformen har inget ansvarigfält, och en hög som
+// bara hette "Mitt" hade läst som ett ansvar den inte kan belägga.
+
+const TAK_HOG = 40;
+
+function mittKort(a: MittArende): string {
+  const spar =
+    a.sist_aktor_namn === null || a.sist_aktor_typ === null
+      ? '<span class=meta>inget spår från en människa eller en agent</span>'
+      : '<span class=meta>senaste spåret: ' +
+        proveniens(a.sist_aktor_typ, a.sist_aktor_namn) +
+        (a.sist_tidpunkt === null ? '' : ` ${esc(datum(a.sist_tidpunkt))}`) +
+        '</span>';
+  return (
+    `<a class=kort href="${esc(arendeUrl(a.identifier))}">` +
+    `<b>${esc(a.identifier)} — ${esc(a.title)}</b>` +
+    metarad([
+      a.state_namn,
+      a.projekt ?? 'utan projekt',
+      prioNamn(a.priority),
+      a.due_date === null ? null : `senast ${a.due_date}`,
+    ]) +
+    spar +
+    '</a>'
+  );
+}
+
+function hogAvsnitt(h: Hog): string {
+  const visade = h.arenden.slice(0, TAK_HOG);
+  const kapat =
+    h.arenden.length > visade.length
+      ? `<p class=notis>Listan visar ${esc(visade.length)} av ${esc(h.arenden.length)}. ` +
+        'Talet i rubriken är hela högen — det är listan som är kapad, inte mätningen.</p>'
+      : '';
+  return (
+    `<h2>${esc(h.rubrik)} <span class=summering>(${esc(h.arenden.length)})</span></h2>` +
+    `<p class=summering>${esc(h.regel)}</p>` +
+    (h.arenden.length === 0
+      ? '<p class=notis>Ingen rad uppfyller regeln ovan.</p>'
+      : visade.map(mittKort).join('') + kapat)
+  );
+}
+
+vyRouter.get('/mitt', async (req, res) => {
+  const inloggad = sessionsAktor(req);
+  // ?aktor= vinner över sessionen: David ska kunna se vad som ligger på Hermes
+  // utan att logga ut. Namnet valideras som allt annat i query-strängen.
+  const valdAktor = giltigText(param(req.query['aktor']), 200) ?? inloggad?.namn ?? null;
+  // Dagens datum tas EN gång och skickas in — byggMittLage kallar aldrig
+  // new Date() själv, så provet kan mäta deadlinegränsen utan att vänta.
+  const idag = new Date().toISOString().slice(0, 10);
+
+  const lage = await withTransaction(async (client) =>
+    byggMittLage(
+      await oppnaMedSpar(client, TENANT_ID, valdAktor),
+      valdAktor,
+      await aktorerMedSpar(client, TENANT_ID),
+      idag,
+    ),
+  );
+
+  const aktorlankar = lage.aktorer_med_spar
+    .slice(0, TAK_FASETTER)
+    .map((x) => {
+      const aktiv = x.aktor_namn === lage.aktor;
+      return (
+        `<a class="fasett${aktiv ? ' aktiv' : ''}"${aktiv ? ' aria-current=true' : ''} ` +
+        `href="/vy/mitt?aktor=${encodeURIComponent(x.aktor_namn)}">` +
+        `${esc(x.aktor_namn)} <span class=summering>${esc(x.antal)}</span></a>`
+      );
+    })
+    .join('');
+
+  const stavningsnotis =
+    lage.andra_stavningar.length === 0
+      ? ''
+      : '<p class=notis><b>Två stavningar av samma namn.</b> Spåren bär också ' +
+        lage.andra_stavningar.map((n) => `<code>${esc(n)}</code>`).join(', ') +
+        `, medan du är inloggad som <code>${esc(lage.aktor ?? '')}</code>. ` +
+        'Högarna nedan viker ihop dem — en skiftlägeskänslig jämförelse hade ' +
+        'gett noll träffar och sett ut som ett tomt läge. Proveniensen är ' +
+        'oföränderlig (migration 0011), så namnen går inte att slå ihop i ' +
+        'efterhand; de viks ihop vid läsning, och det står här.</p>';
+
+  const ingenAktor =
+    lage.aktor !== null
+      ? ''
+      : '<p class=notis>Ingen aktör vald. De tre personliga högarna är därför ' +
+        'tomma av den anledningen — inte för att ingenting ligger på dig. ' +
+        'Logga in, eller välj ett namn ovan.</p>';
+
+  const kropp =
+    '<h1>Vad ligger på mig</h1>' +
+    `<p class=summering>${esc(lage.oppna)} öppna ärenden i ärendeplattformen` +
+    (lage.aktor === null ? '' : `, sett från <b>${esc(lage.aktor)}</b>`) +
+    '.</p>' +
+    '<div class=fasetter><div class=grupp><span class=namn>Sett från</span>' +
+    `<div class=chips>${aktorlankar}</div></div></div>` +
+    stavningsnotis +
+    ingenAktor +
+    '<p class=notis><b>Ingen rad nedan är en tilldelning.</b> ' +
+    'Ärendeplattformen har inget ansvarigfält: det finns <code>claimad_av</code>, ' +
+    'och den är agentköns och NULL på samtliga ärenden. Varje hög är därför ett ' +
+    'påstående om ett <i>fält</i> eller om <i>ordningen i händelseloggen</i>, och ' +
+    'regeln står utskriven under rubriken. Importens och återläsningens ' +
+    'systemrader räknas inte som spår — annars hade "någon annan skrev sist" ' +
+    'betytt "cronen kördes i natt".</p>' +
+    '<p class=notis>Sidan läser bara ärendeplattformens egen databas. ' +
+    'Redovisningen och Hermes-ytan frågas inte — den här sidan svarar likadant ' +
+    'när de är nere.</p>' +
+    lage.hogar.map(hogAvsnitt).join('');
+
+  res.type('html').send(sida('Vad ligger på mig', kropp, 'mitt', inloggad));
 });
 
 // ---- KRAV-3: sök med fasetter ---------------------------------------------
@@ -660,7 +810,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         `<span>${esc(datumtid(h.tidpunkt))}</span>` +
         proveniens(h.aktor_typ, h.aktor_namn) +
         `<span>${esc(verbText(h.verb))}${handelseDetalj(h.verb, h.payload)}</span>` +
-        '</div></li>',
+        '</div>' +
+        handelseSkal(h.payload) +
+        '</li>',
     )
     .join('');
 

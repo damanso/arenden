@@ -117,6 +117,7 @@ open http://127.0.0.1:3002/vy          # eller i webbläsaren på maskinen
 | `GET /vy/digest` | **Vad hände** — händelser per dag, inom dagen per källa (agent/människa/system); `?dagar=7\|30\|90\|alla` |
 | `GET /vy/sok?q=...` | **Sök** — fritext över titel, beskrivning och kommentarer + fasetter `?status=&etikett=&projekt=&aktor=` |
 | `GET /vy/arende/LOC-316` | **Ärendesidan** — fälten, beskrivningen, alla kommentarer och hela historiken |
+| `GET /vy/mitt` | **Vad ligger på mig** — fem högar, var och en med sin regel utskriven; `?aktor=` väljer vem det ses från (K-9) |
 
 Läsvyn kräver **ingen nyckel** (gränsen är att servern binder `127.0.0.1`) och är
 **ren läsyta**: bara GET-rutter, inga mutationer, inga event-rader. `/api` är
@@ -280,6 +281,68 @@ npm run nyckel -- manniska "David Mancilla"
 #   Läs den en gång och radera: cat '<fil>' && shred -u '<fil>'
 # Logga in i vyn med den på /vy/logga-in. Rättelser: /vy/rattelser
 ```
+
+### K-9 — egen ingång per system
+
+Davids krav: **alla tre system ska kunna leva helt oberoende av varandra vid
+behov.** Redovisningens dashboard (3001) är redovisningens. Hermes-ytan (8650)
+har rummen och portföljen. Ärendeplattformen (3002) hade fem läsrutter och
+ingen som svarade på *"vad ligger på mig"*. En delad dashboard vore en tionde
+bindning och byggdes **inte** — plattformen fick sin egen ingång i stället.
+
+`GET /vy/mitt` läser **enbart** den här plattformens databas. Inget uppslag mot
+3001 eller 8650, inte ens en länk. Sidan svarar likadant när de är nere.
+
+Det som **inte** finns, och som sidan därför säger rakt ut: `issues` har inget
+ansvarigfält. `claimad_av` är agentköns och är NULL på samtliga 339 ärenden. En
+"mina ärenden"-sida byggd på den kolumnen hade renderat en tom sida, och en tom
+sida läses som *"inget ligger på dig"*. Varje hög är i stället ett påstående om
+ett **fält** eller om **ordningen i händelseloggen**, och regeln står utskriven
+under rubriken.
+
+| Hög | Regel | Mätt 2026-08-26 |
+| --- | --- | --- |
+| Någon annan skrev sist | Öppet, du har ett spår, senaste spåret är någon annans | 1 |
+| Du skrev sist | Öppet, senaste spåret är ditt | 36 |
+| Plockat av dig | `claimad_av` = ditt namn | 0 av 339 — kön används inte |
+| Deadline passerad/inom 7 d | `due_date <= idag+7`. **Gäller alla** | 21 (9 passerade) |
+| Ingen har rört dem | Inget spår alls från människa eller agent | 112 av 177 öppna |
+
+Importens och återläsningens systemrader räknas **inte** som spår. Gjorde de
+det vore "någon annan skrev sist" sant om 143 av 177 öppna ärenden, och högen
+hade betytt "återläsningen kördes i natt".
+
+Skiftläge viks ihop vid läsning: nyckeln bär `David Mancilla`, kommentarernas
+proveniens bär `david mancilla`. En skiftlägeskänslig jämförelse gav noll
+träffar och såg ut som ett tomt läge. Proveniensen är oföränderlig (0011), så
+namnen kan inte slås ihop i efterhand — de viks ihop vid läsning, och **att de
+viks ihop står på sidan**.
+
+### K-10 — tre vägar förbi händelseloggen
+
+`events` är append-only och proveniensen oföränderlig. Tre vägar gick ändå
+förbi loggen. Alla tre är stängda **framåt**; ingenting är backfyllt.
+
+| Väg | Vad som hände | Vad som gjordes |
+| --- | --- | --- |
+| 1. `arendehem.py` | Körde `update issues set project_id = ...` med psql som superuser. 17 ärenden i placeringsloggen har fått sitt `project_id` den vägen, och **ingen** av 838 händelserader säger att ett ärende bytt projekt | `projekt` är nu ett fält som alla andra i `update_issue`; verbet är `andrade_projekt`. Skriptet anropar API:t med agentnyckeln — aktören ur nyckeln, aldrig superuser |
+| 2. `skapaNyckel.ts` | Mintade nycklar utan händelse | **Redan löst i K-1** (78293f7). Verifierat, inte ombyggt: de två nycklarna från 18–19 aug saknar rad, de två från 26 aug har sin |
+| 3. Importen | 186 av 207 kommentarer saknar händelserad. De kom in via `importeraArkiv` | Importen skriver `importerade_kommentar` per **ny** kommentar. Omkörningen är fortfarande idempotent (KRAV-16) — nu även i `events` |
+
+Projektet måste **finnas**: `sokProjekt` slår upp utan att skapa, och ett okänt
+namn ger 404. Fick vägen skapa projekt hade ett stavfel i en titeltagg blivit en
+ny rad i registret i stället för ett fel.
+
+**"Varför".** Ingen payload bar ett skäl. `update_issue` tar nu ett frivilligt
+`skal` som följer med i händelseraden och renderas i digesten och på
+ärendesidan. Frivilligt med flit: ett obligatoriskt skäl hade fyllts med
+"uppdatering" inom en vecka. `arendehem.py` skickar ordagrant det bevis
+`bedom()` placerade på — inte ett skäl formulerat i efterhand.
+
+**Ingen backfyllning.** De 186 kommentarerna utan rad är ett faktum om det
+förflutna. `~/.hermes/prov/handelsevag.py` låser talet vid exakt 186 i **båda**
+riktningarna: växer det har en ny kommentar kommit in förbi skrivvägen, krymper
+det har någon backfyllt händelser som aldrig hände.
 
 ## Gränser för Etapp 2a
 

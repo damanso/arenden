@@ -332,7 +332,7 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 `;
 
 /** Navigationen är samma ytor överallt — ordningen ändras aldrig (WCAG 3.2.3). */
-export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser';
+export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser' | 'mitt';
 
 const YTOR: { vag: string; text: string; yta: Yta }[] = [
   { vag: '/vy', text: 'Ärenden', yta: 'vy' },
@@ -340,6 +340,8 @@ const YTOR: { vag: string; text: string; yta: Yta }[] = [
   { vag: '/vy/sok', text: 'Sök', yta: 'sok' },
   // K-1. Lagd SIST: de tre befintliga ytorna byter aldrig plats.
   { vag: '/vy/rattelser', text: 'Rättelser', yta: 'rattelser' },
+  // K-9. Samma regel: läggs sist, ingen befintlig yta flyttar (WCAG 3.2.3).
+  { vag: '/vy/mitt', text: 'Vad ligger på mig', yta: 'mitt' },
 ];
 
 /**
@@ -465,6 +467,7 @@ const VERB: Record<string, string> = {
   andrade_prioritet: 'ändrade prioritet',
   andrade_deadline: 'ändrade deadline',
   andrade_milstolpe: 'ändrade milstolpe',
+  andrade_projekt: 'flyttade till projekt',
   andrade_foralder: 'ändrade förälder',
   arendet_oforandrat: 'lämnade ärendet oförändrat',
   lankade_arenden: 'länkade ärenden',

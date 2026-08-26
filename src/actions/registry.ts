@@ -116,7 +116,20 @@ const VERB_FOR_FALT: Record<Falt, string> = {
   due_date: 'andrade_deadline',
   milstolpe: 'andrade_milstolpe',
   foralder: 'andrade_foralder',
+  projekt: 'andrade_projekt',
 };
+
+/**
+ * K-10, "varför". Ingen payload i plattformen bar ett skäl — historiken kunde
+ * berätta VAD som ändrades och AV VEM, aldrig varför. Fältet är FRIVILLIGT och
+ * skrivs bara när anroparen faktiskt anger det: ett obligatoriskt skäl hade
+ * fyllts med "uppdatering" inom en vecka, och ett skäl som alltid står där och
+ * aldrig betyder något är sämre än inget skäl.
+ *
+ * Det gäller BARA nya rader. Historiska rader får inget påhittat varför — en
+ * historik med uppdiktade skäl är värre än en historik utan.
+ */
+const SkalSchema = safeText(500);
 
 export const ACTIONS: RegistreradAction[] = [
   def({
@@ -262,6 +275,10 @@ export const ACTIONS: RegistreradAction[] = [
         due: IsoDateSchema.nullable().optional(),
         milstolpe: safeText(200).nullable().optional(),
         parent: IdentifierSchema.nullable().optional(),
+        // K-10: projektets NAMN. null tar bort ärendet ur projektet. Ett okänt
+        // namn ger 404 — den här vägen skapar aldrig ett projekt.
+        projekt: safeText(200).nullable().optional(),
+        skal: SkalSchema.optional(),
         bara_om_osatt: z.boolean().default(false),
       })
       .strict()
@@ -270,8 +287,12 @@ export const ACTIONS: RegistreradAction[] = [
           v.priority !== undefined ||
           v.due !== undefined ||
           v.milstolpe !== undefined ||
-          v.parent !== undefined,
-        { message: 'ange minst ett fält att uppdatera (priority, due, milstolpe eller parent)' },
+          v.parent !== undefined ||
+          v.projekt !== undefined,
+        {
+          message:
+            'ange minst ett fält att uppdatera (priority, due, milstolpe, parent eller projekt)',
+        },
       ),
     handler: async (ctx, input) => {
       const { arende, andringar } = await uppdateraArendeFalt(ctx.client, ctx.tenantId, input.identifier, {
@@ -279,8 +300,13 @@ export const ACTIONS: RegistreradAction[] = [
         ...(input.due !== undefined ? { due: input.due } : {}),
         ...(input.milstolpe !== undefined ? { milstolpe: input.milstolpe } : {}),
         ...(input.parent !== undefined ? { parent: input.parent } : {}),
+        ...(input.projekt !== undefined ? { projekt: input.projekt } : {}),
         bara_om_osatt: input.bara_om_osatt,
       });
+      // Skälet skrivs bara när det ANGES. `...(x ? {skal} : {})` i stället för
+      // `skal: input.skal ?? null` — en payload med "skal": null på varenda rad
+      // hade sett ut som ett besvarat fält med tomt svar.
+      const skal = input.skal === undefined ? {} : { skal: input.skal };
 
       // EN händelserad per FAKTISKT ändrat fält. Det är hela poängen med K-2:
       // arendehem.py ändrade 16 ärenden med rå SQL och lämnade tretton utan
@@ -291,7 +317,13 @@ export const ACTIONS: RegistreradAction[] = [
         await ctx.skrivHandelse({
           issueId: arende.id,
           verb: VERB_FOR_FALT[a.falt],
-          payload: { identifier: arende.identifier, falt: a.falt, fran: a.fran, till: a.till },
+          payload: {
+            identifier: arende.identifier,
+            falt: a.falt,
+            fran: a.fran,
+            till: a.till,
+            ...skal,
+          },
         });
       }
       if (andringar.length === 0) {
@@ -301,7 +333,7 @@ export const ACTIONS: RegistreradAction[] = [
         await ctx.skrivHandelse({
           issueId: arende.id,
           verb: 'arendet_oforandrat',
-          payload: { identifier: arende.identifier },
+          payload: { identifier: arende.identifier, ...skal },
         });
       }
       return { arende, andringar };

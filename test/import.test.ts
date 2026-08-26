@@ -63,12 +63,17 @@ describe('KRAV-14/15/16/20e: import av linear-arkivet', () => {
   it('stämplar importens events som system/linear-import', async () => {
     const hamtat = await kor(app, nyckel, 'get_issue', { identifier: 'LOC-329' });
     const handelser = hamtat.body.result.handelser as { verb: string; aktor_typ: string; aktor_namn: string }[];
-    expect(handelser).toHaveLength(1);
-    expect(handelser[0]).toMatchObject({
-      verb: 'importerade_arende',
-      aktor_typ: 'system',
-      aktor_namn: 'linear-import',
-    });
+    // K-10 vag 3: importen skriver numera en rad per NY kommentar ocksa. Det
+    // ar hela poangen — 186 av 207 kommentarer saknade handelserad, och de kom
+    // in har. Provet mater att BADA raderna bar importens aktor: en ny rad far
+    // inte smyga in med en annan stampel.
+    expect(handelser.map((h) => h.verb)).toEqual([
+      'importerade_arende',
+      'importerade_kommentar',
+    ]);
+    for (const h of handelser) {
+      expect(h).toMatchObject({ aktor_typ: 'system', aktor_namn: 'linear-import' });
+    }
   });
 
   it('mappar arkivets status till rätt workflow-state', async () => {
