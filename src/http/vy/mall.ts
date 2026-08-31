@@ -38,63 +38,86 @@ export function esc(varde: unknown): string {
 //
 // Reglerna under blocket refererar ALDRIG lager 1:s FARGER. Byts pappret ut byts en rad.
 const CSS = `
+/* Designkontraktet, kopia 3 av 3. Kanon: /opt/redovisning/server/src/http/view/html.ts.
+   Sjalvvardade typsnitt, OFL 1.1, inget externt anrop. Filerna ar ARENDEVYNS
+   EGNA under /opt/arenden/assets/typsnitt och serveras pa vyns egen rutt —
+   en delad sokvag mellan systemen hade varit precis den bindning K-9 forbjuder.
+   Licenserna ligger pa /vy/typsnitt/LICENSE-public-sans.txt och
+   /vy/typsnitt/LICENSE-ibm-plex-mono.txt. */
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:400;
+font-display:swap;src:url("/vy/typsnitt/public-sans-latin-400-normal.woff2") format("woff2")}
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:600;
+font-display:swap;src:url("/vy/typsnitt/public-sans-latin-600-normal.woff2") format("woff2")}
+@font-face{font-family:"Public Sans";font-style:normal;font-weight:700;
+font-display:swap;src:url("/vy/typsnitt/public-sans-latin-700-normal.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;
+font-display:swap;src:url("/vy/typsnitt/ibm-plex-mono-latin-400-normal.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;
+font-display:swap;src:url("/vy/typsnitt/ibm-plex-mono-latin-600-normal.woff2") format("woff2")}
 :root{
 color-scheme:light dark;
 
-/* 1 — PRIMITIVA: varm pappersneutral (ljust läge) */
---p-papper:#faf9f6;--p-vit:#fff;--p-sand:#f3f1ea;
---p-sten-500:#8a8477;--p-sten-700:#5c574c;--p-sten-900:#1b1a17;
-/* 1 — PRIMITIVA: kall kolneutral (mörkt läge) */
---p-kol-900:#14161a;--p-kol-800:#1c1f24;--p-kol-700:#23262c;
---p-kol-500:#767d88;--p-kol-300:#a8b1bb;--p-kol-100:#e8e6e1;
-/* 1 — PRIMITIVA: accent */
---p-cyan-900:#12384a;--p-cyan-700:#0f5f79;--p-cyan-300:#7cc3db;--p-cyan-100:#cfe7ef;
-/* 1 — PRIMITIVA: proveniensens fyra hues (AI Act art. 50-märkningen) */
---p-amber-900:#4a3708;--p-amber-800:#5a3d05;--p-amber-600:#9a7a2a;
---p-amber-500:#b08c2e;--p-amber-200:#f6dfae;--p-amber-100:#f7e9c9;
---p-gron-900:#1e3823;--p-gron-800:#1d4526;--p-gron-500:#4f7d57;
---p-gron-200:#cfe6d2;--p-gron-100:#ddeadd;
---p-skiffer-800:#2a2e35;--p-skiffer-700:#33393f;--p-skiffer-200:#d3d8de;
---p-skiffer-100:#e4e6ea;
---p-rost-900:#4a1f1f;--p-rost-800:#6a1f1f;--p-rost-400:#a85c5c;
---p-rost-500:#b05252;--p-rost-200:#f0cccc;--p-rost-100:#f6d9d9;
---p-slojaljus:#1b1a1714;--p-slojamork:#00000052;
-/* 1 — PRIMITIVA: modulär typskala, kvot 1.2 kring 1rem. FYRA storlekar, inte fler. */
+/* 0 — KONTRAKTET. Enda stallet i hela vylagret dar en FARG far sta som
+   literal, och enda lagret morkt lage pekar om. Vardena ar kanons, tecken
+   for tecken; prov/designparitet.py fäller den dag de driftar isar. */
+--paper:oklch(0.984 0.005 95);--surface:oklch(0.997 0.002 95);
+--surface-2:oklch(0.963 0.006 95);
+--ink:oklch(0.27 0.014 255);--ink-2:oklch(0.44 0.012 255);--ink-3:oklch(0.56 0.010 255);
+--line:oklch(0.905 0.008 95);--line-2:oklch(0.845 0.010 95);
+--accent:oklch(0.49 0.074 216);--accent-ink:oklch(0.44 0.078 218);
+--accent-weak:oklch(0.955 0.021 216);--on-accent:oklch(0.99 0.004 216);
+--pos:oklch(0.50 0.088 155);--pos-weak:oklch(0.955 0.030 155);
+--neg:oklch(0.525 0.118 33);--neg-weak:oklch(0.958 0.028 40);
+--ai:oklch(0.60 0.104 71);--ai-ink:oklch(0.50 0.098 68);
+--ai-weak:oklch(0.957 0.038 78);--ai-line:oklch(0.86 0.070 78);
+--focus:oklch(0.58 0.13 232);
+--radius:12px;--radius-sm:8px;--radius-pill:999px;
+--traff:2.75rem;--maxw:1080px;
+--shadow-1:0 1px 2px oklch(0.4 0.03 255 / 0.05), 0 2px 6px oklch(0.4 0.03 255 / 0.05);
+--shadow-2:0 2px 6px oklch(0.4 0.03 255 / 0.06), 0 12px 28px oklch(0.4 0.03 255 / 0.08);
+--sans:"Public Sans", sans-serif;
+--mono:"IBM Plex Mono", monospace;
+--display:"IBM Plex Mono", monospace;
+
+/* 1 — PRIMITIVA: matt, typskala, rorelse. Fargprimitiverna ar BORTA — lager 0
+   ar nu husets enda fargkalla, och det var hela poangen med lyftet. */
 --p-typ-1:.833rem;--p-typ-2:1rem;--p-typ-3:1.2rem;--p-typ-4:1.44rem;
 --p-vikt-1:400;--p-vikt-2:600;--p-vikt-3:680;
 --p-rad-tat:1.25;--p-rad-1:1.4;--p-rad-2:1.65;
 --p-spar-tat:-.012em;--p-spar-vid:.06em;
---p-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
---p-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
-/* 1 — PRIMITIVA: rymdskala, 4px-bas */
+--p-sans:var(--sans);--p-mono:var(--mono);--p-display:var(--display);
 --p-rym-1:.25rem;--p-rym-2:.5rem;--p-rym-3:.75rem;--p-rym-4:1rem;
 --p-rym-5:1.5rem;--p-rym-6:2rem;--p-rym-7:3rem;
-/* 1 — PRIMITIVA: radie, linjetjocklek, mått */
---p-radie-1:10px;--p-radie-2:14px;--p-radie-rund:999px;
+--p-radie-1:var(--radius-sm);--p-radie-2:var(--radius);--p-radie-rund:var(--radius-pill);
 --p-linje-1:1px;--p-linje-2:2px;--p-understryk:.15em;
---p-matt:34rem;--p-sida:44rem;--p-traff:2.75rem;--p-falt:14rem;--p-dold:1px;
+--p-matt:34rem;--p-sida:44rem;--p-traff:var(--traff);--p-falt:14rem;--p-dold:1px;
 --p-utanfor:-110%;
-/* 1 — PRIMITIVA: rörelse. Aldrig över 200ms, alltid ease-out. */
 --p-tid-1:120ms;--p-tid-2:170ms;--p-kurva:cubic-bezier(.23,1,.32,1);
 --p-tryck-stor:.995;--p-tryck:.97;
 --p-lager-header:9;--p-lager-hopp:30;
 
-/* 2 — SEMANTISKA: ytor och text */
---yta:var(--p-papper);--yta-upphojd:var(--p-vit);--yta-sankt:var(--p-sand);
---text:var(--p-sten-900);--text-svag:var(--p-sten-700);
---linje:var(--p-sten-500);
---accent:var(--p-cyan-700);--accent-text:var(--p-vit);
---fokus:var(--p-cyan-700);--markering:var(--p-cyan-100);
---skugga-lyft:0 var(--p-linje-1) var(--p-rym-3) var(--p-slojaljus);
-/* 2 — SEMANTISKA: proveniens */
---prov-agent-yta:var(--p-amber-100);--prov-agent-text:var(--p-amber-800);
---prov-agent-linje:var(--p-amber-500);
---prov-manniska-yta:var(--p-gron-100);--prov-manniska-text:var(--p-gron-800);
---prov-manniska-linje:var(--p-gron-500);
---prov-system-yta:var(--p-skiffer-100);--prov-system-text:var(--p-skiffer-700);
---prov-system-linje:var(--p-kol-500);
---prov-okand-yta:var(--p-rost-100);--prov-okand-text:var(--p-rost-800);
---prov-okand-linje:var(--p-rost-500);
+/* 2 — SEMANTISKA: roll i granssnittet. Varje rad pekar rakt in i lager 0. */
+--yta:var(--paper);--yta-upphojd:var(--surface);--yta-sankt:var(--surface-2);
+--text:var(--ink);--text-svag:var(--ink-3);
+/* TRE linjer, inte en. Kanon skiljer pa avdelaren (line), den interaktiva
+   kanten (line-2) och en linje som SJALV bar betydelse. Den sista ar
+   citatstrecket: dar ar linjen budskapet, och da racker inte en harfin
+   avdelare (WCAG 1.4.11). Den far darfor den dampade texttonen. */
+--linje:var(--line);--linje-2:var(--line-2);--linje-stark:var(--ink-3);
+--accent-text:var(--on-accent);
+--fokus:var(--focus);--markering:var(--accent-weak);
+--skugga-lyft:var(--shadow-1);
+/* 2 — SEMANTISKA: proveniens (AI Act art. 50). Husets tre utfall och de fyra
+   aktorstyperna delar nu kanons hues: agenten bar ockran som betyder "vantar
+   pa en manniska", manniskan det botaniska gronet, det okanda lerrodet. */
+--prov-agent-yta:var(--ai-weak);--prov-agent-text:var(--ai-ink);
+--prov-agent-linje:var(--ai-line);
+--prov-manniska-yta:var(--pos-weak);--prov-manniska-text:var(--pos);
+--prov-manniska-linje:var(--pos);
+--prov-system-yta:var(--surface-2);--prov-system-text:var(--ink-2);
+--prov-system-linje:var(--line-2);
+--prov-okand-yta:var(--neg-weak);--prov-okand-text:var(--neg);
+--prov-okand-linje:var(--neg);
 
 /* 3 — KOMPONENT */
 --rubrik-1:var(--p-typ-4);--rubrik-2:var(--p-typ-3);--rubrik-3:var(--p-typ-2);
@@ -106,21 +129,22 @@ color-scheme:light dark;
 --knapp-yta:var(--accent);--knapp-text:var(--accent-text);
 --fokus-tjocklek:var(--p-linje-2);--fokus-avstand:var(--p-linje-2)
 }
+/* Morkt lage pekar om LAGER 0 och bara det — samma disciplin som forut, en
+   vaning ner. Semantiken och komponenterna foljer med av sig sjalva. */
 @media(prefers-color-scheme:dark){:root{
---yta:var(--p-kol-900);--yta-upphojd:var(--p-kol-800);--yta-sankt:var(--p-kol-700);
---text:var(--p-kol-100);--text-svag:var(--p-kol-300);
---linje:var(--p-kol-500);
---accent:var(--p-cyan-300);--accent-text:var(--p-kol-900);
---fokus:var(--p-cyan-300);--markering:var(--p-cyan-900);
---skugga-lyft:0 var(--p-linje-1) var(--p-rym-3) var(--p-slojamork);
---prov-agent-yta:var(--p-amber-900);--prov-agent-text:var(--p-amber-200);
---prov-agent-linje:var(--p-amber-600);
---prov-manniska-yta:var(--p-gron-900);--prov-manniska-text:var(--p-gron-200);
---prov-manniska-linje:var(--p-gron-500);
---prov-system-yta:var(--p-skiffer-800);--prov-system-text:var(--p-skiffer-200);
---prov-system-linje:var(--p-kol-500);
---prov-okand-yta:var(--p-rost-900);--prov-okand-text:var(--p-rost-200);
---prov-okand-linje:var(--p-rost-400)
+--paper:oklch(0.195 0.012 260);--surface:oklch(0.235 0.013 260);
+--surface-2:oklch(0.275 0.014 260);
+--ink:oklch(0.935 0.006 95);--ink-2:oklch(0.76 0.010 95);--ink-3:oklch(0.64 0.010 95);
+--line:oklch(0.32 0.012 260);--line-2:oklch(0.40 0.013 260);
+--accent:oklch(0.74 0.088 205);--accent-ink:oklch(0.80 0.086 205);
+--accent-weak:oklch(0.31 0.040 218);--on-accent:oklch(0.17 0.012 260);
+--pos:oklch(0.74 0.105 158);--pos-weak:oklch(0.31 0.050 158);
+--neg:oklch(0.70 0.130 38);--neg-weak:oklch(0.31 0.060 38);
+--ai:oklch(0.80 0.110 80);--ai-ink:oklch(0.85 0.100 82);
+--ai-weak:oklch(0.31 0.048 78);--ai-line:oklch(0.46 0.070 78);
+--focus:oklch(0.72 0.12 226);
+--shadow-1:0 1px 2px oklch(0 0 0 / 0.30), 0 2px 8px oklch(0 0 0 / 0.28);
+--shadow-2:0 2px 8px oklch(0 0 0 / 0.34), 0 16px 34px oklch(0 0 0 / 0.42)
 }}
 
 /* ---- Grund ---- */
@@ -157,7 +181,8 @@ header nav a{display:inline-flex;align-items:center;min-height:var(--p-traff);
 color:var(--accent);text-decoration:none;font-weight:var(--p-vikt-2)}
 header nav a[aria-current]{color:var(--text);
 box-shadow:inset 0 calc(var(--p-linje-2) * -1) 0 var(--accent)}
-.tid{color:var(--text-svag);font-size:var(--meta);font-variant-numeric:tabular-nums}
+.tid{color:var(--text-svag);font-size:var(--meta);font-family:var(--mono);
+font-variant-numeric:tabular-nums lining-nums}
 main{max-width:var(--p-sida);margin:0 auto;padding:var(--p-rym-5) var(--p-rym-4) 0}
 .fot{max-width:var(--p-sida);margin:var(--p-rym-7) auto 0;
 padding:var(--p-rym-5) var(--p-rym-4) 0;border-top:var(--p-linje-1) solid var(--linje);
@@ -165,12 +190,12 @@ color:var(--text-svag);font-size:var(--meta);text-align:center;line-height:var(-
 
 /* ---- Typografi: h1 > h2 > h3 > meta i storlek, vikt OCH färg ---- */
 h1,h2,h3{text-wrap:balance;color:var(--text)}
-h1{font-size:var(--rubrik-1);font-weight:var(--p-vikt-3);line-height:var(--p-rad-tat);
+h1{font-family:var(--display);font-size:var(--rubrik-1);font-weight:var(--p-vikt-3);line-height:var(--p-rad-tat);
 letter-spacing:var(--p-spar-tat);margin:0 0 var(--p-rym-2)}
-h2{font-size:var(--rubrik-2);font-weight:var(--p-vikt-2);line-height:var(--p-rad-tat);
-letter-spacing:var(--p-spar-tat);margin:var(--p-rym-6) 0 var(--p-rym-3);
+h2{font-family:var(--display);font-size:var(--rubrik-2);font-weight:var(--p-vikt-2);
+line-height:var(--p-rad-tat);letter-spacing:0;margin:var(--p-rym-6) 0 var(--p-rym-3);
 padding-top:var(--p-rym-4);border-top:var(--p-linje-1) solid var(--linje)}
-h3{font-size:var(--rubrik-3);font-weight:var(--p-vikt-3);line-height:var(--p-rad-1);
+h3{font-family:var(--display);font-size:var(--rubrik-3);font-weight:var(--p-vikt-3);line-height:var(--p-rad-1);
 margin:var(--p-rym-5) 0 var(--p-rym-2)}
 p{margin:0 0 var(--p-rym-4);max-width:var(--p-matt);text-wrap:pretty}
 a{color:var(--accent);text-underline-offset:var(--p-understryk);
@@ -179,6 +204,7 @@ text-decoration-thickness:from-font}
 /* ---- Kort och rader ---- */
 .kort{display:block;min-height:var(--p-traff);background:var(--kort-yta);
 border:var(--p-linje-1) solid var(--kort-linje);border-radius:var(--kort-radie);
+box-shadow:var(--skugga-lyft);
 padding:var(--kort-luft);margin:var(--kort-mellanrum) 0;
 text-decoration:none;color:inherit}
 .kort b{display:block;font-size:var(--brodtext);font-weight:var(--p-vikt-2);
@@ -186,7 +212,7 @@ line-height:var(--p-rad-1);color:var(--text)}
 .kort .meta{display:block;margin-top:var(--p-rym-2);color:var(--text-svag);
 font-size:var(--meta);line-height:var(--p-rad-1);font-variant-numeric:tabular-nums}
 .rad{background:var(--kort-yta);border:var(--p-linje-1) solid var(--kort-linje);
-border-radius:var(--kort-radie);padding:var(--p-rym-3) var(--kort-luft);
+border-radius:var(--kort-radie);box-shadow:var(--skugga-lyft);padding:var(--p-rym-3) var(--kort-luft);
 margin:var(--kort-mellanrum) 0}
 .rad .huvud{display:flex;gap:var(--p-rym-2);align-items:center;flex-wrap:wrap;
 font-size:var(--meta);line-height:var(--p-rad-1);color:var(--text-svag);
@@ -228,7 +254,7 @@ font-size:var(--meta);font-weight:var(--p-vikt-2);text-transform:uppercase;
 letter-spacing:var(--p-spar-vid)}
 .chips{display:flex;flex-wrap:wrap;gap:var(--p-rym-2);margin-top:var(--p-rym-2)}
 a.fasett{display:inline-flex;align-items:center;min-height:var(--chip-hojd);
-padding:0 var(--chip-luft);border:var(--p-linje-1) solid var(--linje);
+padding:0 var(--chip-luft);border:var(--p-linje-1) solid var(--linje-2);
 background:var(--kort-yta);border-radius:var(--chip-radie);
 font-size:var(--brodtext);color:var(--text);text-decoration:none}
 a.fasett.aktiv{background:var(--accent);color:var(--accent-text);
@@ -238,13 +264,18 @@ border-color:var(--accent);font-weight:var(--p-vikt-2)}
 form.sok{display:flex;gap:var(--p-rym-2);flex-wrap:wrap;margin:0 0 var(--p-rym-5)}
 input[type=search]{flex:1 1 var(--p-falt);min-height:var(--falt-hojd);appearance:none;
 background:var(--kort-yta);color:var(--text);
-border:var(--p-linje-1) solid var(--linje);border-radius:var(--falt-radie);
+border:var(--p-linje-1) solid var(--linje-2);border-radius:var(--falt-radie);
 padding:0 var(--p-rym-3);font-family:inherit;font-size:var(--brodtext)}
 input[type=search]::placeholder{color:var(--text-svag);opacity:1}
-button{min-height:var(--falt-hojd);background:var(--knapp-yta);color:var(--knapp-text);
-border:var(--p-linje-1) solid var(--knapp-yta);border-radius:var(--falt-radie);
-padding:0 var(--p-rym-5);font-family:inherit;font-size:var(--brodtext);
-font-weight:var(--p-vikt-2);cursor:pointer}
+button,.btn{display:inline-flex;align-items:center;justify-content:center;
+gap:var(--p-rym-1);min-height:var(--falt-hojd);background:var(--knapp-yta);
+color:var(--knapp-text);border:var(--p-linje-1) solid var(--knapp-yta);
+border-radius:var(--falt-radie);padding:0 var(--p-rym-5);font-family:inherit;
+font-size:var(--brodtext);font-weight:var(--p-vikt-2);cursor:pointer;
+text-decoration:none}
+.btn--primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.btn--ghost{background:transparent;border-color:var(--line-2);color:var(--ink-2)}
+.btn--sm{min-height:0;padding:6px 11px;font-size:var(--meta)}
 
 /* ---- Renderat innehåll: dokumentsidan (.dok) och ärendetexten (.text) ---- */
 .dok{overflow-wrap:anywhere}
@@ -272,10 +303,11 @@ margin:var(--p-rym-4) 0 var(--p-rym-1)}
 .dok hr{margin:var(--p-rym-6) 0}
 .text hr{margin:var(--p-rym-5) 0}
 /* Citatet är INNEHÅLL, inte metatext: full textfärg, aldrig --text-svag. Det är
-   linjen som bär betydelsen — färg ensam räcker inte (WCAG 1.4.1), och linjen
-   ligger på 3.7:1 mot pappret och 4.0:1 mot kolet (WCAG 1.4.11). */
+   linjen som bär betydelsen — färg ensam räcker inte (WCAG 1.4.1). Den bär
+   därför --linje-stark, inte husets hårfina avdelare: en avdelare som råkar
+   vara det enda som skiljer citat från brödtext är för svag (WCAG 1.4.11). */
 .text blockquote{margin:0 0 var(--p-rym-4);padding-left:var(--p-rym-3);
-border-left:var(--p-linje-2) solid var(--linje);color:var(--text)}
+border-left:var(--p-linje-2) solid var(--linje-stark);color:var(--text)}
 pre{background:var(--yta-sankt);border:var(--p-linje-1) solid var(--linje);
 border-radius:var(--falt-radie);padding:var(--p-rym-3) var(--p-rym-4);
 overflow-x:auto;font-family:var(--p-mono);font-size:var(--meta);
@@ -291,12 +323,12 @@ padding-left:var(--p-rym-3)}
 form.skrivform{margin:0 0 var(--p-rym-4)}
 textarea{display:block;width:100%;max-width:var(--p-matt);appearance:none;
 background:var(--kort-yta);color:var(--text);
-border:var(--p-linje-1) solid var(--linje);border-radius:var(--falt-radie);
+border:var(--p-linje-1) solid var(--linje-2);border-radius:var(--falt-radie);
 padding:var(--p-rym-3);font-family:inherit;font-size:var(--brodtext);
 line-height:var(--p-rad-2);resize:vertical}
 input[type=text],input[type=password]{flex:1 1 var(--p-falt);
 min-height:var(--falt-hojd);appearance:none;background:var(--kort-yta);
-color:var(--text);border:var(--p-linje-1) solid var(--linje);
+color:var(--text);border:var(--p-linje-1) solid var(--linje-2);
 border-radius:var(--falt-radie);padding:0 var(--p-rym-3);font-family:inherit;
 font-size:var(--brodtext)}
 label[for=nyckel]{display:block;font-size:var(--meta);color:var(--text-svag);
@@ -306,7 +338,7 @@ margin-top:var(--p-rym-2)}
 .skrivrad .meta{color:var(--text-svag);font-size:var(--meta);
 line-height:var(--p-rad-1)}
 button.mild{background:var(--kort-yta);color:var(--text);
-border:var(--p-linje-1) solid var(--linje);font-weight:var(--p-vikt-1)}
+border:var(--p-linje-1) solid var(--linje-2);font-weight:var(--p-vikt-1)}
 details.rattelse{margin:var(--p-rym-3) 0 0}
 details.rattelse summary{display:flex;align-items:center;min-height:var(--p-traff);
 cursor:pointer;color:var(--accent);font-size:var(--meta)}
@@ -315,6 +347,48 @@ form.taggform{margin:0}
 button.tagg{cursor:pointer;font-family:inherit;font-weight:var(--p-vikt-1)}
 form.namnform{display:flex;gap:var(--p-rym-2);flex-wrap:wrap;align-items:center;
 margin:0}
+
+/* ---- Komponentgrammatiken ur kanon: chip, badge, factcard, tabell ----
+   Namnen ar kanons, inte vyns egna. Det ar hela poangen: en chip ska heta
+   chip i alla tre husen, annars ar likheten en slump och inte ett kontrakt. */
+.chip{display:inline-flex;align-items:center;gap:var(--p-rym-1);
+padding:2.5px 9px;border-radius:var(--chip-radie);
+font-size:var(--meta);font-weight:550;line-height:1.5;
+border:var(--p-linje-1) solid transparent;white-space:nowrap}
+.chip__i{font-size:11px;line-height:1}
+.chip--muted{background:var(--surface-2);color:var(--ink-2);border-color:var(--line)}
+.chip--ok{background:var(--pos-weak);color:var(--pos);
+border-color:color-mix(in oklch,var(--pos) 30%,transparent)}
+.chip--info{background:var(--accent-weak);color:var(--accent-ink);
+border-color:color-mix(in oklch,var(--accent) 28%,transparent)}
+.chip--warn{background:var(--ai-weak);color:var(--ai-ink);border-color:var(--ai-line)}
+.chip--neg{background:var(--neg-weak);color:var(--neg);
+border-color:color-mix(in oklch,var(--neg) 30%,transparent)}
+.chip--ai{background:var(--ai-weak);color:var(--ai-ink);border-color:var(--ai-line)}
+.badge{display:inline-block;min-width:17px;padding:0 5px;margin-left:3px;
+border-radius:9px;background:var(--accent);color:var(--on-accent);
+font-size:11px;font-weight:700;text-align:center;line-height:17px}
+.factcard{background:var(--surface);border:var(--p-linje-1) solid var(--line-2);
+border-radius:var(--radius);padding:13px 15px;
+display:flex;flex-direction:column;gap:9px}
+.factcard__head{font-size:12px;font-weight:650;letter-spacing:.05em;
+text-transform:uppercase;color:var(--ink-3)}
+.eyebrow{display:inline-block;font-size:11.5px;font-weight:600;
+letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+/* Tabellen kommer ur renderad markdown i dokumentvyn. Rubrikraden bar
+   remsans familj, radlinjer i avdelarens ton, ingen zebra — som i kanon. */
+.dok table,.text table{width:100%;border-collapse:collapse;display:block;
+overflow-x:auto;font-size:13.5px;margin:0 0 var(--p-rym-4);
+border:var(--p-linje-1) solid var(--line);border-radius:var(--radius);
+background:var(--surface);box-shadow:var(--skugga-lyft)}
+.dok th,.dok td,.text th,.text td{text-align:left;padding:11px 15px;
+border-bottom:var(--p-linje-1) solid var(--line);vertical-align:top}
+.dok th,.text th{background:var(--surface-2);color:var(--ink-2);
+font-size:11.5px;font-weight:600;letter-spacing:.05em;
+text-transform:uppercase;border-bottom:var(--p-linje-1) solid var(--line-2)}
+.dok tbody tr:last-child td,.text tbody tr:last-child td{border-bottom:0}
+/* Etiketten ar redan ett piller — den blir kanons dampade chip. */
+.tagg{font-weight:550;line-height:1.5}
 
 /* ---- Tillstånd. Hover bara med riktig pekare, rörelse bara om den tillåts. ---- */
 @media(hover:hover){
@@ -388,6 +462,29 @@ export function sida(
     'och lämnar alltid aktör och gammalt värde i händelseloggen.<br>' +
     'Ärendeplattformen är källan — inga länkar till Linear.</footer></body></html>'
   );
+}
+
+/**
+ * Designkontraktet: status ar en CHIP, inte lopande text. Klassen kommer ur
+ * state_typ (maskinvardet), ORDET ur state_namn — sa uppslaget aldrig kan
+ * hitta pa ett tillstand som inte finns, och texten aldrig slutar vara den
+ * arkivet faktiskt bar.
+ *
+ * Mappningen ar husets tre utfall: klart ar gront, avbrutet rott, pagaende
+ * bar accenten, och det som annu inte borjat star dampat. Ett OKANT state_typ
+ * far den dampade chippen och sitt namn utskrivet — aldrig en tom ruta.
+ */
+const STATE_CHIP: Record<string, string> = {
+  completed: 'chip--ok',
+  canceled: 'chip--neg',
+  started: 'chip--info',
+  unstarted: 'chip--muted',
+  backlog: 'chip--muted',
+};
+
+export function statuschip(stateTyp: string, stateNamn: string): string {
+  const klass = STATE_CHIP[stateTyp] ?? 'chip--muted';
+  return `<span class="chip ${klass}">${esc(stateNamn)}</span>`;
 }
 
 // ---- Proveniens (KRAV-5, AI Act art. 50) ----------------------------------

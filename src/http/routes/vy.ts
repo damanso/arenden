@@ -10,6 +10,7 @@
 //   3. ALL dynamisk text går genom esc() i ../vy/mall.js (KRAV-6), och varje
 //      kommentar/händelse skrivs ut med proveniens() (KRAV-5).
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Router } from 'express';
 import { config } from '../../config.js';
 import { withTransaction } from '../../db/tx.js';
@@ -58,6 +59,7 @@ import {
   relationText,
   sakerUrl,
   sida,
+  statuschip,
   verbText,
 } from '../vy/mall.js';
 import { sessionsAktor } from '../vy/session.js';
@@ -162,8 +164,8 @@ function arendeKort(a: Arende): string {
   return (
     `<a class=kort href="${esc(arendeUrl(a.identifier))}">` +
     `<b>${esc(a.identifier)} — ${esc(a.title)}</b>` +
+    `<span class=meta>${statuschip(a.state_typ, a.state_namn)}</span>` +
     metarad([
-      a.state_namn,
       prioNamn(a.priority),
       a.due_date ? `senast ${a.due_date}` : null,
       a.milstolpe,
@@ -183,8 +185,8 @@ function traffKort(t: Soktraff): string {
   return (
     `<a class=kort href="${esc(arendeUrl(t.identifier))}">` +
     `<b>${esc(t.identifier)} — ${esc(t.title)}</b>` +
+    `<span class=meta>${statuschip(t.state_typ, STATE_TEXT[t.state_typ])}</span>` +
     metarad([
-      STATE_TEXT[t.state_typ],
       t.traff_i === 'kommentar' ? 'träff i kommentar' : 'träff i ärendetexten',
     ]) +
     '</a>'
@@ -459,8 +461,8 @@ function mittKort(a: MittArende): string {
   return (
     `<a class=kort href="${esc(arendeUrl(a.identifier))}">` +
     `<b>${esc(a.identifier)} — ${esc(a.title)}</b>` +
+    `<span class=meta>${statuschip(a.state_typ, a.state_namn)}</span>` +
     metarad([
-      a.state_namn,
       a.projekt ?? 'utan projekt',
       prioNamn(a.priority),
       a.due_date === null ? null : `senast ${a.due_date}`,
@@ -826,9 +828,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
 
   const kropp =
     `<h1>${esc(a.identifier)} — ${esc(a.title)}</h1>` +
-    `<p class=summering>${esc(
+    `<p class=summering>${statuschip(a.state_typ, a.state_namn)} ${esc(
       [
-        a.state_namn,
         prioNamn(a.priority),
         a.due_date ? `senast ${a.due_date}` : null,
         a.milstolpe,
@@ -918,6 +919,38 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
 });
 
 // Okänd /vy-sökväg svarar HTML — inte API:ts JSON-404 (KRAV-7).
+// Designkontraktet. Vyns EGNA typsnittsfiler: samma woff2-innehall som
+// redovisningens och Hermes-ytans, men en egen kopia pa en egen rutt. En delad
+// sokvag mellan systemen hade varit precis den bindning K-9 forbjuder.
+// Listan ar en TILLATELSELISTA, inte ett filter: bara dessa sju namn nas, sa
+// ingen sokvag kan pekas nagon annanstans. Rutten ligger fore 404-fangaren.
+// Sokvagen harleds ur MODULENS egen plats, inte ur arbetskatalogen: src/ och
+// dist/ ligger lika djupt, sa samma tre steg upp traffar ratt i bada — och
+// provet kor mot src medan tjansten kor mot dist.
+const TYPSNITT_KAT = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../assets/typsnitt',
+);
+const TYPSNITT_FILER = new Set([
+  'public-sans-latin-400-normal.woff2',
+  'public-sans-latin-600-normal.woff2',
+  'public-sans-latin-700-normal.woff2',
+  'ibm-plex-mono-latin-400-normal.woff2',
+  'ibm-plex-mono-latin-600-normal.woff2',
+  'LICENSE-public-sans.txt',
+  'LICENSE-ibm-plex-mono.txt',
+]);
+
+vyRouter.get('/typsnitt/:fil', (req, res, next) => {
+  const fil = req.params.fil;
+  if (!TYPSNITT_FILER.has(fil)) return next();
+  res.type(fil.endsWith('.woff2') ? 'font/woff2' : 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(TYPSNITT_KAT, fil), (fel) => {
+    if (fel) next();
+  });
+});
+
 vyRouter.use((_req, res) => {
   res.status(404).type('html').send(ickeFunnen('Sidan finns inte.'));
 });
