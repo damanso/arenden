@@ -50,6 +50,7 @@ import { crmKort, hamtaCrm } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
 import { renderaArendetext, renderaMarkdown } from '../vy/markdown.js';
 import {
+  brodsmula,
   datum,
   datumtid,
   esc,
@@ -60,6 +61,7 @@ import {
   sakerUrl,
   sida,
   statuschip,
+  tomtLage,
   verbText,
 } from '../vy/mall.js';
 import { sessionsAktor } from '../vy/session.js';
@@ -344,7 +346,12 @@ vyRouter.get('/', async (req, res) => {
       ? `<p class=notis>Visar ${esc(TAK_ARENDEN)} öppna ärenden — det finns fler.</p>`
       : '') +
     (grupper.length === 0
-      ? '<p class=notis>Inga öppna ärenden.</p>'
+      ? tomtLage(
+          'Ingenting öppet just nu',
+          'Alla ärenden i plattformen är stängda eller avbrutna.',
+          '/vy/digest',
+          'Se vad som hänt →',
+        )
       : grupper
           .map(
             (g) =>
@@ -427,7 +434,15 @@ vyRouter.get('/digest', async (req, res) => {
     (handelser.length >= TAK_DIGEST
       ? `<p class=notis>Taket ${esc(TAK_DIGEST)} händelser är nått — äldre rader i fönstret visas inte.</p>`
       : '') +
-    (handelser.length === 0 ? '<p class=notis>Inga händelser i fönstret.</p>' : dagar);
+    (handelser.length === 0
+      ? tomtLage(
+          'Tyst i fönstret',
+          'Ingen har rört ett ärende under perioden. Loggen är'
+            + ' komplett — det står stilla, det saknas inte.',
+          '/vy',
+          'Till alla ärenden →',
+        )
+      : dagar);
 
   res.type('html').send(sida('Vad hände', kropp, 'digest', sessionsAktor(req)));
 });
@@ -722,7 +737,15 @@ vyRouter.get('/sok', async (req, res) => {
         (data.traffar !== null && data.traffar.length >= TAK_SOK
           ? `<p class=notis>Taket ${esc(TAK_SOK)} träffar är nått — förfina sökningen.</p>`
           : '') +
-        (antal === 0 ? '<p class=notis>Inga träffar.</p>' : resultat));
+        (antal === 0
+        ? tomtLage(
+            'Inga träffar.',
+            'Sökningen läser ärendetext och kommentarer. Prova ett'
+              + ' ärendenummer, ett kundnamn eller ett kortare ord.',
+            '/vy',
+            'Bläddra i stället →',
+          )
+        : resultat));
 
   res.type('html').send(sida('Sök', kropp, 'sok', sessionsAktor(req)));
 });
@@ -865,13 +888,18 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         `<ul class=lista role=list>${data.relationer.map(relationRad).join('')}</ul>`
       : '') +
     `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
-    (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Inga kommentarer.</p>') +
+    (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Ingen har kommenterat det här ärendet ännu.</p>') +
     nyKommentarForm(aktor, a.identifier) +
     borttagnaAvsnitt(aktor, data.borttagna, retur) +
     `<h2>Historik (${esc(data.handelser.length)})</h2>` +
-    (historik ? `<ul class=lista role=list>${historik}</ul>` : '<p class=notis>Inga händelser.</p>');
+    (historik ? `<ul class=lista role=list>${historik}</ul>` : '<p class=notis>Ärendet har inte ändrats sedan det kom in.</p>');
 
-  res.type('html').send(sida(a.identifier, kropp, undefined, aktor));
+  res.type('html').send(
+    sida(a.identifier, kropp, undefined, aktor, [
+      ['Alla', '/vy'],
+      [a.identifier, null],
+    ]),
+  );
 });
 
 // ---- Dokumentlänkar KRAV-1/2: dokumentsidan --------------------------------
@@ -915,7 +943,13 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
     `<a href="${esc(obsidian)}">öppna i Obsidian</a></p>` +
     `<div class=dok>${renderaMarkdown(innehall, index)}</div>`;
 
-  res.type('html').send(sida(namn, kropp, undefined, sessionsAktor(req)));
+  res.type('html').send(
+    sida(namn, kropp, undefined, sessionsAktor(req), [
+      ['Alla', '/vy'],
+      ['Dokument', null],
+      [namn, null],
+    ]),
+  );
 });
 
 // Okänd /vy-sökväg svarar HTML — inte API:ts JSON-404 (KRAV-7).

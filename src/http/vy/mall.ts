@@ -172,15 +172,66 @@ border-radius:0 0 var(--p-radie-1) 0}
 .hoppa:focus{transform:none}
 
 /* ---- Ram ---- */
-header{position:sticky;top:0;z-index:var(--p-lager-header);background:var(--yta);
-border-bottom:var(--p-linje-1) solid var(--linje);box-shadow:var(--skugga-lyft);
-padding:var(--p-rym-1) var(--p-rym-4);display:flex;gap:var(--p-rym-4);
-align-items:center;justify-content:space-between}
-header nav{display:flex;gap:var(--p-rym-4);flex-wrap:wrap}
-header nav a{display:inline-flex;align-items:center;min-height:var(--p-traff);
-color:var(--accent);text-decoration:none;font-weight:var(--p-vikt-2)}
-header nav a[aria-current]{color:var(--text);
-box-shadow:inset 0 calc(var(--p-linje-2) * -1) 0 var(--accent)}
+/* ---- Menygrammatiken (iteration 2). Kanons namn: appbar + nav. ----
+   Egen kopia, som allt annat i kontraktet: samma grammatik som Hermes-ytan
+   bar, men vyns egna mattoken. K-9 star — ingen delad fil, ingen delad rutt. */
+.topbar{position:sticky;top:0;z-index:var(--p-lager-header);
+background:var(--yta);box-shadow:var(--skugga-lyft)}
+.appbar{display:flex;align-items:center;gap:var(--p-rym-3);
+padding:var(--p-rym-2) var(--p-rym-4);
+border-bottom:var(--p-linje-1) solid var(--linje)}
+.appbar .brand{display:inline-flex;align-items:center;gap:var(--p-rym-2);
+flex:none;font-family:var(--display);font-size:var(--meta);
+font-weight:var(--p-vikt-2);letter-spacing:var(--p-spar-tat);
+color:var(--text);text-decoration:none}
+.appbar .brand:hover{color:var(--accent)}
+.appbar .brand .mark{color:var(--accent);display:inline-flex}
+.appbar .vart{color:var(--text-svag);font-size:var(--meta);min-width:0;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.appbar .vart::before{content:"/";color:var(--linje);margin-right:var(--p-rym-2)}
+.appbar .hornet{margin-left:auto;flex:none}
+/* Vagrat rullande rad utan radbrytning: fem piller ar bredare an en telefon,
+   och en meny som bryter till tva rader flyttar sig nar innehallet byts.
+   Rullningen ar CSS — vyn ar fortfarande utan en rad skript. */
+header nav.nav{display:flex;gap:var(--p-rym-2);align-items:center;flex-wrap:nowrap;
+padding:var(--p-rym-1) var(--p-rym-4);
+border-bottom:var(--p-linje-1) solid var(--linje);
+overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none}
+header nav.nav::-webkit-scrollbar{display:none}
+header nav.nav a{display:inline-flex;align-items:center;gap:var(--p-rym-2);
+flex:none;min-height:var(--p-traff);padding:0 var(--p-rym-3);
+border-radius:var(--p-radie-rund);border:var(--p-linje-1) solid transparent;
+color:var(--text-svag);font-size:var(--meta);font-weight:var(--p-vikt-2);
+text-decoration:none;white-space:nowrap;box-shadow:none}
+header nav.nav a:hover{background:var(--yta-sankt);border-color:var(--linje);
+color:var(--text)}
+header nav.nav a[aria-current]{background:var(--accent-weak);
+color:var(--accent-ink);border-color:color-mix(in oklch,var(--accent) 28%,transparent);
+box-shadow:none}
+header nav.nav .ikon{opacity:.75}
+header nav.nav a[aria-current] .ikon{opacity:1}
+/* Brodsmulan star FORE rubriken och ar tyst: en position, inte en handling.
+   Sista ledet ar aldrig en lank — man star redan dar. */
+.smula{display:flex;align-items:center;gap:var(--p-rym-2);flex-wrap:wrap;
+margin:0 0 var(--p-rym-3);font-size:var(--meta);color:var(--text-svag)}
+.smula a{color:var(--text-svag);text-decoration:none}
+.smula a:hover{color:var(--accent);text-decoration:underline}
+.smula .sep{color:var(--linje)}
+.smula b{color:var(--text);font-weight:var(--p-vikt-2)}
+/* Ikonspraket: ETT sprak. Samma rutnat, samma streckbredd, currentColor — sa
+   ikonen arver textens farg i bada lagen. Dekor, aldrig betydelse. */
+.ikon{display:inline-block;vertical-align:-.18em;flex:none}
+/* Tomt lage: en mening som sager vad tomheten BETYDER, och en vag vidare.
+   Ett raknat noll ar ett databassvar, inte ett besked till en manniska —
+   och exemplet star med flit INTE utskrivet har: den har kommentaren
+   skickas med varje sida, och en citerad strang blir en forekomst. */
+.tomt{display:block;padding:var(--p-rym-5) var(--p-rym-4);
+background:var(--kort-yta);border:var(--p-linje-1) dashed var(--linje);
+border-radius:var(--kort-radie);color:var(--text-svag);
+font-size:var(--brodtext);line-height:var(--p-rad-2);
+margin:0 0 var(--p-rym-4);max-width:var(--p-matt)}
+.tomt b{display:block;color:var(--text);font-weight:var(--p-vikt-2);
+margin-bottom:var(--p-rym-1)}
 .tid{color:var(--text-svag);font-size:var(--meta);font-family:var(--mono);
 font-variant-numeric:tabular-nums lining-nums}
 main{max-width:var(--p-sida);margin:0 auto;padding:var(--p-rym-5) var(--p-rym-4) 0}
@@ -405,17 +456,106 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 }
 `;
 
-/** Navigationen är samma ytor överallt — ordningen ändras aldrig (WCAG 3.2.3). */
+// ---- Ikonspraket (iteration 2) --------------------------------------------
+//
+// ETT sprak: samma rutnat (20x20), samma streckbredd, currentColor. Ikonen
+// arver textens farg i bada lagen och i varje tillstand, och ritas av oss —
+// inget bibliotek, ingen CDN, ingen extern hamtning. Egen kopia per system,
+// som allt annat i kontraktet.
+//
+// Emojin var problemet. Den ritas av OPERATIVSYSTEMET: olika teckensnitt och
+// olika farger pa varje plattform, ingen av dem husets. En rad emoji i en meny
+// ar det tydligaste tecknet pa att ett granssnitt inte ar ritat utan hopplockat.
+//
+// Ikonerna ar DEKOR och bar aria-hidden: ordet bredvid bar hela betydelsen.
+// Samma regel som proveniensmarkets ikon redan foljer (KRAV-5).
+const IKONER: Record<string, string> = {
+  marke:
+    'M10 2.6 17 6.4v7.2L10 17.4 3 13.6V6.4z|M10 7.2v5.6M7.6 8.5v3M12.4 8.5v3',
+  mitt:
+    'M12.6 7.4a2.6 2.6 0 1 1-5.2 0 2.6 2.6 0 0 1 5.2 0z|M4.4 16.6c0-2.9 2.5-5 5.6-5s5.6 2.1 5.6 5',
+  arenden:
+    'M3.2 5.9h13.6v8.2H3.2z|m3.4 6.4 6.6 4.4 6.6-4.4',
+  flode:
+    'M2.8 10h3.1l1.9-4.4 3.9 8.8 1.9-4.4h3.6',
+  sok:
+    'M15.4 9.1a6.3 6.3 0 1 1-12.6 0 6.3 6.3 0 0 1 12.6 0z|m13.7 13.7 3.5 3.5',
+  rattelse:
+    'M13.4 3.6 16.4 6.6 7.4 15.6 3.6 16.4l.8-3.8z|M11.6 5.4l3 3',
+  dokument:
+    'M6.1 3.3h5.5l3.3 3.3v10.1H6.1z|M11.4 3.4v3.4h3.4|M8.2 11h5M8.2 13.6h3.4',
+  extern:
+    'M8.1 4.6h7.3v7.3M15.4 4.6 5.6 14.4',
+  klar:
+    'M17.2 10a7.2 7.2 0 1 1-14.4 0 7.2 7.2 0 0 1 14.4 0z|m6.9 10.1 2.2 2.2 4.1-4.5',
+  tid:
+    'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z|M10 5.9V10l2.6 1.8',
+};
+
+/** En ikon, eller tom strang. En SAKNAD ikon far aldrig valta en sida. */
+export function ikon(namn: string, storlek = 16): string {
+  const d = IKONER[namn];
+  if (!d) return '';
+  const paths = d.split('|').map((p) => '<path d="' + p + '"/>').join('');
+  return (
+    '<svg class=ikon width=' + storlek + ' height=' + storlek +
+    ' viewBox="0 0 20 20" fill=none stroke=currentColor stroke-width=1.5' +
+    ' stroke-linecap=round stroke-linejoin=round aria-hidden=true' +
+    ' focusable=false>' + paths + '</svg>'
+  );
+}
+
+/**
+ * Brodsmulan: var man ar. Sista ledet ar ALDRIG en lank — man star redan dar.
+ * Delarna ar [text, vag|null]; texten escapas, vagen ar husets egen.
+ */
+export function brodsmula(delar: [string, string | null][]): string {
+  const led = delar.map(([text, vag], i) => {
+    const sep = i ? '<span class=sep>\u203a</span>' : '';
+    const sist = i === delar.length - 1;
+    return sep + (vag && !sist
+      ? '<a href="' + vag + '">' + esc(text) + '</a>'
+      : '<b>' + esc(text) + '</b>');
+  });
+  return '<nav class=smula aria-label="Var du är">' + led.join('') + '</nav>';
+}
+
+/**
+ * Ett tomt lage sager vad tomheten BETYDER och pekar vidare. "Inga träffar."
+ * ar ett databassvar; en manniska som moter det vet inte om hon sokt fel,
+ * om det saknas data eller om allt ar gjort.
+ */
+export function tomtLage(rubrik: string, mening: string,
+                         vag?: string, lanktext?: string): string {
+  const vidare = vag && lanktext
+    ? ' <a href="' + vag + '">' + esc(lanktext) + '</a>'
+    : '';
+  return '<div class=tomt><b>' + esc(rubrik) + '</b>' + esc(mening) + vidare + '</div>';
+}
+
+/**
+ * Navigationen är samma ytor överallt, i samma ordning på varje sida — det är
+ * det WCAG 3.2.3 kräver, och det håller.
+ *
+ * ORDNINGEN ÄR OMLAGD EN GÅNG, MED AVSIKT (designtråden 31/8). Husregeln hit
+ * har varit "nya ytor läggs sist, befintliga flyttar aldrig", och den regeln
+ * skrevs för TILLÄGG — den ska fortsätta gälla för nästa yta som tillkommer.
+ * Det här är inte ett tillägg utan en omläggning av hela raden: "vad ligger på
+ * mig" är det man kommer hit för, och den låg sist för att den byggdes sist.
+ * Att låta byggordningen bestämma läsordningen är precis den sortens sak som
+ * får ett gränssnitt att kännas hopsamlat i stället för ritat.
+ *
+ * Namnen i menyn är den kortaste formen av sidans eget namn; sidans h1 står
+ * kvar oförändrad. "Mitt" i menyn, "Vad ligger på mig" som rubrik.
+ */
 export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser' | 'mitt';
 
-const YTOR: { vag: string; text: string; yta: Yta }[] = [
-  { vag: '/vy', text: 'Ärenden', yta: 'vy' },
-  { vag: '/vy/digest', text: 'Vad hände', yta: 'digest' },
-  { vag: '/vy/sok', text: 'Sök', yta: 'sok' },
-  // K-1. Lagd SIST: de tre befintliga ytorna byter aldrig plats.
-  { vag: '/vy/rattelser', text: 'Rättelser', yta: 'rattelser' },
-  // K-9. Samma regel: läggs sist, ingen befintlig yta flyttar (WCAG 3.2.3).
-  { vag: '/vy/mitt', text: 'Vad ligger på mig', yta: 'mitt' },
+const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
+  { vag: '/vy/mitt', text: 'Mitt', yta: 'mitt', ikonnamn: 'mitt' },
+  { vag: '/vy', text: 'Alla', yta: 'vy', ikonnamn: 'arenden' },
+  { vag: '/vy/digest', text: 'Vad hände', yta: 'digest', ikonnamn: 'flode' },
+  { vag: '/vy/sok', text: 'Sök', yta: 'sok', ikonnamn: 'sok' },
+  { vag: '/vy/rattelser', text: 'Rättelser', yta: 'rattelser', ikonnamn: 'rattelse' },
 ];
 
 /**
@@ -438,9 +578,12 @@ export function sida(
   kropp: string,
   aktiv?: Yta,
   aktor?: Aktor | null,
+  smula?: [string, string | null][],
 ): string {
   const nav = YTOR.map(
-    (y) => `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>${esc(y.text)}</a>`,
+    (y) =>
+      `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
+      `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
   ).join('');
   return (
     '<!doctype html><html lang=sv><head><meta charset=utf-8>' +
@@ -448,7 +591,10 @@ export function sida(
     '<meta name=apple-mobile-web-app-capable content=yes>' +
     `<title>${esc(titel)} — Ärenden</title><style>${CSS}</style></head><body>` +
     '<a class=hoppa href="#innehall">Hoppa till innehållet</a>' +
-    `<header><nav aria-label="Vyns ytor">${nav}</nav>` +
+    '<header class=topbar><div class=appbar>' +
+    `<a class=brand href="/vy"><span class=mark>${ikon('marke', 18)}</span>` +
+    'Ärenden</a>' +
+    `<span class=vart>${esc(titel)}</span>` +
     '<div class=hornet>' +
     (aktor === undefined
       ? ''
@@ -456,8 +602,9 @@ export function sida(
         ? '<a class=jag href="/vy/logga-in">Logga in</a>'
         : `<a class=jag href="/vy/logga-in">${proveniens(aktor.typ, aktor.namn)}</a>`) +
     `<span class=tid><span class=dold>Renderad </span>${esc(klockslag(new Date()))}</span>` +
-    '</div></header>' +
-    `<main id=innehall tabindex=-1>${kropp}</main>` +
+    '</div></div>' +
+    `<nav class=nav aria-label="Vyns ytor">${nav}</nav></header>` +
+    `<main id=innehall tabindex=-1>${smula ? brodsmula(smula) : ''}${kropp}</main>` +
     '<footer class=fot>Läsning kräver ingen nyckel. Ändringar kräver inloggning ' +
     'och lämnar alltid aktör och gammalt värde i händelseloggen.<br>' +
     'Ärendeplattformen är källan — inga länkar till Linear.</footer></body></html>'
