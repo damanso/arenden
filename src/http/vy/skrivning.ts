@@ -82,6 +82,10 @@ export function sakerRetur(varde: unknown): string {
 // någon annan kan välja, renderad på Davids sida; koderna nedan är en sluten
 // mängd och kan inte bära något annat.
 
+// Redovisningen ager identiteten. Adressen byts har nar ingangen flyttar
+// modulerna till vagar bakom en gemensam /.
+const REDOVISNINGENS_LOGIN = 'https://david-brain.tail743706.ts.net:8444/app/login';
+
 const NOTISER: Record<string, string> = {
   inloggad: 'Du är inloggad. Dina ändringar bär din aktörsidentitet i händelseloggen.',
   utloggad: 'Du är utloggad. Vyn går fortfarande att läsa.',
@@ -357,9 +361,22 @@ export function monteraSkrivrutter(router: Router): void {
         '<div class=skrivrad><button type=submit>Logga ut</button></div></form>' +
         '<p><a href="/vy">Till överblicken</a></p>'
       : '<h1>Logga in</h1>' +
-        '<p class=summering>Att läsa vyn kräver ingen nyckel. Att ändra gör det: ' +
-        'aktören i händelseloggen härleds alltid ur en API-nyckel — aldrig ur ett ' +
+        '<p class=summering>Att läsa vyn kräver ingen inloggning. Att ändra gör det: ' +
+        'aktören i händelseloggen härleds alltid ur ett bevis — aldrig ur ett ' +
         'formulärfält — så att en agents skrivning aldrig kan bära en människas namn.</p>' +
+        // Davids vag star forst, som det den ar. Sidan visade tidigare BARA
+        // API-nyckeln, aven efter att den gemensamma sessionen byggts - en vag
+        // som inte star pa skylten finns inte for den som laser skylten.
+        '<h2>Logga in med ditt Locollabs-konto</h2>' +
+        '<p class=summering>Samma användarnamn och lösenord som i redovisningen. ' +
+        'Loggar du in där är du inloggad här också — det är samma system.</p>' +
+        '<p><a class=btn href="' + REDOVISNINGENS_LOGIN + '">Till inloggningen</a></p>' +
+        '<p class=notis>Har du redan loggat in i redovisningen och ändå ser den här ' +
+        'sidan: logga <b>ut</b> där och in igen. Sessioner som skapades före ' +
+        '2026-09-07 18:46 gällde bara redovisningen och når inte hit.</p>' +
+        '<details class=rattelse><summary>API-nyckel — för agenter</summary>' +
+        '<p class=summering>Agenterna bär nyckel, aldrig session. Som människa ' +
+        'behöver du ingen.</p>' +
         (fel ? '<p class=notis>Nyckeln gick inte att känna igen, eller är återkallad.</p>' : '') +
         '<form class=skrivform method=post action="/vy/logga-in">' +
         `<input type=hidden name=fran value="${esc(fran)}">` +
@@ -368,7 +385,7 @@ export function monteraSkrivrutter(router: Router): void {
         'spellcheck=false autocapitalize=off>' +
         '<div class=skrivrad><button type=submit>Logga in</button>' +
         '<span class=meta>Nyckeln lagras aldrig i sidan och skrivs aldrig i någon logg.</span>' +
-        '</div></form>';
+        '</div></form></details>';
 
     res.type('html').send(sida('Logga in', notisrad(req) + kropp, undefined, aktor));
   });
