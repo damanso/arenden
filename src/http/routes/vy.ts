@@ -72,6 +72,7 @@ import {
   monteraSkrivrutter,
   notisrad,
   nyKommentarForm,
+  rattaArendeForm,
   skrivlage,
 } from '../vy/skrivning.js';
 
@@ -212,6 +213,9 @@ const BYTESVERB = new Set([
   // K-10: ärendets projekt. Skiljs från 'andrade_projektnamn', som byter namn
   // PÅ ett projekt — det här flyttar ett ärende mellan två.
   'andrade_projekt',
+  // Beslut #145: titeln. 'rattade_beskrivning' star MEDVETET inte har -
+  // samma skal som kommentarsrattelsen tva rader upp.
+  'andrade_titel',
 ]);
 
 /**
@@ -874,6 +878,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     (a.description.trim()
       ? `<div class=text>${renderaArendetext(a.description, index)}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
+    // Beslut #145: hopfalld under texten den rattar. Menygrammatiken -
+    // enkel yta, komplexiteten en klickning ned.
+    rattaArendeForm(aktor, a.identifier, a.title, a.description) +
     // Bilagorna står FÖRE kommentarerna: det är dokumentlänkarna David letade
     // efter 19/8, och trettio av dem finns ingen annanstans i systemet.
     (data.bilagor.length > 0

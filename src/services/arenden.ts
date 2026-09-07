@@ -459,7 +459,16 @@ export async function uppdateraArendeState(
 // ---- K-2/K-3: fältuppdateringar -------------------------------------------
 
 /** Fälten update_issue kan skriva. Namnen är kolumnnamnen — inget översättningslager. */
-export type Falt = 'priority' | 'due_date' | 'milstolpe' | 'foralder' | 'projekt';
+export type Falt =
+  | 'priority'
+  | 'due_date'
+  | 'milstolpe'
+  | 'foralder'
+  | 'projekt'
+  // Beslut #145: arendets egen text. Kommentarer har kunnat rattas sedan K-1;
+  // arendets titel gick inte att ratta alls, bara att makulera och gora om.
+  | 'title'
+  | 'description';
 
 export interface Faltandring {
   falt: Falt;
@@ -479,6 +488,16 @@ export interface FaltInput {
    * projektet. Projektet måste redan finnas — se sokProjekt nedan.
    */
   projekt?: string | null;
+  /**
+   * Beslut #145: rubriken. Aldrig null — ett ärende utan titel finns inte
+   * (kolumnen är NOT NULL). undefined = rör inte fältet.
+   */
+  title?: string;
+  /**
+   * Beslut #145: brödtexten. null tömmer den till '' — kolumnen är NOT NULL
+   * DEFAULT '', så tomt är den enda formen av "ingen beskrivning" som finns.
+   */
+  description?: string | null;
   /**
    * Skriv ENDAST fält som är tomma i dag. Återläsningen av Linear-arkivet får
    * aldrig skriva över en prioritet som satts efter cutovern (26 ärenden bär
@@ -544,6 +563,14 @@ export async function uppdateraArendeFalt(
   const skrivProjekt =
     nyttProjektId !== undefined && satt('projekt', arende.projekt, input.projekt ?? null);
 
+  // Beslut #145. bara_om_osatt slar aldrig till har och det ar meningen:
+  // title ar aldrig null och description ar '' i stallet for null, sa
+  // aterlasningen av arkivet kan inte skriva over en text nagon rattat.
+  const skrivTitle = input.title !== undefined && satt('title', arende.title, input.title);
+  const nyBeskrivning = input.description === null ? '' : input.description;
+  const skrivBeskrivning =
+    nyBeskrivning !== undefined && satt('description', arende.description, nyBeskrivning);
+
   if (andringar.length === 0) return { arende, andringar };
 
   await client.query(
@@ -553,6 +580,8 @@ export async function uppdateraArendeFalt(
             milstolpe   = CASE WHEN $7::bool THEN $8::text ELSE milstolpe   END,
             foralder_id = CASE WHEN $9::bool THEN $10::uuid ELSE foralder_id END,
             project_id  = CASE WHEN $11::bool THEN $12::uuid ELSE project_id  END,
+            title       = CASE WHEN $13::bool THEN $14::text ELSE title       END,
+            description = CASE WHEN $15::bool THEN $16::text ELSE description END,
             uppdaterad  = now()
       WHERE tenant_id = $1 AND id = $2`,
     [
@@ -568,6 +597,10 @@ export async function uppdateraArendeFalt(
       nyForalderId ?? null,
       skrivProjekt,
       nyttProjektId ?? null,
+      skrivTitle,
+      input.title ?? null,
+      skrivBeskrivning,
+      nyBeskrivning ?? null,
     ],
   );
 

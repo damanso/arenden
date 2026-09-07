@@ -117,6 +117,11 @@ const VERB_FOR_FALT: Record<Falt, string> = {
   milstolpe: 'andrade_milstolpe',
   foralder: 'andrade_foralder',
   projekt: 'andrade_projekt',
+  // Beslut #145. Titeln ar kort och renderas som "A -> B" i digesten.
+  title: 'andrade_titel',
+  // Beskrivningen gor det INTE: den kan vara 20 000 tecken. Samma skal som
+  // for kommentarsrattelsen, och darfor samma payloadform (gammal_text).
+  description: 'rattade_beskrivning',
 };
 
 /**
@@ -265,7 +270,7 @@ export const ACTIONS: RegistreradAction[] = [
 
   def({
     name: 'update_issue',
-    title: 'Uppdatera ärendets fält (prioritet, deadline, milstolpe, förälder)',
+    title: 'Uppdatera ärendets fält (titel, beskrivning, prioritet, deadline, milstolpe, förälder)',
     sensitivity: 'write',
     inputSchema: z
       .object({
@@ -278,6 +283,10 @@ export const ACTIONS: RegistreradAction[] = [
         // K-10: projektets NAMN. null tar bort ärendet ur projektet. Ett okänt
         // namn ger 404 — den här vägen skapar aldrig ett projekt.
         projekt: safeText(200).nullable().optional(),
+        // Beslut #145. Titeln kan inte nollställas — ett ärende utan rubrik
+        // finns inte. Beskrivningen kan: null tömmer den till ''.
+        title: safeText(300).optional(),
+        description: safeText(20_000).nullable().optional(),
         skal: SkalSchema.optional(),
         bara_om_osatt: z.boolean().default(false),
       })
@@ -288,10 +297,12 @@ export const ACTIONS: RegistreradAction[] = [
           v.due !== undefined ||
           v.milstolpe !== undefined ||
           v.parent !== undefined ||
-          v.projekt !== undefined,
+          v.projekt !== undefined ||
+          v.title !== undefined ||
+          v.description !== undefined,
         {
           message:
-            'ange minst ett fält att uppdatera (priority, due, milstolpe, parent eller projekt)',
+            'ange minst ett fält att uppdatera (title, description, priority, due, milstolpe, parent eller projekt)',
         },
       ),
     handler: async (ctx, input) => {
@@ -301,6 +312,8 @@ export const ACTIONS: RegistreradAction[] = [
         ...(input.milstolpe !== undefined ? { milstolpe: input.milstolpe } : {}),
         ...(input.parent !== undefined ? { parent: input.parent } : {}),
         ...(input.projekt !== undefined ? { projekt: input.projekt } : {}),
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
         bara_om_osatt: input.bara_om_osatt,
       });
       // Skälet skrivs bara när det ANGES. `...(x ? {skal} : {})` i stället för
@@ -314,14 +327,21 @@ export const ACTIONS: RegistreradAction[] = [
       // skriver utan att logga får sin transaktion tillbakarullad av
       // executeAction.
       for (const a of andringar) {
+        // Beslut #145: beskrivningen bar gammal_text/ny_text, inte fran/till.
+        // BYTESVERB i vyn renderar fran/till som "A -> B" pa EN rad, och en
+        // 20 000 teckens brodtext hor inte hemma dar. Samma undantag som
+        // kommentarsrattelsen redan har.
+        const varden =
+          a.falt === 'description'
+            ? { gammal_text: a.fran, ny_text: a.till }
+            : { fran: a.fran, till: a.till };
         await ctx.skrivHandelse({
           issueId: arende.id,
           verb: VERB_FOR_FALT[a.falt],
           payload: {
             identifier: arende.identifier,
             falt: a.falt,
-            fran: a.fran,
-            till: a.till,
+            ...varden,
             ...skal,
           },
         });

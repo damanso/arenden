@@ -92,6 +92,7 @@ const NOTISER: Record<string, string> = {
   aterstalld: 'Kommentaren är återställd.',
   etikett_borttagen: 'Etiketten är borttagen från ärendet.',
   namn_andrat: 'Namnet är rättat.',
+  arendet_rattat: 'Ärendet är rättat. Den gamla texten finns kvar i historiken.',
   nyckel_aterkallad: 'Nyckeln är återkallad och fungerar inte längre.',
 };
 
@@ -231,6 +232,41 @@ export function nyKommentarForm(aktor: Aktor | null, identifier: string): string
  * ytan kör med `script-src 'none'` och rättelseformuläret får inte vara det
  * enda som kräver ett undantag.
  */
+/**
+ * Beslut #145: rätta ärendets titel och beskrivning.
+ *
+ * Hålet det stänger: `update_issue` kunde skriva prioritet, deadline,
+ * milstolpe, förälder och projekt — men inte rubriken. En felstavad titel
+ * gick bara att bli av med genom att makulera ärendet och skapa ett nytt,
+ * vilket ger två rader i loggen för noll faktisk förändring.
+ *
+ * Formuläret är hopfällt (`details`) och står under beskrivningen det rättar.
+ * Utan session visas det inte alls — att visa en knapp som säkert misslyckas
+ * är att ljuga med gränssnittet (samma regel som skrivlage()).
+ */
+export function rattaArendeForm(
+  aktor: Aktor | null,
+  identifier: string,
+  titel: string,
+  beskrivning: string,
+): string {
+  if (!aktor) return '';
+  const vag = `${arendeUrlFor(identifier)}/ratta`;
+  return (
+    '<details class=rattelse><summary>Rätta titel eller beskrivning</summary>' +
+    `<form class=skrivform method=post action="${esc(vag)}">` +
+    `<label for="titel-${esc(identifier)}">Titel</label>` +
+    `<input type=text id="titel-${esc(identifier)}" name=titel required maxlength=300 ` +
+    `value="${esc(titel)}">` +
+    `<label for="beskrivning-${esc(identifier)}">Beskrivning</label>` +
+    `<textarea id="beskrivning-${esc(identifier)}" name=beskrivning rows=10 ` +
+    `maxlength=20000>${esc(beskrivning)}</textarea>` +
+    '<div class=skrivrad><button type=submit>Spara rättelsen</button>' +
+    '<span class=meta>Den gamla texten finns kvar i historiken. ' +
+    'Ändringen bär din aktörsidentitet.</span></div></form></details>'
+  );
+}
+
 export function kommentarsverktyg(aktor: Aktor | null, kommentar: Kommentar, retur: string): string {
   if (!aktor) return '';
   const id = esc(kommentar.id);
@@ -401,6 +437,33 @@ export function monteraSkrivrutter(router: Router): void {
       const resultat = await kor(aktor, 'restore_comment', { kommentar_id: ruttfalt(req.params['id']) });
       const retur = sakerRetur(kroppen(req)['fran']);
       res.redirect(303, medNotis(retur, andrad(resultat) ? 'aterstalld' : 'oforandrad'));
+    }),
+  );
+
+  // ---- Rätta ärendets titel och beskrivning (beslut #145) -----------------
+
+  router.post(
+    '/arende/:identifier/ratta',
+    skrivrutt(async (req, res, aktor) => {
+      const identifier = ruttfalt(req.params['identifier']);
+      const kropp = kroppen(req);
+      // falt() ger undefined för tom sträng. För titeln är det rätt (ett
+      // ärende utan rubrik finns inte, och schemat fäller det). För
+      // beskrivningen är tomt ett giltigt värde — därför null, som töms.
+      const beskrivning = falt(kropp['beskrivning']);
+      const resultat = await kor(aktor, 'update_issue', {
+        identifier,
+        title: kropp['titel'],
+        description: beskrivning === undefined ? null : beskrivning,
+      });
+      // andrad() duger inte här: update_issue svarar med `andringar`, inte
+      // `andrad`. Tom lista = ingenting ändrades, och det ska synas.
+      const andringar = (resultat as { andringar?: unknown[] }).andringar;
+      const nagot = Array.isArray(andringar) && andringar.length > 0;
+      res.redirect(
+        303,
+        medNotis(arendeUrlFor(identifier), nagot ? 'arendet_rattat' : 'oforandrad'),
+      );
     }),
   );
 
