@@ -23,6 +23,7 @@ import {
   skapaArende,
   sokArenden,
   sokLabel,
+  laggTillEtikettPaArende,
   taBortEtikettFranArende,
   uppdateraArendeFalt,
   uppdateraArendeState,
@@ -556,6 +557,28 @@ export const ACTIONS: RegistreradAction[] = [
         payload: { kommentar_id: kommentar.id },
       });
       return { kommentar_id: kommentar.id, andrad };
+    },
+  }),
+
+  def({
+    name: 'add_label',
+    title: 'Sätt en etikett på ett ärende',
+    sensitivity: 'write',
+    inputSchema: z.object({ identifier: IdentifierSchema, label: safeText(100) }).strict(),
+    handler: async (ctx, input) => {
+      const arende = await hamtaArende(ctx.client, ctx.tenantId, input.identifier);
+      const lades = await laggTillEtikettPaArende(
+        ctx.client,
+        ctx.tenantId,
+        arende.id,
+        input.label,
+      );
+      await ctx.skrivHandelse({
+        issueId: arende.id,
+        verb: lades ? 'satte_etikett' : 'etiketten_fanns_redan',
+        payload: { identifier: arende.identifier, etikett: input.label },
+      });
+      return { identifier: arende.identifier, etikett: input.label, andrad: lades };
     },
   }),
 

@@ -753,6 +753,31 @@ export async function sokArenden(
  * Returnerar false om ärendet inte bar etiketten (idempotent — dubbelklick i
  * webbläsaren ska inte bli en felsida).
  */
+/**
+ * Satter en etikett pa ett BEFINTLIGT arende. Skapar etiketten om den inte
+ * finns - samma vag som create_issue redan gar, sa ett nytt namn inte kraver
+ * ett eget administrationssteg.
+ *
+ * Returnerar false nar etiketten redan satt. ON CONFLICT DO NOTHING gor det
+ * matbart: rowCount 0 betyder "fanns redan", inte "misslyckades". Skillnaden
+ * ar hela poangen med `andrad` i svaret - ett oforandrat arende ska inte
+ * rendera en handelserad som pastar en andring.
+ */
+export async function laggTillEtikettPaArende(
+  client: PoolClient,
+  tenantId: string,
+  issueId: string,
+  etikett: string,
+): Promise<boolean> {
+  const labelId = await hamtaEllerSkapaLabel(client, tenantId, etikett);
+  const { rowCount } = await client.query(
+    `INSERT INTO issue_labels (tenant_id, issue_id, label_id) VALUES ($1, $2, $3)
+     ON CONFLICT DO NOTHING`,
+    [tenantId, issueId, labelId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 export async function taBortEtikettFranArende(
   client: PoolClient,
   tenantId: string,

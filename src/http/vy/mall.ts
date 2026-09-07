@@ -573,6 +573,12 @@ const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
  *                hellre tyst än ett påstående om inloggningsläget som kan vara
  *                fel.
  */
+// Adresserna byts på ETT ställe när ingången flyttar modulerna till vägar.
+export const GRANNAR = [
+  { vag: 'https://david-brain.tail743706.ts.net:8445/', text: 'Översikt' },
+  { vag: 'https://david-brain.tail743706.ts.net:8444/app', text: 'Redovisning' },
+];
+
 export function sida(
   titel: string,
   kropp: string,
@@ -580,11 +586,17 @@ export function sida(
   aktor?: Aktor | null,
   smula?: [string, string | null][],
 ): string {
-  const nav = YTOR.map(
-    (y) =>
-      `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
-      `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
-  ).join('');
+  const nav =
+    YTOR.map(
+      (y) =>
+        `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
+        `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
+    ).join('') +
+    // Grannmodulerna. Samma tre vägar i varje moduls meny, i samma ordning.
+    // Utan dem måste David skriva adressen för hand för att byta modul, och
+    // då är det tre system som råkar ha samma färger — inte ett.
+    '<span class=navsep aria-hidden=true></span>' +
+    GRANNAR.map((g) => `<a href="${g.vag}" class=grann>${esc(g.text)}</a>`).join('');
   return (
     '<!doctype html><html lang=sv><head><meta charset=utf-8>' +
     "<meta name=viewport content='width=device-width,initial-scale=1'>" +
