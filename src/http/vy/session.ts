@@ -82,7 +82,69 @@ export function lasKaka(req: Request, namn: string): string | undefined {
 }
 
 /** Aktören bakom sessionen, eller null. Rör aldrig något — säker i GET-rutter. */
+/**
+ * Redovisningens session, om den finns. Davids ENDA inloggning.
+ *
+ * Modulerna kor pa olika portar men samma vardnamn, och kakor ignorerar
+ * portnummer - sa `session`-kakan ar redan har. Det vi saknar ar ratten att
+ * TOLKA den, och den fragar vi om i stallet for att dela JWT_SECRET: en delad
+ * symmetrisk hemlighet i tre tjanster betyder att ett lack faller alla tre.
+ *
+ * Fel har ar ALDRIG "inloggad". Svarar redovisningen inte far David
+ * inloggningssidan - inte tyst atkomst, och inte heller ett pastaende om att
+ * han saknar behorighet.
+ */
+export const REDOVISNINGEN =
+  process.env['REDOVISNING_URL'] ?? 'http://127.0.0.1:3001';
+
+export async function redovisningsAktor(req: Request): Promise<Aktor | null> {
+  const kakor = req.headers.cookie;
+  if (!kakor || !kakor.includes('session=')) return null;
+  try {
+    const svar = await fetch(REDOVISNINGEN + '/api/session/vem', {
+      headers: { cookie: kakor },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!svar.ok) return null;
+    const d = (await svar.json()) as { namn?: unknown };
+    const namn = typeof d.namn === 'string' && d.namn.trim() ? d.namn.trim() : null;
+    if (!namn) return null;
+    // Redovisningens /vem svarar bara for MANNISKOR: agent-token och
+    // pending-2FA avvisas dar. Vi behover inte lita pa det pa hedersord -
+    // vagen dit gar genom viewAuths egna avvisningar.
+    return { typ: 'manniska', namn };
+  } catch {
+    return null;
+  }
+}
+
+/** Satt av mellanlagret nedan. Sparas pa foragan sa att den synkrona
+ *  sessionsAktor() slipper vanta pa ett natverksanrop tjugo ganger per sida. */
+declare module 'express-serve-static-core' {
+  interface Request {
+    redovisningsaktor?: Aktor | null;
+  }
+}
+
+/**
+ * Mellanlager: slar upp redovisningssessionen EN gang per foragan.
+ * Monteras fore vyns rutter. Ror inte /api - agenterna gar aldrig hit.
+ */
+export async function medRedovisningssession(
+  req: Request,
+  _res: Response,
+  next: (fel?: unknown) => void,
+): Promise<void> {
+  if (req.redovisningsaktor === undefined) {
+    req.redovisningsaktor = await redovisningsAktor(req);
+  }
+  next();
+}
+
 export function sessionsAktor(req: Request): Aktor | null {
+  // Davids egen inloggning gar fore nyckelsessionen. Har han bada ar det han
+  // sjalv i bada, och den har ar den han faktiskt loggade in med.
+  if (req.redovisningsaktor) return req.redovisningsaktor;
   const token = lasKaka(req, SESSIONSKAKA);
   if (!token) return null;
   const session = SESSIONER.get(token);
