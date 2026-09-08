@@ -52,6 +52,45 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     return svar.body.result.arende as { title: string; description: string };
   }
 
+  /**
+   * Astras fynd 2: provet postade forut till en HARDKODAD adress med
+   * hardkodade faltnamn. Byter titelfaltet namn — eller forsvinner det — kan
+   * bade synlighetsprovet och POST-provet forbli grona samtidigt som David
+   * inte langre kan ratta titeln i vyn. Adressen och faltnamnen lases darfor
+   * ur det RENDERADE formularet. Attributen skrivs bade citerade
+   * (action="...") och ociterade (name=titel), sa bada formerna matchas.
+   */
+  function rattningsformular(html: string): {
+    action: string;
+    falt: string[];
+    dolda: Record<string, string>;
+  } {
+    const trafft = html.indexOf('/ratta"');
+    expect(trafft, 'hittade inget rattningsformular pa sidan').toBeGreaterThan(-1);
+    const start = html.lastIndexOf('<form', trafft);
+    const slut = html.indexOf('</form>', trafft);
+    expect(start, 'formularets start hittades inte').toBeGreaterThan(-1);
+    expect(slut).toBeGreaterThan(start);
+    const form = html.slice(start, slut);
+
+    const action = /action="([^"]+)"/.exec(form)?.[1];
+    expect(action, 'formularet saknar action').toBeTruthy();
+
+    const falt: string[] = [];
+    for (const m of form.matchAll(/name=(?:"([^"]+)"|([\w-]+))/g)) {
+      falt.push((m[1] ?? m[2]) as string);
+    }
+
+    const dolda: Record<string, string> = {};
+    for (const m of form.matchAll(/<input[^>]*type=hidden[^>]*>/g)) {
+      const namn = /name=(?:"([^"]+)"|([\w-]+))/.exec(m[0]);
+      const varde = /value="([^"]*)"/.exec(m[0]);
+      if (namn) dolda[(namn[1] ?? namn[2]) as string] = varde?.[1] ?? '';
+    }
+
+    return { action: action as string, falt, dolda };
+  }
+
   async function inloggad(nyckel: string): Promise<ReturnType<typeof request.agent>> {
     const agent = request.agent(bas);
     const svar = await agent.post('/vy/logga-in').type('form').send({ nyckel, fran: '/vy' });
@@ -89,13 +128,22 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
 
     expect((await las(id)).title).toBe('Lär mig mer om aktier');
 
-    const rad = (await handelser(id)).find((h) => h.verb === 'andrade_titel');
-    expect(rad, 'ingen andrade_titel-rad skrevs').toBeDefined();
-    expect(rad!.payload['fran']).toBe('Lar mig mer om aktier');
-    expect(rad!.payload['till']).toBe('Lär mig mer om aktier');
+    // EXAKT en rad, inte "minst en". `find` slapp igenom tva likadana
+    // handelser for samma andring, och kravet ar en handelse per FAKTISKT
+    // andrat falt. Astras fynd 3.
+    const rader = (await handelser(id)).filter((h) => h.verb === 'andrade_titel');
+    expect(rader, 'fel antal andrade_titel-rader').toHaveLength(1);
+    const rad = rader[0];
+    expect(rad.payload['fran']).toBe('Lar mig mer om aktier');
+    expect(rad.payload['till']).toBe('Lär mig mer om aktier');
     // Aktören härleds ur nyckeln, aldrig ur indatat.
-    expect(rad!.aktor_typ).toBe('manniska');
-    expect(rad!.aktor_namn).toBe('David');
+    expect(rad.aktor_typ).toBe('manniska');
+    expect(rad.aktor_namn).toBe('David');
+    // Beskrivningen rordes inte — da far ingen beskrivningshandelse skrivas.
+    expect(
+      (await handelser(id)).filter((h) => h.verb === 'rattade_beskrivning'),
+      'en beskrivningshandelse skrevs for en andring som bara gallde titeln',
+    ).toHaveLength(0);
   });
 
   it('rättar en beskrivning — och dess händelserad bär gammal_text, ALDRIG fran/till', async () => {
@@ -109,14 +157,21 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     expect(svar.status).toBe(200);
     expect((await las(id)).description).toBe(lang);
 
-    const rad = (await handelser(id)).find((h) => h.verb === 'rattade_beskrivning');
     // POSITIV KONTROLL först: utan den bevisar ett saknat fran/till ingenting -
-    // det kunde lika gärna betyda att ingen händelse skrevs alls.
-    expect(rad, 'ingen rattade_beskrivning-rad skrevs').toBeDefined();
-    expect(rad!.payload['gammal_text']).toBe('Första versionen.');
-    expect(rad!.payload['ny_text']).toBe(lang);
-    expect(rad!.payload).not.toHaveProperty('fran');
-    expect(rad!.payload).not.toHaveProperty('till');
+    // det kunde lika gärna betyda att ingen händelse skrevs alls. EXAKT en
+    // rad, av samma skal som i titelprovet ovan.
+    const rader = (await handelser(id)).filter((h) => h.verb === 'rattade_beskrivning');
+    expect(rader, 'fel antal rattade_beskrivning-rader').toHaveLength(1);
+    const rad = rader[0];
+    expect(rad.payload['gammal_text']).toBe('Första versionen.');
+    expect(rad.payload['ny_text']).toBe(lang);
+    expect(rad.payload).not.toHaveProperty('fran');
+    expect(rad.payload).not.toHaveProperty('till');
+    // Titeln rordes inte — da far ingen titelhandelse skrivas.
+    expect(
+      (await handelser(id)).filter((h) => h.verb === 'andrade_titel'),
+      'en titelhandelse skrevs for en andring som bara gallde beskrivningen',
+    ).toHaveLength(0);
   });
 
   it('tömmer beskrivningen med null, och lämnar titeln orörd', async () => {
@@ -135,7 +190,14 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     });
     expect(svar.status).toBe(200);
     expect(svar.body.result.andringar).toHaveLength(0);
-    expect((await handelser(id)).some((h) => h.verb === 'arendet_oforandrat')).toBe(true);
+    const rader = await handelser(id);
+    expect(rader.some((h) => h.verb === 'arendet_oforandrat')).toBe(true);
+    // Att 'arendet_oforandrat' finns utesluter inte att en falsk
+    // faltandringshandelse OCKSA skrevs. Astras fynd 3, andra halvan.
+    expect(
+      rader.filter((h) => h.verb === 'andrade_titel'),
+      'en titelhandelse skrevs trots att titeln var oforandrad',
+    ).toHaveLength(0);
   });
 
   it('vägrar en tom titel — ett ärende utan rubrik finns inte', async () => {
@@ -181,10 +243,20 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     const id = await nyttArende('Fel stavning har', 'Gammal text.');
     const agent = await inloggad(manniskonyckel);
 
-    const svar = await agent
-      .post(`/vy/arende/${id}/ratta`)
-      .type('form')
-      .send({ titel: 'Rätt stavning här', beskrivning: 'Ny text.' });
+    // Adressen och faltnamnen kommer ur SIDAN, inte ur provet.
+    const sida = await agent.get(`/vy/arende/${id}`);
+    expect(sida.status).toBe(200);
+    const form = rattningsformular(sida.text);
+    expect(form.falt, 'titelfaltet saknas i det renderade formularet').toContain('titel');
+    expect(form.falt, 'beskrivningsfaltet saknas i det renderade formularet').toContain(
+      'beskrivning',
+    );
+
+    const kropp: Record<string, string> = { ...form.dolda };
+    kropp['titel'] = 'Rätt stavning här';
+    kropp['beskrivning'] = 'Ny text.';
+
+    const svar = await agent.post(form.action).type('form').send(kropp);
     expect(svar.status).toBe(303);
     expect(svar.headers['location']).toContain('notis=arendet_rattat');
 
@@ -240,5 +312,36 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     // Det som hålet handlar om: brödtexten får inte hamna på en historikrad.
     expect(historik).not.toContain('Kort text. → ');
     expect(historik).not.toContain('y'.repeat(200));
+  });
+
+  /**
+   * Astras fynd 1. Provet ovan sade sig bevisa att beskrivningen halls utanfor
+   * BYTESVERB. Det gjorde det inte: handelseDetalj() returnerar '' om
+   * payloaden saknar `fran`/`till`, och beskrivningens payload bar
+   * gammal_text/ny_text. Verbet kunde alltsa laggas i BYTESVERB utan att en
+   * enda assertion foll — en negativ assertion utan mojlighet att bli rod.
+   *
+   * Det som FAKTISKT skyddar brodtexten ar payloadformen. Det har provet visar
+   * varfor det raknas: renderaren skriver ut hela varden, hur langa de an ar,
+   * for ett verb som ar i BYTESVERB och bar fran/till. Utan den har raden ar
+   * frånvaron i provet ovan lika garna renderarens blyghet som ett skydd.
+   */
+  it('renderaren skriver ut HELA fran/till — darfor ar payloadformen skyddet', async () => {
+    const langTitel = 'T'.repeat(300);
+    const id = await nyttArende('Kort titel');
+    const svar = await kor(app, manniskonyckel, 'update_issue', {
+      identifier: id,
+      title: langTitel,
+    });
+    expect(svar.status).toBe(200);
+
+    const sida = await request(bas).get(`/vy/arende/${id}`);
+    const start = sida.text.indexOf('<h2>Historik');
+    expect(start, 'historikblocket hittades inte').toBeGreaterThan(-1);
+    const historik = sida.text.slice(start);
+
+    // 'andrade_titel' AR i BYTESVERB och bar fran/till: hela vardet skrivs ut,
+    // 300 tecken och allt. Renderaren kapar alltsa ingenting av sig sjalv.
+    expect(historik).toContain(`Kort titel → ${langTitel}`);
   });
 });
