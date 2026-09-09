@@ -113,7 +113,10 @@ describe('CRM-koppling KRAV-1..6', () => {
     // framför allt INGEN hämtning.
     const utan = await request(app).get(`/vy/arende/${omappat}`);
     expect(utan.status).toBe(200);
-    expect(utan.text).not.toContain('CRM');
+    // Kortets rubrik, inte ordet: 'CRM' star i huvudmenyn pa varje sida
+    // sedan omradena blev jamlika (2026-09-09). En markor som traffar
+    // kromet mater navigationen, inte kundkopplingen.
+    expect(utan.text).not.toContain('<h2>CRM</h2>');
     expect(crmAnrop()).toBe(0);
 
     // Samma sida, samma sorts ärende — men projektet har ett kund_id. Först då
@@ -173,14 +176,23 @@ describe('CRM-koppling KRAV-1..6', () => {
   it('KRAV-1/5/6d: omappat ärende och överblicken ger varken kort eller CRM-anrop', async () => {
     const fore = crmAnrop();
 
+    // "CRM" star i huvudmenyn pa varje sida sedan omradena blev jamlika
+    // (2026-09-09). Kravet galler INNEHALLET, inte kromet: darfor klipps
+    // sidhuvudet bort innan markoren provas. Det som fortfarande maste vara
+    // sant ar att inget CRM-kort renderas och att CRM inte anropas.
+    const utanKrom = (s: string) => {
+      const i = s.indexOf('</header>');
+      return i === -1 ? s : s.slice(i);
+    };
+
     const arende = await request(app).get(`/vy/arende/${omappat}`);
     expect(arende.status).toBe(200);
     expect(arende.text).toContain('Städa upp byggkedjan');
-    expect(arende.text).not.toContain('CRM');
+    expect(utanKrom(arende.text)).not.toContain('CRM');
 
     for (const vag of ['/vy', '/vy/digest', '/vy/sok?q=Leverans', '/vy/dok/01-Projekt/plan.md']) {
       const svar = await request(app).get(vag);
-      expect(svar.text, vag).not.toContain('CRM');
+      expect(utanKrom(svar.text), vag).not.toContain('CRM');
     }
 
     expect(crmAnrop()).toBe(fore);

@@ -473,6 +473,8 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 // Ikonerna ar DEKOR och bar aria-hidden: ordet bredvid bar hela betydelsen.
 // Samma regel som proveniensmarkets ikon redan foljer (KRAV-5).
 const IKONER: Record<string, string> = {
+  mal: 'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z|M13.4 10a3.4 3.4 0 1 1-6.8 0 3.4 3.4 0 0 1 6.8 0z|M10.4 10h-.8',
+  relation: 'M8.6 6.6a3 3 0 1 1-4.2 4.2M11.4 13.4a3 3 0 1 1 4.2-4.2|M7.8 12.2l4.4-4.4',
   // Huvudmenyns ikoner, ordagrant ur Hermes-ytornas IKONER: samma val ska
   // se likadant ut i alla tre modulerna (Astras UX-granskning 2026-09-09).
   oversikt: 'M3.4 9.1 10 3.7l6.6 5.4v6.6a.9.9 0 0 1-.9.9h-3.5v-4.4H7.8v4.4H4.3a.9.9 0 0 1-.9-.9z',
@@ -574,8 +576,12 @@ export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser' | 'mitt';
 export const HUVUDVAL: { vag: string; text: string; ikonnamn: string }[] = [
   { vag: '/', text: 'Hem', ikonnamn: 'oversikt' },
   { vag: '/beslut', text: 'Din insats', ikonnamn: 'beslut' },
-  { vag: '/vy', text: 'Arbete', ikonnamn: 'arenden' },
-  { vag: '/app', text: 'Bolaget', ikonnamn: 'redovisning' },
+  // De fyra jämlika områdena. Ingen av dem är tak över de andra: "Bolaget"
+  // gjorde den första kodbasens omfång till produktens hierarki.
+  { vag: '/app/g/ekonomi', text: 'Redovisning', ikonnamn: 'redovisning' },
+  { vag: '/app/g/projekt', text: 'Projekt', ikonnamn: 'mal' },
+  { vag: '/app/g/crm', text: 'CRM', ikonnamn: 'relation' },
+  { vag: '/vy', text: 'Ärenden', ikonnamn: 'arenden' },
   { vag: '/bibliotek', text: 'Bibliotek', ikonnamn: 'bibliotek' },
 ];
 
