@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Aktor } from '../lib/aktor.js';
 import {
+  AktorTypSchema,
   HttpUrlSchema,
   IdentifierSchema,
   IsoDateSchema,
@@ -36,6 +37,21 @@ import {
   relationerFor,
 } from '../services/relationer.js';
 import { listaHandelser } from '../services/handelser.js';
+import {
+  andraAtagande,
+  arbetsandel,
+  aterppnaAtagande,
+  avslutaAtagande,
+  hamtaAtagande,
+  hindraAtagande,
+  kopplaBeslut,
+  listaAtaganden,
+  loggaMoment,
+  overtaAtagande,
+  redovisaResultat,
+  registreraAtagande,
+  registreraSvarsversion,
+} from '../services/atagande.js';
 import {
   listaKundkopplingar,
   sattKundkoppling,
@@ -136,6 +152,39 @@ const VERB_FOR_FALT: Record<Falt, string> = {
  * historik med uppdiktade skäl är värre än en historik utan.
  */
 const SkalSchema = safeText(500);
+
+// Åtagandets sammansatta fält. En referens pekar på en BESTÄMD post — inte på
+// en länk. Visningslänken härleds ur referensen och kanalregistret; att spara
+// länken i stället för posten är precis den proxy som ljuger tyst när en
+// adress ändras.
+const ReferensSchema = z
+  .object({ typ: safeText(60), id: safeText(300), version: safeText(120).optional() })
+  .strict();
+
+const NastaSchema = z
+  .object({
+    handling: safeText(2000),
+    // Slaget avgör vem åtagandet tillhör — därför härleds `tillhor` av det och
+    // fylls aldrig i för hand. En utåthandling kan inte döpas om till internt
+    // utan ny grund (se andra_atagande).
+    slag: z.enum(['internt', 'riktning', 'utathandling']),
+    grund: ReferensSchema,
+  })
+  .strict();
+
+const VillkorSchema = z
+  .object({
+    text: safeText(2000),
+    kalla: ReferensSchema,
+    galler: safeText(500),
+    kontroll: safeText(1000),
+    utfall: z.enum(['okant', 'uppfyllt', 'ej_uppfyllt']),
+    belagg: ReferensSchema.nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.utfall === 'okant' || (v.belagg !== undefined && v.belagg !== null), {
+    message: 'ett villkor som inte är okänt kräver belägg',
+  });
 
 export const ACTIONS: RegistreradAction[] = [
   def({
@@ -706,6 +755,365 @@ export const ACTIONS: RegistreradAction[] = [
       return { nyckel_id: nyckel.id, aktiv: nyckel.aktiv, andrad };
     },
   }),
+
+  // ---- Åtagandet: den beständiga länken genom hela systemet ---------------
+  //
+  // Spec: Astra 2026-09-09. Ram: ägaren ger riktning, användaren bär utgången
+  // till verkligheten, Hermes är bolaget och gör allt annat självt.
+  //
+  // Två saker är medvetet omöjliga här: att ange vem som tog över (utföraren
+  // tas ur nyckeln) och att redovisa ett resultat utan belägg.
+
+  def({
+    name: 'registrera_atagande',
+    title: 'Registrera ett åtagande på ett ärende',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        grund: z.array(ReferensSchema).min(1),
+        nasta: NastaSchema.nullable(),
+        foljs_upp: z.string().datetime({ offset: true }).nullable(),
+        villkor: z.array(VillkorSchema).optional(),
+        utfall_precisering: safeText(2000).optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const { atagande, nyskapad } = await registreraAtagande(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: nyskapad ? 'registrerade_atagande' : 'atagandet_fanns_redan',
+        payload: {
+          identifier: atagande.identifier,
+          lage: atagande.lage,
+          tillhor: atagande.tillhor,
+          revision: atagande.revision,
+        },
+      });
+      return { atagande, nyskapad };
+    },
+  }),
+
+  def({
+    name: 'ta_over_atagande',
+    title: 'Ta över ett åtagande (utföraren tas ur nyckeln)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        nasta: NastaSchema,
+        foljs_upp: z.string().datetime({ offset: true }),
+        forvantad_revision: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const atagande = await overtaAtagande(ctx.client, ctx.tenantId, ctx.aktor, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'tog_over_atagande',
+        payload: {
+          identifier: atagande.identifier,
+          utforare_typ: atagande.utforare_typ,
+          utforare_namn: atagande.utforare_namn,
+          nasta: atagande.data.nasta,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'andra_atagande',
+    title: 'Ändra nästa steg, uppföljning eller villkor',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        nasta: NastaSchema.optional(),
+        foljs_upp: z.string().datetime({ offset: true }).nullable().optional(),
+        villkor: z.array(VillkorSchema).optional(),
+        grund: ReferensSchema.optional(),
+        forvantad_revision: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .refine(
+        (v) =>
+          v.nasta !== undefined ||
+          v.foljs_upp !== undefined ||
+          v.villkor !== undefined ||
+          v.grund !== undefined,
+        { message: 'ange minst en ändring (nasta, foljs_upp, villkor eller grund)' },
+      ),
+    handler: async (ctx, input) => {
+      const atagande = await andraAtagande(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'andrade_atagande',
+        payload: {
+          identifier: atagande.identifier,
+          tillhor: atagande.tillhor,
+          nasta: atagande.data.nasta,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'hindra_atagande',
+    title: 'Registrera ett konkret hinder',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        orsak: safeText(2000),
+        belagg: ReferensSchema,
+        nasta: NastaSchema,
+        foljs_upp: z.string().datetime({ offset: true }),
+        forvantad_revision: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const atagande = await hindraAtagande(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'hindrade_atagande',
+        payload: {
+          identifier: atagande.identifier,
+          orsak: input.orsak,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'redovisa_resultat',
+    title: 'Redovisa ett genomfört resultat (kräver belägg)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        sammanfattning: safeText(4000),
+        belagg: z.array(ReferensSchema).min(1),
+        forvantad_revision: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const atagande = await redovisaResultat(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'redovisade_resultat',
+        payload: {
+          identifier: atagande.identifier,
+          sammanfattning: input.sammanfattning,
+          antal_belagg: input.belagg.length,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'avsluta_atagande',
+    title: 'Avsluta ett åtagande med belagt skäl',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        text: safeText(2000),
+        grund: ReferensSchema,
+        forvantad_revision: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const atagande = await avslutaAtagande(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'avslutade_atagande',
+        payload: {
+          identifier: atagande.identifier,
+          skal: input.text,
+          grund: input.grund,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'aterppna_atagande',
+    title: 'Återöppna ett stängt åtagande med nytt belägg',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        grund: ReferensSchema,
+        nasta: NastaSchema,
+        foljs_upp: z.string().datetime({ offset: true }),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const atagande = await aterppnaAtagande(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: atagande.issue_id,
+        verb: 'aterppnade_atagande',
+        payload: {
+          identifier: atagande.identifier,
+          grund: input.grund,
+          revision: atagande.revision,
+        },
+      });
+      return atagande;
+    },
+  }),
+
+  def({
+    name: 'get_atagande',
+    title: 'Läs ett åtagande',
+    sensitivity: 'read',
+    inputSchema: z.object({ identifier: IdentifierSchema }).strict(),
+    handler: (ctx, input) => hamtaAtagande(ctx.client, ctx.tenantId, input.identifier),
+  }),
+
+  def({
+    name: 'list_ataganden',
+    title: 'Lista åtaganden (det som kräver en människa först)',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        tillhor: z.enum(['agare', 'anvandare', 'hermes']).optional(),
+        lage: z
+          .enum(['registrerat', 'overtaget', 'hindrat', 'genomfort', 'avslutat'])
+          .optional(),
+        oavslutade: z.boolean().default(false),
+      })
+      .strict(),
+    handler: (ctx, input) => listaAtaganden(ctx.client, ctx.tenantId, input),
+  }),
+
+  def({
+    name: 'koppla_beslut',
+    title: 'Koppla ett beslut till sitt huvudåtagande',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({ beslut_id: z.number().int().positive(), identifier: IdentifierSchema })
+      .strict(),
+    handler: async (ctx, input) => {
+      const resultat = await kopplaBeslut(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: resultat.issue_id,
+        verb: resultat.nyskapad ? 'kopplade_beslut' : 'beslutet_var_redan_kopplat',
+        payload: { beslut_id: input.beslut_id, identifier: resultat.identifier },
+      });
+      return resultat;
+    },
+  }),
+
+  def({
+    name: 'registrera_svarsversion',
+    title: 'Registrera att en svarsversion behandlats (spärr mot dubbelarbete)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        beslut_id: z.number().int().positive(),
+        svar_hash: z.string().regex(/^[0-9a-f]{16,64}$/, 'svar_hash anges som hex'),
+        identifier: IdentifierSchema.optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const issueId = input.identifier
+        ? (await hamtaArende(ctx.client, ctx.tenantId, input.identifier)).id
+        : null;
+      const { nyskapad } = await registreraSvarsversion(ctx.client, ctx.tenantId, {
+        beslut_id: input.beslut_id,
+        svar_hash: input.svar_hash,
+        issue_id: issueId,
+      });
+      await ctx.skrivHandelse({
+        issueId,
+        verb: nyskapad ? 'behandlade_svarsversion' : 'svarsversionen_var_behandlad',
+        payload: { beslut_id: input.beslut_id, svar_hash: input.svar_hash },
+      });
+      return { beslut_id: input.beslut_id, nyskapad };
+    },
+  }),
+
+  def({
+    name: 'logga_moment',
+    title: 'Skriv ett arbetsmoment (aktören tas ur nyckeln)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        moment: z.enum([
+          'hitta_underlag',
+          'avgora_riktning',
+          'forbereda',
+          'utfora',
+          'kontrollera',
+          'folja_upp',
+        ]),
+        identifier: IdentifierSchema.optional(),
+        beslut_id: z.number().int().positive().optional(),
+        belagg: z.record(z.unknown()).optional(),
+        // Backfill av gammal data. Historiska rader räknas ALDRIG in i
+        // mätningen efter införandet — de är påstådda, inte observerade.
+        historisk: z
+          .object({
+            aktor_typ: AktorTypSchema,
+            aktor_namn: safeText(200),
+            tidpunkt: z.string().datetime({ offset: true }),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .refine((v) => v.identifier !== undefined || v.beslut_id !== undefined, {
+        message: 'ett moment måste höra till ett ärende eller ett beslut',
+      }),
+    handler: async (ctx, input) => {
+      const issueId = input.identifier
+        ? (await hamtaArende(ctx.client, ctx.tenantId, input.identifier)).id
+        : null;
+      const rad = await loggaMoment(ctx.client, ctx.tenantId, ctx.aktor, {
+        moment: input.moment,
+        issue_id: issueId,
+        beslut_id: input.beslut_id ?? null,
+        belagg: input.belagg ?? {},
+        ...(input.historisk ? { historisk: input.historisk } : {}),
+      });
+      await ctx.skrivHandelse({
+        issueId,
+        verb: 'skrev_arbetsmoment',
+        payload: {
+          moment_id: rad.id,
+          moment: input.moment,
+          beslut_id: input.beslut_id ?? null,
+          historisk: Boolean(input.historisk),
+        },
+      });
+      return rad;
+    },
+  }),
+
+  def({
+    name: 'arbetsandel',
+    title: 'Davids arbetsandel, mätt på skrivna moment (aldrig på en proxy)',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        fran: z.string().datetime({ offset: true }),
+        till: z.string().datetime({ offset: true }),
+      })
+      .strict(),
+    handler: (ctx, input) => arbetsandel(ctx.client, ctx.tenantId, input.fran, input.till),
+  }),
+
 ];
 
 const REGISTER = new Map<string, RegistreradAction>(ACTIONS.map((a) => [a.name, a]));

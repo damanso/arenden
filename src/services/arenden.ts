@@ -448,6 +448,28 @@ export async function uppdateraArendeState(
     state = traff;
   }
 
+  // Bar arendet ett atagande ar workflow-statusen HARLEDD ur atagandets lage
+  // (spec 2026-09-09 avsnitt 3.5). Da far den inte sattas separat: ett Done
+  // som skrivs vid sidan av atagandet ar exakt den lognen provet ska fanga --
+  // ett resultat som pastas utan att nagot resultat finns.
+  const { rows: lagerader } = await client.query<{ atagande_lage: string | null }>(
+    'SELECT atagande_lage FROM issues WHERE id = $1',
+    [arende.id],
+  );
+  const lage = lagerader[0]?.atagande_lage ?? null;
+  if (lage !== null && (state.typ === 'completed' || state.typ === 'canceled')) {
+    const tillatet =
+      (state.typ === 'completed' && lage === 'genomfort') ||
+      (state.typ === 'canceled' && lage === 'avslutat');
+    if (!tillatet) {
+      throw new BadRequestError(
+        'atagandet_styr_statusen',
+        `${identifier} bar ett atagande i laget "${lage}" — statusen foljer atagandet. ` +
+          'Anvand redovisa_resultat (kraver belagg) eller avsluta_atagande (kraver grund).',
+      );
+    }
+  }
+
   await client.query('UPDATE issues SET state_id = $1, uppdaterad = now() WHERE id = $2', [
     state.id,
     arende.id,
