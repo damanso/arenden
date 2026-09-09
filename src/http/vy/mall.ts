@@ -208,6 +208,9 @@ color:var(--text)}
 header nav.nav a[aria-current]{background:var(--accent-weak);
 color:var(--accent-ink);border-color:color-mix(in oklch,var(--accent) 28%,transparent);
 box-shadow:none}
+header nav.nav.undernav{border-top:1px solid var(--linje);padding-top:var(--p-rym-2);
+  margin-top:var(--p-rym-2)}
+header nav.nav.undernav a{font-size:var(--meta)}
 header nav.nav .ikon{opacity:.75}
 header nav.nav a[aria-current] .ikon{opacity:1}
 /* Brodsmulan star FORE rubriken och ar tyst: en position, inte en handling.
@@ -470,6 +473,13 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 // Ikonerna ar DEKOR och bar aria-hidden: ordet bredvid bar hela betydelsen.
 // Samma regel som proveniensmarkets ikon redan foljer (KRAV-5).
 const IKONER: Record<string, string> = {
+  // Huvudmenyns ikoner, ordagrant ur Hermes-ytornas IKONER: samma val ska
+  // se likadant ut i alla tre modulerna (Astras UX-granskning 2026-09-09).
+  oversikt: 'M3.4 9.1 10 3.7l6.6 5.4v6.6a.9.9 0 0 1-.9.9h-3.5v-4.4H7.8v4.4H4.3a.9.9 0 0 1-.9-.9z',
+  rum: 'M5.8 3.4h8.4v13.2H5.8z|M12 10.1h.01',
+  bibliotek: 'M4.2 5A1.6 1.6 0 0 1 5.8 3.4h10v13.2h-10A1.6 1.6 0 0 1 4.2 15z|M4.2 13.8h11.6',
+  redovisning: 'M4.8 3.3h10.4v13.4H4.8z|M7.6 7.1h4.8M7.6 10h4.8M7.6 12.9h2.9',
+  personer: 'M8 9.4a2.4 2.4 0 1 0 0-4.8 2.4 2.4 0 0 0 0 4.8z|M3.4 16.4c0-2.6 2.1-4.4 4.6-4.4s4.6 1.8 4.6 4.4|M13.4 5.1a2.4 2.4 0 0 1 0 4.6M14.4 12.3c1.4.5 2.2 1.9 2.2 3.4',
   marke:
     'M10 2.6 17 6.4v7.2L10 17.4 3 13.6V6.4z|M10 7.2v5.6M7.6 8.5v3M12.4 8.5v3',
   mitt:
@@ -550,6 +560,26 @@ export function tomtLage(rubrik: string, mening: string,
  */
 export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser' | 'mitt';
 
+/**
+ * HUVUDVALEN. Samma fem, i samma ordning, i alla tre kodbaserna (Astras
+ * UX-granskning 2026-09-09, avsnitt 3 och 5). De är rotrelativa: sedan
+ * modulerna monterats bakom samma värd är /vy och /app grannar i SAMMA
+ * miljö, inte andra system.
+ *
+ * Före det här stod tre egna menyer med en "grannar"-sektion sist. Koden här
+ * beskrev själv varför de fanns: utan dem måste David skriva adressen för
+ * hand. Svaret var rätt problem och fel lösning — en gäst i menyn är fortfarande
+ * en gäst. David sade det rakt ut: "jag upplever att jag är i 4 olika miljöer".
+ */
+export const HUVUDVAL: { vag: string; text: string; ikonnamn: string }[] = [
+  { vag: '/', text: 'Hem', ikonnamn: 'oversikt' },
+  { vag: '/beslut', text: 'Din insats', ikonnamn: 'beslut' },
+  { vag: '/vy', text: 'Arbete', ikonnamn: 'arenden' },
+  { vag: '/app', text: 'Bolaget', ikonnamn: 'redovisning' },
+  { vag: '/bibliotek', text: 'Bibliotek', ikonnamn: 'bibliotek' },
+];
+
+/** Modulens egna ytor. Undermeny — den ersätter aldrig huvudmenyn. */
 const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
   { vag: '/vy/mitt', text: 'Mitt', yta: 'mitt', ikonnamn: 'mitt' },
   { vag: '/vy', text: 'Alla', yta: 'vy', ikonnamn: 'arenden' },
@@ -574,10 +604,10 @@ const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
  *                fel.
  */
 // Adresserna byts på ETT ställe när ingången flyttar modulerna till vägar.
-export const GRANNAR = [
-  { vag: 'https://david-brain.tail743706.ts.net:8445/', text: 'Översikt' },
-  { vag: 'https://david-brain.tail743706.ts.net:8444/app', text: 'Redovisning' },
-];
+// GRANNAR ar borttagen 2026-09-09. Den bar tva absoluta lankar till andra
+// portar och gjorde de andra modulerna till gaster i den har menyn. Sedan
+// modulerna monterats bakom samma vard star de i HUVUDVAL i stallet -- som
+// delar av samma miljo, inte som utflykter. prov/enmiljo.py haller det.
 
 export function sida(
   titel: string,
@@ -586,26 +616,28 @@ export function sida(
   aktor?: Aktor | null,
   smula?: [string, string | null][],
 ): string {
-  const nav =
-    YTOR.map(
-      (y) =>
-        `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
-        `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
-    ).join('') +
-    // Grannmodulerna. Samma tre vägar i varje moduls meny, i samma ordning.
-    // Utan dem måste David skriva adressen för hand för att byta modul, och
-    // då är det tre system som råkar ha samma färger — inte ett.
-    '<span class=navsep aria-hidden=true></span>' +
-    GRANNAR.map((g) => `<a href="${g.vag}" class=grann>${esc(g.text)}</a>`).join('');
+  // Huvudmenyn är hela miljöns karta och ser likadan ut i alla moduler.
+  // Arbete är det aktiva valet så länge man är i den här modulen.
+  const huvudnav = HUVUDVAL.map(
+    (h) =>
+      `<a href="${h.vag}"${h.vag === '/vy' ? ' aria-current=page' : ''}>` +
+      `${ikon(h.ikonnamn)}${esc(h.text)}</a>`,
+  ).join('');
+  // Undermenyn är BARA det här områdets egna vyer.
+  const nav = YTOR.map(
+    (y) =>
+      `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
+      `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
+  ).join('');
   return (
     '<!doctype html><html lang=sv><head><meta charset=utf-8>' +
     "<meta name=viewport content='width=device-width,initial-scale=1'>" +
     '<meta name=apple-mobile-web-app-capable content=yes>' +
-    `<title>${esc(titel)} — Ärenden</title><style>${CSS}</style></head><body>` +
+    `<title>${esc(titel)} — Hermes</title><style>${CSS}</style></head><body>` +
     '<a class=hoppa href="#innehall">Hoppa till innehållet</a>' +
     '<header class=topbar><div class=appbar>' +
-    `<a class=brand href="/vy"><span class=mark>${ikon('marke', 18)}</span>` +
-    'Ärenden</a>' +
+    `<a class=brand href="/"><span class=mark>${ikon('marke', 18)}</span>` +
+    'Hermes</a>' +
     `<span class=vart>${esc(titel)}</span>` +
     '<div class=hornet>' +
     (aktor === undefined
@@ -615,7 +647,8 @@ export function sida(
         : `<a class=jag href="/vy/logga-in">${proveniens(aktor.typ, aktor.namn)}</a>`) +
     `<span class=tid><span class=dold>Renderad </span>${esc(klockslag(new Date()))}</span>` +
     '</div></div>' +
-    `<nav class=nav aria-label="Vyns ytor">${nav}</nav></header>` +
+    `<nav class=nav aria-label="Hermes">${huvudnav}</nav>` +
+    `<nav class="nav undernav" aria-label="Arbete">${nav}</nav></header>` +
     `<main id=innehall tabindex=-1>${smula ? brodsmula(smula) : ''}${kropp}</main>` +
     '<footer class=fot>Läsning kräver ingen nyckel. Ändringar kräver inloggning ' +
     'och lämnar alltid aktör och gammalt värde i händelseloggen.<br>' +
