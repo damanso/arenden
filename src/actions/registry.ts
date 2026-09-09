@@ -38,8 +38,18 @@ import {
 } from '../services/relationer.js';
 import { listaHandelser } from '../services/handelser.js';
 import {
+  aterkallaInsats,
+  besvaraInsats,
+  hamtaInsats,
+  insatsForKalla,
+  listaInsatser,
+  registreraInsats,
+  skjutUppInsats,
+} from '../services/insats.js';
+import {
   andraAtagande,
   arbetsandel,
+  atagandeForBeslut,
   aterppnaAtagande,
   avslutaAtagande,
   hamtaAtagande,
@@ -974,6 +984,14 @@ export const ACTIONS: RegistreradAction[] = [
   }),
 
   def({
+    name: 'atagande_for_beslut',
+    title: 'Slå upp ett besluts huvudåtagande',
+    sensitivity: 'read',
+    inputSchema: z.object({ beslut_id: z.number().int().positive() }).strict(),
+    handler: (ctx, input) => atagandeForBeslut(ctx.client, ctx.tenantId, input.beslut_id),
+  }),
+
+  def({
     name: 'get_atagande',
     title: 'Läs ett åtagande',
     sensitivity: 'read',
@@ -1112,6 +1130,178 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: (ctx, input) => arbetsandel(ctx.client, ctx.tenantId, input.fran, input.till),
+  }),
+
+
+  // ---- Insatsen: EN kö, inte fem -----------------------------------------
+  //
+  // Spec: Astra 2026-09-09 §4. David: "exempel på två av tre olika ställen som
+  // kräver mina svar ... Dessa ska vara samlade."
+  //
+  // Två saker är omöjliga här, inte avrådda: att koppla samma källobjekt till
+  // två insatser, och att bokföra ett mänskligt svar med en agentnyckel.
+
+  def({
+    name: 'registrera_insats',
+    title: 'Registrera ett mänskligt stopp i den gemensamma kön',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        stopp_id: safeText(300),
+        typ: z.enum(['agarbeslut', 'utathandling', 'kundkontakt', 'godkannande', 'intygande']),
+        tillhor: z.enum(['agare', 'anvandare']),
+        utfall: safeText(300),
+        begard_handling: safeText(2000),
+        blockeringsgrund: safeText(2000),
+        belagg: z.array(ReferensSchema).optional(),
+        frist: z.string().datetime({ offset: true }).nullable().optional(),
+        identifier: IdentifierSchema.nullable().optional(),
+        handlingskontrakt: z
+          .object({
+            system: safeText(60),
+            kommando: safeText(120),
+            objekt: safeText(300),
+            underlag: safeText(600).optional(),
+          })
+          .strict(),
+        kallor: z
+          .array(
+            z
+              .object({
+                system: safeText(60),
+                objekttyp: safeText(60),
+                objekt_id: safeText(300),
+                objekt_version: safeText(120).nullable().optional(),
+                lank: safeText(600).nullable().optional(),
+              })
+              .strict(),
+          )
+          .min(1),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const { insats, nyskapad, krockar } = await registreraInsats(ctx.client, ctx.tenantId, {
+        ...input,
+        frist: input.frist ?? null,
+        identifier: input.identifier ?? null,
+      });
+      await ctx.skrivHandelse({
+        issueId: insats.issue_id,
+        verb: nyskapad ? 'registrerade_insats' : 'insatsen_fanns_redan',
+        payload: {
+          insats_id: insats.id,
+          stopp_id: insats.stopp_id,
+          typ: insats.typ,
+          tillhor: insats.tillhor,
+          kallor: insats.kallor.length,
+          // En krock ar ett FYND: kallan hor redan till en annan insats. Den
+          // flyttas aldrig i tysthet -- det ar sa en tappad koppling blir
+          // osynlig, och tappade kopplingar ar hela problemet.
+          krockar,
+        },
+      });
+      return { insats, nyskapad, krockar };
+    },
+  }),
+
+  def({
+    name: 'besvara_insats',
+    title: 'Svara på en insats (kräver en mänsklig nyckel)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        id: UuidSchema,
+        svar: safeText(4000),
+        forvantad_version: z.number().int().positive().optional(),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const insats = await besvaraInsats(ctx.client, ctx.tenantId, ctx.aktor, input);
+      await ctx.skrivHandelse({
+        issueId: insats.issue_id,
+        verb: 'besvarade_insats',
+        payload: {
+          insats_id: insats.id,
+          typ: insats.typ,
+          svar: input.svar,
+          // Handlingskontraktet sager vem som ska UTFORA. Svaret utfor inget.
+          handlingskontrakt: insats.handlingskontrakt,
+        },
+      });
+      return insats;
+    },
+  }),
+
+  def({
+    name: 'skjut_upp_insats',
+    title: 'Skjut upp en insats (ändrar väckningstid, aldrig fristen)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        id: UuidSchema,
+        till: z.string().datetime({ offset: true }),
+        skal: safeText(500),
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const insats = await skjutUppInsats(ctx.client, ctx.tenantId, ctx.aktor, input);
+      await ctx.skrivHandelse({
+        issueId: insats.issue_id,
+        verb: 'skot_upp_insats',
+        payload: { insats_id: insats.id, till: input.till, skal: input.skal },
+      });
+      return insats;
+    },
+  }),
+
+  def({
+    name: 'aterkalla_insats',
+    title: 'Återkalla en insats som inte längre är aktuell',
+    sensitivity: 'write',
+    inputSchema: z.object({ id: UuidSchema, skal: safeText(500) }).strict(),
+    handler: async (ctx, input) => {
+      const insats = await aterkallaInsats(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: insats.issue_id,
+        verb: 'aterkallade_insats',
+        payload: { insats_id: insats.id, skal: input.skal },
+      });
+      return insats;
+    },
+  }),
+
+  def({
+    name: 'get_insats',
+    title: 'Läs en insats',
+    sensitivity: 'read',
+    inputSchema: z.object({ id: UuidSchema }).strict(),
+    handler: (ctx, input) => hamtaInsats(ctx.client, ctx.tenantId, input.id),
+  }),
+
+  def({
+    name: 'insats_for_kalla',
+    title: 'Slå upp insatsen för ett källobjekt (spärren mot dubbletter)',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({ system: safeText(60), objekttyp: safeText(60), objekt_id: safeText(300) })
+      .strict(),
+    handler: (ctx, input) => insatsForKalla(ctx.client, ctx.tenantId, input),
+  }),
+
+  def({
+    name: 'list_insatser',
+    title: 'Kön: allt som väntar på en människa, ägarfrågor först',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        lage: z
+          .enum(['vantande', 'uppskjuten', 'svar_mottaget', 'aterkallad', 'avslutad'])
+          .optional(),
+        tillhor: z.enum(['agare', 'anvandare']).optional(),
+        inklusive_stangda: z.boolean().default(false),
+      })
+      .strict(),
+    handler: (ctx, input) => listaInsatser(ctx.client, ctx.tenantId, input),
   }),
 
 ];
