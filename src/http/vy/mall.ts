@@ -785,10 +785,15 @@ function produktmeny(aktivVag: string | null): string {
     }
   }
 
-  const rubrik = (g: (typeof m.groups)[number]): string =>
-    g.entry?.href
-      ? `<a class="eyebrow navmenu__grpl" href="${g.entry.href}" data-destination-id="${esc(g.entry.id)}">${esc(g.label)}</a>`
+  // Star man PA ingangen ar gruppens rubrik svaret pa "var ar jag?".
+  // Utan den bar en ingangssida noll markeringar (WCAG 2.4.8).
+  const rubrik = (g: (typeof m.groups)[number]): string => {
+    const ga = grupp !== null && g.id === grupp.id && post === null;
+    return g.entry?.href
+      ? `<a class="eyebrow navmenu__grpl${ga ? ' is-active' : ''}" href="${g.entry.href}"` +
+        `${ga ? ' aria-current=page' : ''} data-destination-id="${esc(g.entry.id)}">${esc(g.label)}</a>`
       : `<span class=eyebrow>${esc(g.label)}</span>`;
+  };
 
   const grupper = m.groups
     .map(
@@ -816,7 +821,8 @@ function produktmeny(aktivVag: string | null): string {
 
   const omradet = grupp
     ? grupp.entry?.href
-      ? `<a class=nav__omrade href="${grupp.entry.href}" data-destination-id="${esc(grupp.entry.id)}">${esc(grupp.label)}</a>`
+      ? `<a class=nav__omrade href="${grupp.entry.href}"${post === null ? ' aria-current=page' : ''}` +
+        ` data-destination-id="${esc(grupp.entry.id)}">${esc(grupp.label)}</a>`
       : `<span class=nav__omrade>${esc(grupp.label)}</span>`
     : '';
 
@@ -832,7 +838,8 @@ function produktmeny(aktivVag: string | null): string {
 
   const har =
     post !== null && !snabb.some((p) => p.id === post!.id)
-      ? `<span class=nav__here><span class=nav__here-grp>${esc(grupp!.label)}</span>` +
+      ? `<span class=nav__here aria-current=page data-destination-id="${esc(post.id)}">` +
+        `<span class=nav__here-grp>${esc(grupp!.label)}</span>` +
         `<span class=nav__here-lbl>${esc(post.label)}</span></span>`
       : '';
 
