@@ -10,6 +10,7 @@
 //      ur fri text — och ingen rad lämnas omärkt.
 
 import type { Aktor } from '../../lib/aktor.js';
+import { modell } from './navigation.js';
 
 const ERSATTNING: Record<string, string> = {
   '&': '&amp;',
@@ -573,17 +574,32 @@ export type Yta = 'vy' | 'digest' | 'sok' | 'rattelser' | 'mitt';
  * hand. Svaret var rätt problem och fel lösning — en gäst i menyn är fortfarande
  * en gäst. David sade det rakt ut: "jag upplever att jag är i 4 olika miljöer".
  */
-export const HUVUDVAL: { vag: string; text: string; ikonnamn: string }[] = [
-  { vag: '/', text: 'Hem', ikonnamn: 'oversikt' },
-  { vag: '/beslut', text: 'Din insats', ikonnamn: 'beslut' },
-  // De fyra jämlika områdena. Ingen av dem är tak över de andra: "Bolaget"
-  // gjorde den första kodbasens omfång till produktens hierarki.
-  { vag: '/app/g/ekonomi', text: 'Redovisning', ikonnamn: 'redovisning' },
-  { vag: '/app/g/projekt', text: 'Projekt', ikonnamn: 'mal' },
-  { vag: '/app/g/crm', text: 'CRM', ikonnamn: 'relation' },
-  { vag: '/vy', text: 'Ärenden', ikonnamn: 'arenden' },
-  { vag: '/bibliotek', text: 'Bibliotek', ikonnamn: 'bibliotek' },
-];
+// HÄRLEDS UR KONTRAKTET (Astras steg 5). Listan stod här som sju handskrivna
+// rader, identiska med två andra listor i två andra kodbaser — tills någon
+// rörde en av dem, och ingenting mätte att de fortfarande var det. Nu läser
+// varje kodbas sin EGNA kopia av navigation.v1.json och räknar fram samma
+// modell; prov/adresskontraktet.py jämför de tre mot ett referenskontrakt som
+// räknas fram oberoende av dem.
+//
+// Ikonerna ligger kvar HÄR med flit: de är lokal presentation, inte identitet
+// eller adress, och kontraktet äger det senare.
+const MENYIKONER: Record<string, string> = {
+  home: 'oversikt',
+  intervention: 'beslut',
+  accounting_entry: 'redovisning',
+  projects_entry: 'mal',
+  crm_entry: 'relation',
+  cases_all: 'arenden',
+  library: 'bibliotek',
+};
+
+export const HUVUDVAL: { vag: string; text: string; ikonnamn: string; id: string }[] =
+  modell().global.map((p) => ({
+    vag: p.href ?? '/',
+    text: p.label,
+    ikonnamn: MENYIKONER[p.id] ?? 'oversikt',
+    id: p.id,
+  }));
 
 /** Modulens egna ytor. Undermeny — den ersätter aldrig huvudmenyn. */
 const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
@@ -624,9 +640,13 @@ export function sida(
 ): string {
   // Huvudmenyn är hela miljöns karta och ser likadan ut i alla moduler.
   // Arbete är det aktiva valet så länge man är i den här modulen.
+  // data-destination-id bär kontraktets id, så att ett prov kan läsa vilken
+  // DESTINATION länken pekar på och inte bara vilken sträng som råkar stå i
+  // href. En etikett kan bytas och en adress flyttas; id:t är permanent.
   const huvudnav = HUVUDVAL.map(
     (h) =>
-      `<a href="${h.vag}"${h.vag === '/vy' ? ' aria-current=page' : ''}>` +
+      `<a href="${h.vag}"${h.vag === '/vy' ? ' aria-current=page' : ''}` +
+      ` data-destination-id="${esc(h.id)}">` +
       `${ikon(h.ikonnamn)}${esc(h.text)}</a>`,
   ).join('');
   // Undermenyn är BARA det här områdets egna vyer.
