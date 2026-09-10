@@ -10,7 +10,7 @@
 //      ur fri text — och ingen rad lämnas omärkt.
 
 import type { Aktor } from '../../lib/aktor.js';
-import { modell } from './navigation.js';
+import { modell, type Post } from './navigation.js';
 
 const ERSATTNING: Record<string, string> = {
   '&': '&amp;',
@@ -216,6 +216,132 @@ header nav.nav .ikon{opacity:.75}
 header nav.nav a[aria-current] .ikon{opacity:1}
 /* Brodsmulan star FORE rubriken och ar tyst: en position, inte en handling.
    Sista ledet ar aldrig en lank — man star redan dar. */
+/* Produktmenyn. Kopierad EN gang ur redovisningens stilmall 2026-09-10.
+   K-9: medveten dubblering, bevakad av prov, aldrig en delad fil. */
+.navmenu { position: relative; flex: none; }
+.navmenu > summary {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px 7px 10px; border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2); background: var(--surface);
+  color: var(--ink); font-size: 13.5px; font-weight: 550;
+  cursor: pointer; list-style: none; user-select: none;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.navmenu > summary::-webkit-details-marker { display: none; }
+.navmenu > summary:hover { border-color: var(--accent); box-shadow: var(--shadow-1); }
+.navmenu__ico--close, .navmenu[open] .navmenu__ico { display: none; }
+.navmenu[open] .navmenu__ico--close { display: inline; }
+.navmenu[open] > summary { background: var(--accent-weak); border-color: var(--accent); color: var(--accent-ink); }
+
+/* Panelen: flytande kort som reser sig mjukt. */
+.navmenu__panel {
+  position: absolute; top: calc(100% + 9px); left: 0; z-index: 40;
+  /* 48px headroom: 100vw inkluderar en ev. klassisk rullist (~17px på
+     Windows/Linux) — med bara 24px spiller panelens högerkant utanför
+     clientWidth och skapar en vågrät rullist så fort menyn öppnas. */
+  width: min(880px, calc(100vw - 48px));
+  padding: 16px 18px 18px;
+  background: color-mix(in oklch, var(--surface) 97%, transparent);
+  /* Ingen backdrop-filter har. Bakgrunden ar 97 % ogenomskinlig, sa ett filter
+     kan bara verka pa de 3 % som lyser igenom.
+     MATT i Chrome 2026-08-25 pa en identisk panel med och utan filtret, pixel
+     for pixel: hogst 7 av 255 nivaers skillnad over hela ytan, och 210 449 av
+     558 000 pixlar skilde exakt 4 nivaer - det ar de tre procenten. Undantaget
+     ar fem pixlar i det rundade hornet, dar filtret klipper sin egen kant.
+     KONTROLL med samma rigg vid 50 % opacitet: 102 av 255 och varenda pixel
+     andrad. Riggen ser en oskarpa nar det finns en att se, sa nollan ovan ar
+     ett svar och inte en trasig matning. */
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  max-height: min(72vh, 640px); overflow-y: auto; overscroll-behavior: contain;
+}
+@keyframes navrise { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+.navmenu[open] .navmenu__panel { animation: navrise .17s cubic-bezier(.2,.7,.3,1) both; }
+/* Kolumnflöde (inte grid): grupperna packas tätt utan döda rader när de är
+   olika höga, och antalet kolumner följer bredden av sig självt. */
+.navmenu__grid { columns: 196px 4; column-gap: 26px; }
+.navmenu__grp { break-inside: avoid; margin: 0 0 17px; }
+.navmenu__grp > .eyebrow { display: block; margin-bottom: 1px; }
+.navmenu__hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
+.navmenu__link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500;
+}
+.navmenu__link:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.navmenu__link.is-active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
+.navmenu__link.is-active::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none;
+}
+.navmenu__link:not(.is-active)::before { content: ""; width: 5px; flex: none; }
+
+/* Snabbrad */
+.nav__quick { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nav__quick::-webkit-scrollbar { display: none; }
+.nav__quick a {
+  padding: 7px 11px; border-radius: var(--radius-pill);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500; white-space: nowrap;
+}
+.nav__quick a:hover, .nav__grannar a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+/* Grannmodulerna: vägen UT ur redovisningen, inte en sida inom den.
+   Samma form som snabbraden, egen behållare — spärrhaken i
+   navigation.test.ts räknar snabbradens länkar och ska fortsätta göra det. */
+.nav__grannar { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.nav__grannar a {
+  padding: 7px 11px; border-radius: var(--radius-pill);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500; white-space: nowrap;
+  opacity: .85;
+}
+.nav__quick a.active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
+
+/* Undermeny (designkontraktets menygrammatik, "en nivå ner").
+ *
+ * Samma grammatik som snabbraden — en vågrätt rullande rad, aldrig radbrytning,
+ * aria-current="page" på exakt EN post (WCAG 2.4.8) — men i FYRKANTIG form.
+ * Formskillnaden säger "en nivå ner" utan ett ord, och sidan slipper därmed en
+ * andra huvudmeny som konkurrerar med den riktiga.
+ *
+ * Läget bärs av aria-current, inte av färgen: strecket under den aktuella
+ * posten är den andra ledtråden, och den syns i svartvitt och i högkontrastläge.
+ * Helt JS-fritt — rullningen är CSS, precis som i .nav__quick. */
+.subnav {
+  display: flex; align-items: stretch; gap: 2px;
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+  margin: 6px 0 16px; border-bottom: 1px solid var(--line);
+}
+.subnav::-webkit-scrollbar { display: none; }
+.subnav a {
+  padding: 8px 11px; margin-bottom: -1px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-2); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.subnav a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.subnav a[aria-current="page"] {
+  background: var(--accent-weak); color: var(--accent-ink);
+  border-bottom-color: var(--accent); font-weight: 600;
+}
+
+/* "Du är här" — visas när sidan inte finns i snabbraden. */
+.nav__here {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  /* Får KRYMPA (inte flex:none): på telefonbredd kan grupp + sidnamn vara
+     bredare än raden ("Kunder & leverantörer · Leverantörsreskontra") och
+     spillde då hela sidan i sidled. Nu ellipsas sidnamnet i stället. */
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
+  padding: 6px 12px; border-radius: var(--radius-pill);
+  background: var(--accent-weak); color: var(--accent-ink);
+  font-size: 13.5px; font-weight: 600; white-space: nowrap;
+}
+.nav__here .nav__here-grp { font-size: 11.5px; font-weight: 500; opacity: .75; flex: none; }
+.nav__here .nav__here-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav__sep { width: 1px; height: 20px; background: var(--line); flex: none; }
+.navmenu__grid{columns:196px 3}
+.nav__omrade{font-weight:600;font-size:13px;color:var(--ink);padding:5px 4px;white-space:nowrap;flex:none;text-decoration:none}
+a.nav__omrade:hover{text-decoration:underline}
+.navmenu__grpl{display:block;margin-bottom:1px;text-decoration:none}
+.navmenu__grpl:hover{text-decoration:underline}
+
 .smula{display:flex;align-items:center;gap:var(--p-rym-2);flex-wrap:wrap;
 margin:0 0 var(--p-rym-3);font-size:var(--meta);color:var(--text-svag)}
 .smula a{color:var(--text-svag);text-decoration:none}
@@ -474,6 +600,7 @@ button:active,a.fasett:active{transform:scale(var(--p-tryck))}
 // Ikonerna ar DEKOR och bar aria-hidden: ordet bredvid bar hela betydelsen.
 // Samma regel som proveniensmarkets ikon redan foljer (KRAV-5).
 const IKONER: Record<string, string> = {
+  meny: 'M3 6h14|M3 10h14|M3 14h14',
   mal: 'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z|M13.4 10a3.4 3.4 0 1 1-6.8 0 3.4 3.4 0 0 1 6.8 0z|M10.4 10h-.8',
   relation: 'M8.6 6.6a3 3 0 1 1-4.2 4.2M11.4 13.4a3 3 0 1 1 4.2-4.2|M7.8 12.2l4.4-4.4',
   // Huvudmenyns ikoner, ordagrant ur Hermes-ytornas IKONER: samma val ska
@@ -631,6 +758,92 @@ const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
 // modulerna monterats bakom samma vard star de i HUVUDVAL i stallet -- som
 // delar av samma miljo, inte som utflykter. prov/enmiljo.py haller det.
 
+
+/**
+ * Produktmenyn: menyknappen, omradet man star i, och omradets sidor.
+ *
+ * Harledd ur den har kodbasens EGNA kopia av navigation.v1.json. Gruppens
+ * rubrik ar vagen till omradets ingang — sedan huvudraden togs bort finns
+ * ingen annan vag dit, och utan den hade Hem och Bibliotek blivit omojliga
+ * att na.
+ */
+function produktmeny(aktivVag: string | null): string {
+  const m = modell();
+  let grupp: (typeof m.groups)[number] | null = null;
+  let post: Post | null = null;
+  for (const g of m.groups) {
+    for (const p of g.items) {
+      if (p.href === aktivVag) {
+        grupp = g;
+        post = p;
+      }
+    }
+  }
+  if (!grupp) {
+    for (const g of m.groups) {
+      if (g.entry?.href && g.entry.href === aktivVag) grupp = g;
+    }
+  }
+
+  const rubrik = (g: (typeof m.groups)[number]): string =>
+    g.entry?.href
+      ? `<a class="eyebrow navmenu__grpl" href="${g.entry.href}" data-destination-id="${esc(g.entry.id)}">${esc(g.label)}</a>`
+      : `<span class=eyebrow>${esc(g.label)}</span>`;
+
+  const grupper = m.groups
+    .map(
+      (g) =>
+        `<div class=navmenu__grp>${rubrik(g)}` +
+        `<span class=navmenu__hint>${esc(g.hint)}</span>` +
+        g.items
+          .map((p) => {
+            const pa = post !== null && p.id === post.id;
+            return (
+              `<a class="navmenu__link${pa ? ' is-active' : ''}" href="${p.href ?? '#'}"` +
+              `${pa ? ' aria-current=page' : ''} data-destination-id="${esc(p.id)}">${esc(p.label)}</a>`
+            );
+          })
+          .join('') +
+        '</div>',
+    )
+    .join('');
+
+  const snabb: Post[] = grupp
+    ? grupp.id === 'accounting'
+      ? m.quick
+      : grupp.items.slice(0, 6)
+    : [];
+
+  const omradet = grupp
+    ? grupp.entry?.href
+      ? `<a class=nav__omrade href="${grupp.entry.href}" data-destination-id="${esc(grupp.entry.id)}">${esc(grupp.label)}</a>`
+      : `<span class=nav__omrade>${esc(grupp.label)}</span>`
+    : '';
+
+  const kvick = snabb
+    .map((p) => {
+      const pa = post !== null && p.id === post.id;
+      return (
+        `<a${pa ? ' class=active' : ''} href="${p.href ?? '#'}"` +
+        `${pa ? ' aria-current=page' : ''} data-destination-id="${esc(p.id)}">${esc(p.label)}</a>`
+      );
+    })
+    .join('');
+
+  const har =
+    post !== null && !snabb.some((p) => p.id === post!.id)
+      ? `<span class=nav__here><span class=nav__here-grp>${esc(grupp!.label)}</span>` +
+        `<span class=nav__here-lbl>${esc(post.label)}</span></span>`
+      : '';
+
+  return (
+    '<nav class=nav aria-label="Huvudmeny">' +
+    `<details class=navmenu><summary>${ikon('meny')}<span>Meny</span></summary>` +
+    `<div class=navmenu__panel><div class=navmenu__grid>${grupper}</div></div></details>` +
+    `<span class=nav__sep></span>${omradet}<div class=nav__quick>${kvick}</div>${har}</nav>`
+  );
+}
+
 export function sida(
   titel: string,
   kropp: string,
@@ -640,21 +853,10 @@ export function sida(
 ): string {
   // Huvudmenyn är hela miljöns karta och ser likadan ut i alla moduler.
   // Arbete är det aktiva valet så länge man är i den här modulen.
-  // data-destination-id bär kontraktets id, så att ett prov kan läsa vilken
-  // DESTINATION länken pekar på och inte bara vilken sträng som råkar stå i
-  // href. En etikett kan bytas och en adress flyttas; id:t är permanent.
-  const huvudnav = HUVUDVAL.map(
-    (h) =>
-      `<a href="${h.vag}"${h.vag === '/vy' ? ' aria-current=page' : ''}` +
-      ` data-destination-id="${esc(h.id)}">` +
-      `${ikon(h.ikonnamn)}${esc(h.text)}</a>`,
-  ).join('');
-  // Undermenyn är BARA det här områdets egna vyer.
-  const nav = YTOR.map(
-    (y) =>
-      `<a href="${y.vag}"${y.yta === aktiv ? ' aria-current=page' : ''}>` +
-      `${ikon(y.ikonnamn)}${esc(y.text)}</a>`,
-  ).join('');
+  // EN rad: menyknappen, vilken del man star i, och den delens sidor.
+  // Huvudraden och modulens egen undermeny togs bort 2026-09-10 pa Davids
+  // besked: "allt ska ga att na via menyn". Bada var kartor bredvid en karta.
+  const nav = produktmeny(YTOR.find((y) => y.yta === aktiv)?.vag ?? null);
   return (
     '<!doctype html><html lang=sv><head><meta charset=utf-8>' +
     "<meta name=viewport content='width=device-width,initial-scale=1'>" +
@@ -673,8 +875,7 @@ export function sida(
         : `<a class=jag href="/vy/logga-in">${proveniens(aktor.typ, aktor.namn)}</a>`) +
     `<span class=tid><span class=dold>Renderad </span>${esc(klockslag(new Date()))}</span>` +
     '</div></div>' +
-    `<nav class=nav aria-label="Hermes">${huvudnav}</nav>` +
-    `<nav class="nav undernav" aria-label="Arbete">${nav}</nav></header>` +
+    `${nav}</header>` +
     `<main id=innehall tabindex=-1>${smula ? brodsmula(smula) : ''}${kropp}</main>` +
     '<footer class=fot>Läsning kräver ingen nyckel. Ändringar kräver inloggning ' +
     'och lämnar alltid aktör och gammalt värde i händelseloggen.<br>' +
