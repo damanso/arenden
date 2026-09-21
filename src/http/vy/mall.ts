@@ -218,7 +218,10 @@ header nav.nav a[aria-current] .ikon{opacity:1}
    Sista ledet ar aldrig en lank — man star redan dar. */
 /* Produktmenyn. Kopierad EN gang ur redovisningens stilmall 2026-09-10.
    K-9: medveten dubblering, bevakad av prov, aldrig en delad fil. */
-.navmenu { position: relative; flex: none; }
+.navmenu { flex: none; }   /* INTE position:relative — se 2026-09-14: .nav har
+   overflow-x:auto, vilket berakar overflow-y till auto och klipper bort allt
+   utanfor navraden. Panelen maste ha .topbar som containing block for att
+   slippa klippningen; da blir den synlig och klickbar. */
 .navmenu > summary {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 12px 7px 10px; border-radius: var(--radius-pill);
