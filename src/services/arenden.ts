@@ -295,6 +295,8 @@ export interface SkapaArendeInput {
   labels?: string[];
   priority?: number;
   due?: string;
+  /** Beslut #27: projektnamn, måste finnas — annars 400 (K-10). */
+  projekt?: string;
 }
 
 /**
@@ -315,10 +317,20 @@ export async function skapaArende(
   ]);
   const nummer = Number(seq.rows[0]!.n);
 
+  // Beslut #27: projektet slås upp, aldrig skapas. Ett okänt namn är ett fel
+  // i anropet, inte en ny rad i registret (K-10, samma skäl som sokProjekt).
+  let projectId: string | null = null;
+  if (input.projekt) {
+    projectId = await sokProjekt(client, tenantId, input.projekt);
+    if (!projectId) {
+      throw new BadRequestError(`projektet finns inte: ${input.projekt}`);
+    }
+  }
+
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO issues (tenant_id, team_id, state_id, sequence_number,
-                         title, description, priority, due_date)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date)
+                         title, description, priority, due_date, project_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9)
      RETURNING id`,
     [
       tenantId,
@@ -329,6 +341,7 @@ export async function skapaArende(
       input.description ?? '',
       input.priority ?? null,
       input.due ?? null,
+      projectId,
     ],
   );
   const id = rows[0]!.id;

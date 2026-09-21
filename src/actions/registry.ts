@@ -280,6 +280,9 @@ export const ACTIONS: RegistreradAction[] = [
         labels: z.array(safeText(100)).max(20).optional(),
         priority: PrioritySchema.optional(),
         due: IsoDateSchema.optional(),
+        // Beslut #27 (20/8): projektet som namn, uppslaget mot befintlig
+        // projekttabell — aldrig skapat på beställning (K-10, sokProjekt).
+        projekt: safeText(100).optional(),
       })
       .strict(),
     handler: async (ctx, input) => {
@@ -290,6 +293,7 @@ export const ACTIONS: RegistreradAction[] = [
         ...(input.labels ? { labels: input.labels } : {}),
         ...(input.priority !== undefined ? { priority: input.priority } : {}),
         ...(input.due ? { due: input.due } : {}),
+        ...(input.projekt ? { projekt: input.projekt } : {}),
       });
       await ctx.skrivHandelse({
         issueId: arende.id,

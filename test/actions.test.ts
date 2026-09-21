@@ -2,7 +2,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../src/http/app.js';
-import { kor, nyNyckel, seedaTeam } from './helpers.js';
+import { withTransaction } from '../src/db/tx.js';
+import { hamtaEllerSkapaProjekt } from '../src/services/arenden.js';
+import { kor, nyNyckel, seedaTeam, TENANT_ID } from './helpers.js';
 
 // KRAV-11/13: hela actions-ytan genom HTTP-lagret — filter, paginering, states,
 // och att transporten inte har någon egen logik (allt går via executeAction).
@@ -55,6 +57,18 @@ describe('KRAV-11/13: actions-API:t', () => {
 
     const felTeam = await kor(app, nyckel, 'list_issues', { team_key: 'XYZ' });
     expect(felTeam.body.result.arenden).toEqual([]);
+  });
+
+  it('create_issue med projekt kopplar project_id — okänt projekt ger 400 (beslut #27)', async () => {
+    await withTransaction(async (client) => {
+      await hamtaEllerSkapaProjekt(client, TENANT_ID, 'NVR-001');
+    });
+    const ok = await kor(app, nyckel, 'create_issue', { title: 'Med projekt', team_key: 'LOC', projekt: 'NVR-001' });
+    expect(ok.status).toBe(200);
+    const hamtat = await kor(app, nyckel, 'get_issue', { identifier: ok.body.result.identifier });
+    expect(hamtat.body.result.arende.projekt).toBe('NVR-001');
+    const fel = await kor(app, nyckel, 'create_issue', { title: 'Fel projekt', team_key: 'LOC', projekt: 'Finns-Inte' });
+    expect(fel.status).toBe(400);
   });
 
   it('list_issues filtrerar på state-typ', async () => {
