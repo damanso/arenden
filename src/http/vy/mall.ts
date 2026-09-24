@@ -242,30 +242,31 @@ header nav.nav a[aria-current] .ikon{opacity:1}
   /* 48px headroom: 100vw inkluderar en ev. klassisk rullist (~17px på
      Windows/Linux) — med bara 24px spiller panelens högerkant utanför
      clientWidth och skapar en vågrät rullist så fort menyn öppnas. */
-  width: min(880px, calc(100vw - 48px));
+  width: min(1180px, calc(100vw - 48px));
   padding: 16px 18px 18px;
-  background: color-mix(in oklch, var(--surface) 97%, transparent);
-  /* Ingen backdrop-filter har. Bakgrunden ar 97 % ogenomskinlig, sa ett filter
-     kan bara verka pa de 3 % som lyser igenom.
-     MATT i Chrome 2026-08-25 pa en identisk panel med och utan filtret, pixel
-     for pixel: hogst 7 av 255 nivaers skillnad over hela ytan, och 210 449 av
-     558 000 pixlar skilde exakt 4 nivaer - det ar de tre procenten. Undantaget
-     ar fem pixlar i det rundade hornet, dar filtret klipper sin egen kant.
-     KONTROLL med samma rigg vid 50 % opacitet: 102 av 255 och varenda pixel
-     andrad. Riggen ser en oskarpa nar det finns en att se, sa nollan ovan ar
-     ett svar och inte en trasig matning. */
+  /* TACKANDE (24/9). Med 97 procent syntes sidans text som en skugga genom
+     den oppna menyn - uppmatt i Chromium pa Hermes-ytans identiska panel. En
+     oppen meny ar ett eget rum: sidhuvudet far vara 97 procent, panelen inte.
+     var(--surface) ar ogenomskinlig i bada lagena. */
+  background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow-2);
-  max-height: min(72vh, 640px); overflow-y: auto; overscroll-behavior: contain;
+  /* HELA menyn utan inre rullning. 100 % ar .topbar:s hojd (panelens
+     containing block), sa taket ar avstandet till skarmens nederkant.
+     min(72vh,640px) doldes 227-291 px av menyn pa 1280-2560 (24/9). */
+  max-height: calc(100vh - 100% - 24px); overflow-y: auto; overscroll-behavior: contain;
 }
-@keyframes navrise { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+/* Ingen opacitet i resningen (24/9): med opacity 0 -> 1 var menyn genomskinlig
+   i 170 ms. Panelen ar tat fran forsta bildrutan och reser sig bara. */
+@keyframes navrise { from { transform: translateY(-6px) scale(.985); } to { transform: none; } }
 .navmenu[open] .navmenu__panel { animation: navrise .17s cubic-bezier(.2,.7,.3,1) both; }
+@media (prefers-reduced-motion: reduce) { .navmenu[open] .navmenu__panel { animation: none; } }
 /* Kolumnflöde (inte grid): grupperna packas tätt utan döda rader när de är
    olika höga, och antalet kolumner följer bredden av sig självt. */
-.navmenu__grid { columns: 196px 4; column-gap: 26px; }
-.navmenu__grp { break-inside: avoid; margin: 0 0 17px; }
+.navmenu__grid { columns: 3; column-gap: 24px; }
+.navmenu__grp { break-inside: avoid; margin: 0 0 11px; }
 .navmenu__grp > .eyebrow { display: block; margin-bottom: 1px; }
-.navmenu__hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
+.navmenu__hint { display: block; font-size: 11.5px; line-height: 1.35; color: var(--ink-3); margin: 0 0 4px; }
 .navmenu__link {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 9px; border-radius: var(--radius-sm);
@@ -339,11 +340,67 @@ header nav.nav a[aria-current] .ikon{opacity:1}
 .nav__here .nav__here-grp { font-size: 11.5px; font-weight: 500; opacity: .75; flex: none; }
 .nav__here .nav__here-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav__sep { width: 1px; height: 20px; background: var(--line); flex: none; }
-.navmenu__grid{columns:196px 3}
+.navmenu__grid{columns:3}
 .nav__omrade{font-weight:600;font-size:13px;color:var(--ink);padding:5px 4px;white-space:nowrap;flex:none;text-decoration:none}
 a.nav__omrade:hover{text-decoration:underline}
 .navmenu__grpl{display:block;margin-bottom:1px;text-decoration:none}
 .navmenu__grpl:hover{text-decoration:underline}
+/* ---- Menypanelen far tillbaka sin egen grammatik (24/9) ----
+   (Inga backticks i den har kommentaren: stilmallen ar en mallstrang i TS.)
+   "header nav.nav a" (0,1,3) ar toppradens pillerregel och slog panelens
+   ".navmenu__link" (0,1,0): 43 av 50 lankar delade rad, raderna blev 44 px
+   hoga, gruppetiketten ARENDEN blev en platta och 227 px av menyn doldes
+   bakom inre rullning pa 1440x900 (uppmatt i Chromium). Samma fel och samma
+   rattelse som i Hermes-ytan: hogre specificitet for panelens lankar, ingen
+   ny token och inget nytt selektornamn utom gruppklassen for tva spalter.
+   Toppradens piller (.nav__omrade, .nav__quick) ar orda.
+   BLOCK, inte flex: en for lang etikett ska ellipsas, och text-overflow
+   biter inte pa ett anonymt flexobjekt. */
+header nav.nav .navmenu__panel a{display:block;min-height:0;padding:6px 9px;
+border:1px solid transparent;border-radius:var(--radius-sm);background:none;
+color:var(--ink-2);font-size:13.5px;font-weight:500;line-height:1.3;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+text-decoration:none;box-shadow:none}
+header nav.nav .navmenu__panel a:hover{background:var(--surface-2);
+border-color:transparent;color:var(--ink);text-decoration:none}
+header nav.nav .navmenu__panel a.navmenu__link::before{content:"";display:inline-block;
+width:5px;height:5px;border-radius:50%;margin-right:8px;vertical-align:.12em;
+background:none}
+header nav.nav .navmenu__panel a.navmenu__link.is-active::before{background:var(--accent)}
+header nav.nav .navmenu__panel a.navmenu__link.is-active,
+header nav.nav .navmenu__panel a.navmenu__link[aria-current]{background:var(--accent-weak);
+color:var(--accent-ink);font-weight:600;border-color:transparent}
+/* Gruppetiketten ar eyebrow-text, aldrig ett piller. Den aktiva gruppen
+   markeras med accentfargen, inte med en platta. */
+header nav.nav .navmenu__panel a.navmenu__grpl{display:block;min-height:0;padding:0;
+border:0;background:none;border-radius:0;font-size:11.5px;font-weight:600;
+letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
+white-space:normal;overflow:visible;margin:0 0 2px}
+header nav.nav .navmenu__panel a.navmenu__grpl:hover{background:none;
+color:var(--accent-ink);text-decoration:underline}
+header nav.nav .navmenu__panel a.navmenu__grpl.is-active,
+header nav.nav .navmenu__panel a.navmenu__grpl[aria-current]{background:none;
+color:var(--accent-ink)}
+.navmenu__grp>.eyebrow{display:block;margin:0 0 2px}
+/* Redovisningens tjugotre poster i tva egna spalter - annars ar gruppen
+   ensam ~690 px hog och bestammer hela panelens hojd. */
+.navmenu__grp--spalter{columns:2;column-gap:14px}
+.navmenu__grp--spalter>.eyebrow,.navmenu__grp--spalter>.navmenu__hint{
+column-span:all}
+/* Lag och bred skarm (1280x800): hintraderna faller bort sa att HELA menyn
+   ryms utan inre rullning. Lankarna, etiketterna och ordningen ar orda. */
+@media(min-width:1100px) and (max-height:880px){
+.navmenu__panel .navmenu__hint{display:none}
+.navmenu__grp{margin:0 0 9px}
+.navmenu__grp>.eyebrow{margin:0 0 4px}}
+@media(max-width:1099px){.navmenu__grid{columns:2}
+.navmenu__grp--spalter{columns:1}}
+/* Telefon: panelen tar skarmens bredd, en spalt, och rullar utan att klippa. */
+@media(max-width:640px){
+.navmenu__panel{left:0;margin:0 8px;width:calc(100vw - 16px);
+padding:12px 12px 14px;max-height:calc(100vh - 100% - 18px)}
+.navmenu__grid{columns:1;column-gap:0}
+.navmenu__grp--spalter{columns:1}}
 
 .smula{display:flex;align-items:center;gap:var(--p-rym-2);flex-wrap:wrap;
 margin:0 0 var(--p-rym-3);font-size:var(--meta);color:var(--text-svag)}
@@ -801,7 +858,10 @@ function produktmeny(aktivVag: string | null): string {
   const grupper = m.groups
     .map(
       (g) =>
-        `<div class=navmenu__grp>${rubrik(g)}` +
+        // Redovisningens tjugotre poster far tva spalter inom sin grupp (24/9).
+        // Gransen ar satt i poster, inte pa gruppens namn.
+        `<div class=${g.items.length >= 12 ? '"navmenu__grp navmenu__grp--spalter"' : 'navmenu__grp'}>` +
+        rubrik(g) +
         `<span class=navmenu__hint>${esc(g.hint)}</span>` +
         g.items
           .map((p) => {
