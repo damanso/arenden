@@ -15,7 +15,8 @@ import { kor, nyNyckel, seedaTeam } from './helpers.js';
 // bokföras som Davids svar.
 
 const KONTRAKT = { system: 'hermes', kommando: 'besvara_beslut', objekt: '#153' };
-const SEN = '2026-09-30T08:00:00Z';
+// Alltid i framtiden, räknat från klockan när provet körs — ett fast datum passerar.
+const SEN = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
 function grund(stopp: string, extra: Record<string, unknown> = {}) {
   return {
