@@ -569,22 +569,45 @@ export async function atagandeForBeslut(
 }
 
 /**
- * Registrerar att en bestämd svarsversion har behandlats. Returnerar false om
- * den redan var behandlad — det är spärren mot att samma svar verkställs två
- * gånger, och mot att en komplettering tyst tappas bort (ny text = ny hash).
+ * Registrerar ett svarstillfälle. Med löpnummer är hashen en kontroll av
+ * innehållet; utan löpnummer används den äldre klientens hashidentitet.
+ * Samma identitet och hash returnerar false utan att ändra historikraden.
  */
 export async function registreraSvarsversion(
   client: PoolClient,
   tenantId: string,
-  input: { beslut_id: number; svar_hash: string; issue_id?: string | null },
+  input: { beslut_id: number; svar_hash: string; issue_id?: string | null; version?: number },
 ): Promise<{ nyskapad: boolean }> {
+  if (input.version === undefined) {
+    const { rows } = await client.query(
+      `INSERT INTO beslut_svarsversion (tenant_id, beslut_id, svar_hash, issue_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, beslut_id, svar_hash) WHERE version IS NULL DO NOTHING
+       RETURNING svar_hash`,
+      [tenantId, input.beslut_id, input.svar_hash, input.issue_id ?? null],
+    );
+    return { nyskapad: rows.length > 0 };
+  }
+
   const { rows } = await client.query(
-    `INSERT INTO beslut_svarsversion (tenant_id, beslut_id, svar_hash, issue_id)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (tenant_id, beslut_id, svar_hash) DO NOTHING
+    `INSERT INTO beslut_svarsversion (tenant_id, beslut_id, version, svar_hash, issue_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (tenant_id, beslut_id, version) WHERE version IS NOT NULL DO NOTHING
      RETURNING svar_hash`,
-    [tenantId, input.beslut_id, input.svar_hash, input.issue_id ?? null],
+    [tenantId, input.beslut_id, input.version, input.svar_hash, input.issue_id ?? null],
   );
+  if (rows.length === 0) {
+    // INSERT väntar på en samtidig insättning. I READ COMMITTED ser denna
+    // separata SELECT därefter den bekräftade raden innan någon händelse skrivs.
+    const befintlig = await client.query<{ svar_hash: string }>(
+      `SELECT svar_hash FROM beslut_svarsversion
+       WHERE tenant_id = $1 AND beslut_id = $2 AND version = $3`,
+      [tenantId, input.beslut_id, input.version],
+    );
+    if (befintlig.rows[0]?.svar_hash !== input.svar_hash) {
+      throw new BadRequestError('svarsversion_hash_avviker');
+    }
+  }
   return { nyskapad: rows.length > 0 };
 }
 

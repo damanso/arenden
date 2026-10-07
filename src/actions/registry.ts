@@ -1046,6 +1046,7 @@ export const ACTIONS: RegistreradAction[] = [
         beslut_id: z.number().int().positive(),
         svar_hash: z.string().regex(/^[0-9a-f]{16,64}$/, 'svar_hash anges som hex'),
         identifier: IdentifierSchema.optional(),
+        version: z.number().int().positive().optional(),
       })
       .strict(),
     handler: async (ctx, input) => {
@@ -1056,11 +1057,16 @@ export const ACTIONS: RegistreradAction[] = [
         beslut_id: input.beslut_id,
         svar_hash: input.svar_hash,
         issue_id: issueId,
+        version: input.version,
       });
       await ctx.skrivHandelse({
         issueId,
         verb: nyskapad ? 'behandlade_svarsversion' : 'svarsversionen_var_behandlad',
-        payload: { beslut_id: input.beslut_id, svar_hash: input.svar_hash },
+        payload: {
+          beslut_id: input.beslut_id,
+          svar_hash: input.svar_hash,
+          ...(input.version === undefined ? {} : { version: input.version }),
+        },
       });
       return { beslut_id: input.beslut_id, nyskapad };
     },
