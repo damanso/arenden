@@ -345,6 +345,27 @@ förflutna. `~/.hermes/prov/handelsevag.py` låser talet vid exakt 186 i **båda
 riktningarna: växer det har en ny kommentar kommit in förbi skrivvägen, krymper
 det har någon backfyllt händelser som aldrig hände.
 
+### FR-4 — varje mutation via actions, aktören ur nyckeln (Story 1.3)
+
+En mutation från `/api` eller vyn går bara genom `executeAction`. Aktören kommer ur en nyckel —
+bearer, eller en vysession som fötts ur en nyckel — och aldrig ur indata. Ett undantag finns i dag:
+redovisningssessionen. `sessionsAktor` (`src/http/vy/session.ts`) tar först `req.redovisningsaktor`,
+en människoaktör ur redovisningens inloggning som inte kommer ur någon nyckel och inte behöver finnas
+i `api_keys`. Undantaget ägs av Story 3.4 (B-03) och står utanför provet. En write-action som inte
+skriver någon händelserad rullas tillbaka. Transportlagret (`src/http/`) innehåller ingen
+SQL-skrivsats. `events` och `comments` skrivs bara av `skrivHandelse` och `laggTillKommentar`, och
+provet håller listan över de filer som når dem sluten för de former det läser i källtexten: statiska
+importer och återexporter (namngivna, med alias, hela modulen), dynamiska importer med fast sökväg,
+och i en fil som binder namnet varje alias och varje förekomst som inte är ett direkt anrop. I vyn
+prövar det att varje `kor()` tar skrivruttens aktör ur `kravSessionsAktor(req)`. En importsökväg som
+byggs först vid körning ser provet inte; där gäller lagerregeln och granskningen. Importen och
+nyckelskriptet skriver förbi `executeAction` med fasta systemaktörer, och återläsningen anropar
+`executeAction` med en fast systemaktör. Davids besked om dem är Story 1.4.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-4 | `autentisera` före varje `/api`-rutt (401 före valideringen); aktören ur `kravAktor(req)` på `/api` och ur `kravSessionsAktor(req)` genom `skrivrutt()` och `kor()` i vyn; `.strict()` på varje schema; räknaren i `executeAction` rullar tillbaka en write-action utan händelserad; `events` append-only (GRANT och triggrar); skrivställena för `events` och `comments` är en sluten lista | `src/http/app.ts`, `src/http/middleware/autentisera.ts`, `src/http/routes/actions.ts`, `src/http/vy/skrivning.ts` (`skrivrutt`, `kor`), `src/http/vy/session.ts`, `src/actions/execute.ts`, `src/actions/registry.ts`, `src/services/handelser.ts`, `src/services/kommentarer.ts`, `migrations/0004_events.sql` | `test/skrivvagar.test.ts` (AK 1–4; AK 5: invarianten över API:t och vyn; AK 6: inga skrivsatser i transportlagret), `test/proveniens.test.ts` (KRAV-8/10/20c) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
