@@ -101,6 +101,35 @@ export async function hamtaArende(
   return arende;
 }
 
+/**
+ * B-01 (FR-8, FR-29, FR-19): låsande läsning för läs-ändra-skriv. Sats 1 tar
+ * radlåset på issues-raden och väntar in den som håller det. Sats 2 läser hela
+ * ärendet med en NY ögonblicksbild (READ COMMITTED ger varje sats sin egen),
+ * så att också de joinade kolumnerna (state, projekt, förälder) är de
+ * committade. Ett enda SELECT … FOR UPDATE OF i hade läst joinerna ur den gamla
+ * ögonblicksbilden: ett samtidigt statusbyte hade gett 404 och ett samtidigt
+ * projektbyte ett falskt `fran`.
+ *
+ * Bara skrivvägen använder den. Läsvägarna (hamtaArende, hamtaArendeViaId)
+ * förblir olåsta, så att vyn och get_issue aldrig väntar på en rättelse.
+ */
+export async function hamtaArendeForAndring(
+  client: PoolClient,
+  tenantId: string,
+  identifier: string,
+): Promise<Arende> {
+  const { teamKey, nummer } = delaIdentifier(identifier);
+  const { rows } = await client.query<{ id: string }>(
+    `SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id
+      WHERE i.tenant_id = $1 AND t.key = $2 AND i.sequence_number = $3
+      FOR UPDATE OF i`,
+    [tenantId, teamKey, nummer],
+  );
+  const rad = rows[0];
+  if (!rad) throw new NotFoundError('ärende');
+  return hamtaArendeViaId(client, tenantId, rad.id);
+}
+
 // ---- Cursor-paginering ----------------------------------------------------
 // Keyset på (skapad, id) — stabil även när nya ärenden skapas mitt i en
 // genomläsning, till skillnad från OFFSET.
@@ -547,6 +576,10 @@ export interface FaltInput {
  * befintligt ärende. Returnerar exakt vilka fält som FAKTISKT ändrades — det är
  * den listan actionen skriver händelserader ur, så loggen kan aldrig påstå en
  * ändring som inte skedde.
+ *
+ * B-01: ärendet läses under radlås (hamtaArendeForAndring), så att `fran` och
+ * bara_om_osatt-spärren jämför mot det värde som faktiskt ersätts — också när
+ * en annan transaktion just har skrivit samma rad.
  */
 export async function uppdateraArendeFalt(
   client: PoolClient,
@@ -554,7 +587,7 @@ export async function uppdateraArendeFalt(
   identifier: string,
   input: FaltInput,
 ): Promise<{ arende: Arende; andringar: Faltandring[] }> {
-  const arende = await hamtaArende(client, tenantId, identifier);
+  const arende = await hamtaArendeForAndring(client, tenantId, identifier);
   const baraOmOsatt = input.bara_om_osatt === true;
 
   // Föräldern anges som identifier utåt men lagras som id — slå upp den först,

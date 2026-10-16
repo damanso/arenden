@@ -5,7 +5,7 @@ import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../src/http/app.js';
 import { glomAllaSessioner } from '../src/http/vy/session.js';
-import { kor, nyNyckel, seedaTeam } from './helpers.js';
+import { kor, nyNyckel, raknaRader, seedaTeam } from './helpers.js';
 
 interface HandelseRad {
   verb: string;
@@ -219,6 +219,92 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     expect(svar.status).toBe(200);
     expect(svar.body.result.andringar).toHaveLength(0);
     expect((await las(id)).title).toBe('Rättad av en människa');
+  });
+
+  // ---- F17 (Story 1.1, AK 9): rättelsen står kvar ---------------------------
+
+  it('F17 (AK 9) a: tom titel och null-titel avvisas med 400 och skriver noll rader', async () => {
+    const id = await nyttArende('F17a rubrik');
+    const fore = await raknaRader('events');
+    for (const title of ['', null]) {
+      const svar = await kor(app, manniskonyckel, 'update_issue', { identifier: id, title });
+      expect(svar.status, JSON.stringify(title)).toBe(400);
+      expect(svar.body.error, JSON.stringify(title)).toBe('validation_error');
+    }
+    expect(await raknaRader('events')).toBe(fore);
+    expect((await las(id)).title).toBe('F17a rubrik');
+
+    // Kontroll: ett giltigt titelbyte på samma ärende ändrar räkningen — den
+    // kan alltså slå ut.
+    const foreKontroll = await raknaRader('events');
+    const ok = await kor(app, manniskonyckel, 'update_issue', { identifier: id, title: 'F17a ny rubrik' });
+    expect(ok.status).toBe(200);
+    expect(await raknaRader('events')).toBe(foreKontroll + 1);
+  });
+
+  it('F17 (AK 9) b: description null tömmer texten och loggar den gamla i gammal_text', async () => {
+    const id = await nyttArende('F17b', 'Texten som töms.');
+    const svar = await kor(app, manniskonyckel, 'update_issue', { identifier: id, description: null });
+    expect(svar.status).toBe(200);
+    expect((await las(id)).description).toBe('');
+    const rader = (await handelser(id)).filter((h) => h.verb === 'rattade_beskrivning');
+    expect(rader).toHaveLength(1);
+    expect(rader[0]!.payload['gammal_text']).toBe('Texten som töms.');
+    expect(rader[0]!.payload['ny_text']).toBe('');
+  });
+
+  it('F17 (AK 9) c: ändrad titel och oförändrad beskrivning ger exakt en andrade_titel', async () => {
+    const id = await nyttArende('F17c före', 'Samma text.');
+    const svar = await kor(app, manniskonyckel, 'update_issue', {
+      identifier: id,
+      title: 'F17c efter',
+      description: 'Samma text.',
+    });
+    expect(svar.status).toBe(200);
+    const rader = (await handelser(id)).filter((h) => h.verb === 'andrade_titel');
+    expect(rader).toHaveLength(1);
+    expect(rader[0]!.payload).toEqual({
+      identifier: id,
+      falt: 'title',
+      fran: 'F17c före',
+      till: 'F17c efter',
+    });
+    expect((await handelser(id)).filter((h) => h.verb === 'rattade_beskrivning')).toHaveLength(0);
+  });
+
+  it('F17 (AK 9) d: formuläret står hopfällt under beskrivningen, bara med session', async () => {
+    const id = await nyttArende('F17d', 'Beskrivningen.');
+    const sammanfattning = '<summary>Rätta titel eller beskrivning</summary>';
+
+    // Utan session: sidan renderas (positiv kontroll), formuläret gör det inte.
+    const utan = await request(bas).get(`/vy/arende/${id}`);
+    expect(utan.status).toBe(200);
+    expect(utan.text).toContain('<h2>Beskrivning</h2>');
+    expect(utan.text, 'formuläret syns utan session').not.toContain(sammanfattning);
+
+    const agent = await inloggad(manniskonyckel);
+    const sida = await agent.get(`/vy/arende/${id}`);
+    expect(sida.status).toBe(200);
+    const html = sida.text;
+    const rubrik = html.indexOf('<h2>Beskrivning</h2>');
+    const summary = html.indexOf(sammanfattning);
+    expect(rubrik, 'rubriken Beskrivning saknas').toBeGreaterThan(-1);
+    expect(summary, 'formulärets summary saknas').toBeGreaterThan(-1);
+
+    // Taggen som håller formuläret läses ur SIDAN: bakåt från summary till
+    // närmaste <details. Ett påstående mot en hårdkodad sträng hade inte kunnat
+    // fälla provet — taggen hade då alltid varit den sökta strängens början.
+    const start = html.lastIndexOf('<details', summary);
+    expect(start, 'ingen details-tagg före summary').toBeGreaterThan(-1);
+    const slut = html.indexOf('>', start) + 1;
+    expect(html.slice(slut, summary).trim(), 'summary är inte details-taggens första barn').toBe('');
+    const tagg = html.slice(start, slut);
+    expect(start, 'formuläret står inte efter rubriken').toBeGreaterThan(rubrik);
+    // Attributen prövas var för sig, så att ordningen och citeringen är fri.
+    expect(tagg, `details-taggen är inte rättelsens: ${tagg}`).toMatch(
+      /\sclass=(?:"[^"]*\brattelse\b[^"]*"|rattelse(?=[\s>]))/,
+    );
+    expect(tagg, `formuläret står uppfällt: ${tagg}`).not.toMatch(/\sopen(?=[\s=>])/);
   });
 
   // ---- Vyn -----------------------------------------------------------------

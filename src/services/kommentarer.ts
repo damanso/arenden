@@ -69,17 +69,37 @@ export interface KommentarMedTillstand extends Kommentar {
   borttagen: Date | null;
 }
 
+const HAMTA_KOMMENTAR = `SELECT id, issue_id, body, aktor_typ, aktor_namn, source_ref, skapad, borttagen
+       FROM comments WHERE tenant_id = $1 AND id = $2`;
+
 /** Hela raden, borttagen eller ej — underlaget för att kunna logga GAMLA värdet. */
 export async function hamtaKommentar(
   client: PoolClient,
   tenantId: string,
   kommentarId: string,
 ): Promise<KommentarMedTillstand> {
-  const { rows } = await client.query<KommentarMedTillstand>(
-    `SELECT id, issue_id, body, aktor_typ, aktor_namn, source_ref, skapad, borttagen
-       FROM comments WHERE tenant_id = $1 AND id = $2`,
-    [tenantId, kommentarId],
-  );
+  const { rows } = await client.query<KommentarMedTillstand>(HAMTA_KOMMENTAR, [tenantId, kommentarId]);
+  const rad = rows[0];
+  if (!rad) throw new NotFoundError('kommentar');
+  return rad;
+}
+
+/**
+ * B-01 (FR-8): samma rad, under radlås. Varje läsning före en UPDATE av
+ * kommentaren går hit, så att den som kommer tvåa väntar in den första och
+ * läser det den committade — annars bär rättelsen eller borttagningen en
+ * gammal text som inte längre var kommentarens. Läsvägarna använder
+ * hamtaKommentar och väntar aldrig på låset.
+ */
+export async function hamtaKommentarForAndring(
+  client: PoolClient,
+  tenantId: string,
+  kommentarId: string,
+): Promise<KommentarMedTillstand> {
+  const { rows } = await client.query<KommentarMedTillstand>(`${HAMTA_KOMMENTAR} FOR UPDATE`, [
+    tenantId,
+    kommentarId,
+  ]);
   const rad = rows[0];
   if (!rad) throw new NotFoundError('kommentar');
   return rad;
@@ -99,7 +119,7 @@ export async function rattaKommentar(
   kommentarId: string,
   nyText: string,
 ): Promise<{ kommentar: KommentarMedTillstand; gammalText: string }> {
-  const fore = await hamtaKommentar(client, tenantId, kommentarId);
+  const fore = await hamtaKommentarForAndring(client, tenantId, kommentarId);
   if (fore.borttagen !== null) throw new NotFoundError('kommentar');
   await client.query('UPDATE comments SET body = $3 WHERE tenant_id = $1 AND id = $2', [
     tenantId,
@@ -122,7 +142,7 @@ export async function taBortKommentar(
   tenantId: string,
   kommentarId: string,
 ): Promise<{ kommentar: KommentarMedTillstand; andrad: boolean }> {
-  const fore = await hamtaKommentar(client, tenantId, kommentarId);
+  const fore = await hamtaKommentarForAndring(client, tenantId, kommentarId);
   if (fore.borttagen !== null) return { kommentar: fore, andrad: false };
   await client.query('UPDATE comments SET borttagen = now() WHERE tenant_id = $1 AND id = $2', [
     tenantId,
@@ -137,7 +157,7 @@ export async function aterstallKommentar(
   tenantId: string,
   kommentarId: string,
 ): Promise<{ kommentar: KommentarMedTillstand; andrad: boolean }> {
-  const fore = await hamtaKommentar(client, tenantId, kommentarId);
+  const fore = await hamtaKommentarForAndring(client, tenantId, kommentarId);
   if (fore.borttagen === null) return { kommentar: fore, andrad: false };
   await client.query('UPDATE comments SET borttagen = NULL WHERE tenant_id = $1 AND id = $2', [
     tenantId,

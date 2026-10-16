@@ -69,7 +69,7 @@ import {
 } from '../services/kundkoppling.js';
 import {
   aterstallKommentar,
-  hamtaKommentar,
+  hamtaKommentarForAndring,
   laggTillKommentar,
   listaKommentarer,
   rattaKommentar,
@@ -545,7 +545,8 @@ export const ACTIONS: RegistreradAction[] = [
     sensitivity: 'write',
     inputSchema: z.object({ kommentar_id: UuidSchema, body: safeText(20_000) }).strict(),
     handler: async (ctx, input) => {
-      const fore = await hamtaKommentar(ctx.client, ctx.tenantId, input.kommentar_id);
+      // B-01: under radlås, så att no-op-grenen avgörs på det committade värdet.
+      const fore = await hamtaKommentarForAndring(ctx.client, ctx.tenantId, input.kommentar_id);
       if (fore.borttagen === null && fore.body === input.body) {
         await ctx.skrivHandelse({
           issueId: fore.issue_id,
@@ -578,7 +579,9 @@ export const ACTIONS: RegistreradAction[] = [
     sensitivity: 'write',
     inputSchema: z.object({ kommentar_id: UuidSchema }).strict(),
     handler: async (ctx, input) => {
-      const fore = await hamtaKommentar(ctx.client, ctx.tenantId, input.kommentar_id);
+      // B-01: under radlås, så att gammal_text/gammal_aktor_* nedan är det
+      // kommentaren faktiskt bar när borttagningen skrevs.
+      const fore = await hamtaKommentarForAndring(ctx.client, ctx.tenantId, input.kommentar_id);
       const { kommentar, andrad } = await taBortKommentar(
         ctx.client,
         ctx.tenantId,

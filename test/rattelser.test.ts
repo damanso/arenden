@@ -391,6 +391,88 @@ describe('K-1: rättningsvägar, aktörsidentitet och skrivvägen i vyn', () => 
     expect(JSON.stringify(logg.rows[0]!.payload)).not.toContain('hash');
   });
 
+  // F32 (Story 1.1, AK 8): rättelsens sex vägar står kvar med låsande läsning.
+
+  it('F32 (AK 8) a: samma text igen är ingen rättelse, men försöket loggas', async () => {
+    const { identifier, kommentarId } = await skapaArendeMedKommentar('F32a', 'Samma text.');
+    const svar = await kor(app, manniskonyckel, 'update_comment', {
+      kommentar_id: kommentarId,
+      body: 'Samma text.',
+    });
+    expect(svar.status).toBe(200);
+    expect(svar.body.result.andrad).toBe(false);
+    const h = await handelser(identifier);
+    expect(h.filter((x) => x.verb === 'kommentaren_oforandrad')).toHaveLength(1);
+    expect(h.filter((x) => x.verb === 'rattade_kommentar')).toHaveLength(0);
+  });
+
+  it('F32 (AK 8) b: borttagningen lämnar raden med oförändrad text och proveniens', async () => {
+    const { kommentarId } = await skapaArendeMedKommentar('F32b', 'Texten står kvar.');
+    const las = async (): Promise<{ body: string; aktor_typ: string; aktor_namn: string }> =>
+      (
+        await pool.query<{ body: string; aktor_typ: string; aktor_namn: string }>(
+          'SELECT body, aktor_typ, aktor_namn FROM comments WHERE id = $1',
+          [kommentarId],
+        )
+      ).rows[0]!;
+    const fore = await las();
+    expect(fore).toEqual({ body: 'Texten står kvar.', aktor_typ: 'manniska', aktor_namn: 'david mancilla' });
+
+    const svar = await kor(app, manniskonyckel, 'delete_comment', { kommentar_id: kommentarId });
+    expect(svar.status).toBe(200);
+    expect(svar.body.result.andrad).toBe(true);
+    expect(await las()).toEqual(fore);
+  });
+
+  it('F32 (AK 8) c: remove_label tar bort exakt en kopplingsrad, och etiketten står kvar', async () => {
+    const skapat = await kor(app, agentnyckel, 'create_issue', {
+      title: 'F32c etikett',
+      team_key: 'LOC',
+      labels: ['F32-etikett', 'F32-annan'],
+    });
+    const identifier = skapat.body.result.identifier as string;
+    const issueId = skapat.body.result.id as string;
+    const kopplingar = async (): Promise<number> =>
+      Number(
+        (
+          await pool.query<{ n: string }>(
+            'SELECT count(*)::text AS n FROM issue_labels WHERE issue_id = $1',
+            [issueId],
+          )
+        ).rows[0]!.n,
+      );
+    const fore = await kopplingar();
+
+    const svar = await kor(app, manniskonyckel, 'remove_label', { identifier, label: 'F32-etikett' });
+    expect(svar.status).toBe(200);
+    expect(svar.body.result.andrad).toBe(true);
+    expect(await kopplingar()).toBe(fore - 1);
+    const etikett = await pool.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM labels WHERE namn = 'F32-etikett'",
+    );
+    expect(Number(etikett.rows[0]!.n)).toBe(1);
+  });
+
+  it('F32 (AK 8) d: rename_project skriver andrade_projektnamn med fran/till', async () => {
+    await pool.query(
+      "INSERT INTO projects (tenant_id, namn) VALUES ($1, 'F32 projekt') ON CONFLICT DO NOTHING",
+      [TENANT_ID],
+    );
+    const svar = await kor(app, manniskonyckel, 'rename_project', {
+      fran: 'F32 projekt',
+      till: 'F32 projekt omdöpt',
+    });
+    expect(svar.status).toBe(200);
+    expect(svar.body.result.andrad).toBe(true);
+    const { rows } = await pool.query<HandelseRad>(
+      `SELECT verb, aktor_typ, aktor_namn, payload FROM events
+        WHERE verb = 'andrade_projektnamn' ORDER BY id DESC LIMIT 1`,
+    );
+    expect(rows[0]!.payload['fran']).toBe('F32 projekt');
+    expect(rows[0]!.payload['till']).toBe('F32 projekt omdöpt');
+    expect(rows[0]!.aktor_namn).toBe('david mancilla');
+  });
+
   // ---- 3. Databasspärrarna (två OBEROENDE försvarslinjer) ------------------
   //
   // SQLSTATE, inte bara "kastar": 42501 är kolumn-GRANTen, P0001 är triggern.
@@ -441,6 +523,56 @@ describe('K-1: rättningsvägar, aktörsidentitet och skrivvägen i vyn', () => 
     await expect(
       pool.query("UPDATE api_keys SET nyckelhash = 'x' WHERE id = $1", [id]),
     ).rejects.toMatchObject({ code: '42501' });
+  });
+
+  it('F32 (AK 8) e: app-rollen får 42501 på DELETE av projekt, etiketter och nycklar — raderna står kvar', async () => {
+    await pool.query(
+      "INSERT INTO projects (tenant_id, namn) VALUES ($1, 'F32e projekt') ON CONFLICT DO NOTHING",
+      [TENANT_ID],
+    );
+    await kor(app, agentnyckel, 'create_issue', {
+      title: 'F32e etikett',
+      team_key: 'LOC',
+      labels: ['F32e-etikett'],
+    });
+    const projekt = (
+      await pool.query<{ id: string }>("SELECT id FROM projects WHERE namn = 'F32e projekt'")
+    ).rows[0]!.id;
+    const etikett = (
+      await pool.query<{ id: string }>("SELECT id FROM labels WHERE namn = 'F32e-etikett'")
+    ).rows[0]!.id;
+    const nyckel = (await pool.query<{ id: string }>('SELECT id FROM api_keys LIMIT 1')).rows[0]!.id;
+
+    for (const [tabell, id] of [
+      ['projects', projekt],
+      ['labels', etikett],
+      ['api_keys', nyckel],
+    ] as const) {
+      await expect(pool.query(`DELETE FROM ${tabell} WHERE id = $1`, [id]), tabell).rejects.toMatchObject({
+        code: '42501',
+      });
+      const kvar = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM ${tabell} WHERE id = $1`, [
+        id,
+      ]);
+      expect(Number(kvar.rows[0]!.n), tabell).toBe(1);
+    }
+  });
+
+  it('F32 (AK 8) f: ÄGARROLLEN får P0001 på UPDATE av aktor_typ — aktörstypen står kvar', async () => {
+    const { kommentarId } = await skapaArendeMedKommentar('F32f', 'Skriven av en människa.');
+    const admin = await adminKlient();
+    try {
+      await expect(
+        admin.query("UPDATE comments SET aktor_typ = 'agent' WHERE id = $1", [kommentarId]),
+      ).rejects.toMatchObject({ code: 'P0001' });
+    } finally {
+      await admin.end();
+    }
+    const { rows } = await pool.query<{ aktor_typ: string }>(
+      'SELECT aktor_typ FROM comments WHERE id = $1',
+      [kommentarId],
+    );
+    expect(rows[0]!.aktor_typ).toBe('manniska');
   });
 
   it('events är fortfarande orörd: ingen ny rättighet, ingen ny väg in', async () => {

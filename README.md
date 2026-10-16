@@ -268,6 +268,7 @@ Principen i rättigheterna: **rätta får man, radera historik får man inte.**
 | Etikett på ärende | HÅRD DELETE på `issue_labels` (kopplingsrad utan eget innehåll) | `taBortEtikettFranArende`, `remove_label` | "en etikett går att ta bort …" |
 | Projekt-/etikettnamn | UPDATE endast på `namn` — DELETE ges aldrig | `dopOmProjekt`/`dopOmEtikett`, `rename_project`/`rename_label` | "ett felstavat etikettnamn …", "ett projektnamn …" |
 | Nyckel | `aktiv = false` — aldrig DELETE | `aterkallaNyckel`, `revoke_api_key` | "en nyckel går att återkalla …" |
+| Samtidiga rättelser | Radlås före läsningen av det gamla värdet; den som kommer tvåa läser det den första committade (B-01) | `hamtaArendeForAndring` (`uppdateraArendeFalt`), `hamtaKommentarForAndring` (`rattaKommentar`, `taBortKommentar`, `aterstallKommentar`, `update_comment`, `delete_comment`) | `test/samtidighet.test.ts` |
 | Proveniens (`aktor_typ`/`aktor_namn`) | **Går inte att ändra.** Kolumn-GRANT (42501) för app-rollen OCH trigger (P0001) för ägaren — två oberoende linjer, som för `events` | `migrations/0011_rattelser.sql` | "app-rollen får 42501 …", "ÄGARROLLEN får P0001 …" |
 | Aktör för vyskrivningar | Session ur API-nyckel, kaka HttpOnly + SameSite=Strict + Path=/vy | `src/http/vy/session.ts` | "utan session skrivs ingenting …", "sessionskakan är HttpOnly …" |
 | CSRF | `Sec-Fetch-Site` måste vara `same-origin` om satt + `Origin`-jämförelse (samma som `/opt/redovisning`) + SameSite=Strict | `kravSammaUrsprung` | "CSRF: främmande Origin …", "CSRF: Sec-Fetch-Site …" |
