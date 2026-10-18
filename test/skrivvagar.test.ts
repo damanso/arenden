@@ -1,16 +1,17 @@
-// FR-4 (Story 1.3): varje mutation via /api och vyn bär nyckelns aktör och sin händelserad.
+// FR-4 (Story 1.3 och 1.4): varje mutation via /api och vyn bär nyckelns aktör och sin händelserad.
 //
 // Filen visar kravets sex kriterier för transportlagrets två vägar in, som granskaren kan läsa av här:
 //   AK 1  ingen skrivning utan giltig nyckel: 401 och noll rader i NÅGON tabell (F1, F2);
 //   AK 2  aktören tas ur nyckeln, aldrig ur indata: .strict() i hela registret, på /api och i vyn (F5–F7, F12);
 //   AK 3  en write-action utan händelserad rullas tillbaka, körd genom executeAction (F8, F9);
 //   AK 4  events går inte att ändra, varken som app (42501) eller som ägare (P0001) (F3, F4);
-//   AK 5  varje rad i events och comments som skrivs via /api och vyn bär en aktör ur api_keys (F12–F14);
+//   AK 5  varje rad via /api och vyn bär en aktör ur api_keys (F12–F14); sessionsAktor tar först
+//         req.redovisningsaktor: redovisningsundantaget ägs av Story 3.4 och står utanför provet;
 //   AK 6  ingen SQL-skrivsats i src/http/, och README:s FR-4-rad pekar hit (F10, F11, F15).
 //
 // F14 är den SLUTNA listan över de filer som når executeAction, startaSession, skrivHandelse och
-// laggTillKommentar, och över INSERT-satserna mot events och comments. Story 1.4 (importen,
-// återläsningen, nyckelskriptet) och Story 9.4 (onboardingen) utökar just den listan. Listan håller
+// laggTillKommentar, och över INSERT-satserna mot events och comments. Story 1.4 lade till verktygens
+// fasta aktörer (F20). Story 9.4 (onboardingen) utökar just den listan. Listan håller
 // för de former provet läser i källtexten, med kommentarerna bortlästa:
 //   - varje statisk import och återexport av modulen: namngiven, med alias, hela modulen (* as);
 //   - varje dynamisk import med en fast sökväg;
@@ -19,12 +20,22 @@
 //   - i vyn: varje kor() tar skrivruttens aktör, och den kommer ur kravSessionsAktor(req).
 // En importsökväg som byggs först vid körning ser provet inte. Den står under lagerregeln och
 // granskningen, liksom en rutt som anropar en skrivande tjänstefunktion direkt (Dev Notes).
+// Story 1.4:
+//   AK 1  de fyra verktygen, fasta aktörer och samma transaktion (F16–F20);
+//   AK 2  README:s slutna lista med beslut och regel (F23);
+//   AK 3  invarianten över alla fem vägar, med negativ kontroll (F21, F22).
+// Story 1.4:s block står först eftersom AK 3 läser alla rader. Importens kommentarer bär arkivets
+// författare (FR-12) och godtas genom importens händelserad som namnger dem.
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
+import { readFile, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
 import pg from 'pg';
@@ -32,9 +43,16 @@ import request from 'supertest';
 import { z, ZodError } from 'zod';
 import { executeAction } from '../src/actions/execute.js';
 import { ACTIONS, type RegistreradAction } from '../src/actions/registry.js';
+import { migrate } from '../src/db/migrate.js';
+import { withTransaction } from '../src/db/tx.js';
 import { pool } from '../src/db/pool.js';
 import { createApp } from '../src/http/app.js';
 import { glomAllaSessioner, SESSIONSKAKA } from '../src/http/vy/session.js';
+import { aterlasLinear } from '../src/import/aterlasLinear.js';
+import { importeraArkiv } from '../src/import/importeraArkiv.js';
+import { skrivHandelse } from '../src/services/handelser.js';
+import { laggTillKommentar } from '../src/services/kommentarer.js';
+import { TEST_DB_NAME } from './env.js';
 import type { Aktor } from '../src/lib/aktor.js';
 import { kor, nyNyckel, seedaTeam, TENANT_ID } from './helpers.js';
 
@@ -548,6 +566,632 @@ async function nyaAktorer(b: Baslinje): Promise<string[]> {
   );
   return rows.map((r) => r.aktor).sort();
 }
+
+// ---- Story 1.4: de slutna undantagen -----------------------------------------
+
+/**
+ * De tre fasta systemaktörerna i den slutna listan (Davids beslut 2026-10-16 11:00). Migrationerna är det
+ * fjärde undantaget men bär ingen aktör. Samma lista prövas mot koden (F20), datan (F21) och README (F23).
+ */
+const FASTA_SYSTEMAKTORER: readonly Aktor[] = [
+  { typ: 'system', namn: 'skapa-nyckel' },
+  { typ: 'system', namn: 'linear-import' },
+  { typ: 'system', namn: 'linear-aterlasning' },
+];
+
+/** Aktören som den står i källtexten: `{ typ: 'system', namn: 'linear-import' }`. */
+const aktorslitteral = (a: Aktor): string => `{ typ: '${a.typ}', namn: '${a.namn}' }`;
+
+const ARKIVFIXTURER = fileURLToPath(new URL('./fixtures/arkiv/', import.meta.url));
+const LINEARFIXTUR = fileURLToPath(new URL('./fixtures/linear/linear-prov.json', import.meta.url));
+
+/** De fasta aktörerna som två parallella textlistor, för unnest($1, $2) i SQL. */
+const fastaParametrar = (): [string[], string[]] => [
+  FASTA_SYSTEMAKTORER.map((a) => a.typ),
+  FASTA_SYSTEMAKTORER.map((a) => a.namn),
+];
+
+/**
+ * AK 3: raderna i HELA events och comments vars aktör varken finns i api_keys eller är en fast
+ * systemaktör. En kommentar som importen förde in bär arkivets författare (PRD FR-12); den godtas bara
+ * när den har en källreferens (bara importen sätter comments.source_ref) och importens egen händelserad
+ * (system · linear-import, importerade_kommentar) namnger just den kommentaren, just den källreferensen
+ * och just den aktören — K-10.3:s bindning, skärpt med aktör, verb, källreferens och författare.
+ */
+async function ogiltigaAktorerAllaVagar(): Promise<{ tabell: string; id: string }[]> {
+  const { rows } = await pool.query<{ tabell: string; id: string }>(
+    `WITH fasta AS (SELECT * FROM unnest($1::text[], $2::text[]) AS f(aktor_typ, aktor_namn))
+     SELECT 'events' AS tabell, e.id::text AS id FROM events e
+      WHERE NOT EXISTS (SELECT 1 FROM api_keys k
+              WHERE k.tenant_id = e.tenant_id AND k.aktor_typ = e.aktor_typ AND k.aktor_namn = e.aktor_namn)
+        AND NOT EXISTS (SELECT 1 FROM fasta f WHERE f.aktor_typ = e.aktor_typ AND f.aktor_namn = e.aktor_namn)
+     UNION ALL
+     SELECT 'comments', c.id::text FROM comments c
+      WHERE NOT EXISTS (SELECT 1 FROM api_keys k
+              WHERE k.tenant_id = c.tenant_id AND k.aktor_typ = c.aktor_typ AND k.aktor_namn = c.aktor_namn)
+        AND NOT EXISTS (SELECT 1 FROM fasta f WHERE f.aktor_typ = c.aktor_typ AND f.aktor_namn = c.aktor_namn)
+        AND NOT (c.source_ref IS NOT NULL AND EXISTS (SELECT 1 FROM events e
+              WHERE e.tenant_id = c.tenant_id AND e.issue_id = c.issue_id
+                AND e.aktor_typ = 'system' AND e.aktor_namn = 'linear-import'
+                AND e.verb = 'importerade_kommentar'
+                AND e.payload->>'kommentar_id' = c.id::text
+                AND e.payload->>'source_ref' = c.source_ref
+                AND e.payload->>'kommentarens_aktor_typ' = c.aktor_typ
+                AND e.payload->>'kommentarens_aktor_namn' = c.aktor_namn))`,
+    fastaParametrar(),
+  );
+  return rows;
+}
+
+/** Raderna som 'tabell:id', sorterade i kodpunktsordning — oberoende av databasens kollation. */
+const radnycklar = (rader: { tabell: string; id: string }[]): string[] =>
+  rader.map((r) => `${r.tabell}:${r.id}`).sort();
+
+/** Mängden aktörer ('typ·namn') i hela tabellen, sorterad. */
+async function aktorerITabell(tabell: 'events' | 'comments'): Promise<string[]> {
+  const { rows } = await pool.query<{ aktor: string }>(
+    `SELECT DISTINCT aktor_typ || '·' || aktor_namn AS aktor FROM ${tabell}`,
+  );
+  return rows.map((r) => r.aktor).sort();
+}
+
+/** Kommentarerna vars aktör varken finns i api_keys eller är en fast aktör — de som bara bindningen kan bära. */
+async function kommentarerUtanforNycklarna(): Promise<string[]> {
+  const { rows } = await pool.query<{ id: string }>(
+    `WITH fasta AS (SELECT * FROM unnest($1::text[], $2::text[]) AS f(aktor_typ, aktor_namn))
+     SELECT c.id::text AS id FROM comments c
+      WHERE NOT EXISTS (SELECT 1 FROM api_keys k
+              WHERE k.tenant_id = c.tenant_id AND k.aktor_typ = c.aktor_typ AND k.aktor_namn = c.aktor_namn)
+        AND NOT EXISTS (SELECT 1 FROM fasta f WHERE f.aktor_typ = c.aktor_typ AND f.aktor_namn = c.aktor_namn)`,
+    fastaParametrar(),
+  );
+  return rows.map((r) => r.id).sort();
+}
+
+/**
+ * Raderna med de här id:na i `tabell` som INTE delar xmin med en händelserad som bär återläsningens
+ * aktör — alltså rader som inte skrevs i samma transaktion som återläsningens händelserad.
+ */
+async function utanAterlasningensHandelse(
+  tabell: 'issue_relations' | 'issue_attachments',
+  ids: string[],
+): Promise<string[]> {
+  const { rows } = await pool.query<{ id: string }>(
+    `SELECT r.id::text AS id FROM ${tabell} r
+      WHERE r.id = ANY($1::uuid[])
+        AND NOT EXISTS (SELECT 1 FROM events e
+              WHERE e.xmin = r.xmin AND e.aktor_typ = 'system' AND e.aktor_namn = 'linear-aterlasning')`,
+    [ids],
+  );
+  return rows.map((r) => r.id).sort();
+}
+
+const korProcess = promisify(execFile);
+
+/**
+ * `npm run nyckel -- <typ> <namn> --fil <tmp>`: samma kommando som package.json:s skript (F18 läser det),
+ * som barnprocess mot TESTdatabasen. DOTENV_CONFIG_PATH pekar på en fil som inte finns, så att ingen .env
+ * kan rikta skriptet mot en annan databas (samma skydd som test/rattelser.test.ts).
+ */
+async function korNyckelskriptet(typ: string, namn: string): Promise<{ nyckel: string; stdout: string }> {
+  const fil = path.join(tmpdir(), `skrivvagar-f18-${process.pid}-${Date.now()}.nyckel`);
+  try {
+    const { stdout } = await korProcess(
+      path.join(ROT, 'node_modules', '.bin', 'tsx'),
+      [path.join(ROT, 'src', 'scripts', 'skapaNyckel.ts'), typ, namn, '--fil', fil],
+      { cwd: ROT, env: { ...process.env, DOTENV_CONFIG_PATH: path.join(tmpdir(), 'skrivvagar-finns-inte.env') } },
+    );
+    return { nyckel: (await readFile(fil, 'utf8')).trim(), stdout };
+  } finally {
+    await rm(fil, { force: true });
+  }
+}
+
+/**
+ * Hela migrationskedjan mot en NY, tom databas i testklustret: vad kedjan själv skriver. events är
+ * append-only, så en rad som någon migration lagt där hade stått kvar.
+ */
+async function migreradTomDatabas(): Promise<{
+  applied: number; ledger: number; events: number; comments: number; tenants: number;
+}> {
+  const namn = `${TEST_DB_NAME}_f19_migrering`;
+  const underhall = new pg.Client({ connectionString: process.env.MAINTENANCE_DATABASE_URL });
+  await underhall.connect();
+  try {
+    await underhall.query(`DROP DATABASE IF EXISTS ${namn} WITH (FORCE)`);
+    await underhall.query(`CREATE DATABASE ${namn}`);
+    const url = new URL(process.env.DATABASE_ADMIN_URL!);
+    url.pathname = `/${namn}`;
+    const resultat = await migrate(url.toString());
+    const c = new pg.Client({ connectionString: url.toString() });
+    await c.connect();
+    try {
+      const { rows } = await c.query<{ ledger: number; events: number; comments: number; tenants: number }>(
+        `SELECT (SELECT count(*)::int FROM schema_migrations) AS ledger,
+                (SELECT count(*)::int FROM events) AS events,
+                (SELECT count(*)::int FROM comments) AS comments,
+                (SELECT count(*)::int FROM tenants) AS tenants`,
+      );
+      return { applied: resultat.applied.length, ...rows[0]! };
+    } finally {
+      await c.end();
+    }
+  } finally {
+    try {
+      await underhall.query(`DROP DATABASE IF EXISTS ${namn} WITH (FORCE)`);
+    } finally {
+      await underhall.end();
+    }
+  }
+}
+
+/** Argumenten delade på kommatecken på djup 0: 'a, { b, c }, f(d, e)' → ['a', '{ b, c }', 'f(d, e)']. */
+function argumentlista(args: string): string[] {
+  const ut: string[] = [];
+  let djup = 0;
+  let start = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const c = args[i]!;
+    if ('([{'.includes(c)) djup += 1;
+    else if (')]}'.includes(c)) djup -= 1;
+    else if (c === ',' && djup === 0) {
+      ut.push(args.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const sista = args.slice(start).trim();
+  if (sista) ut.push(sista); // ett avslutande kommatecken ger ingen tom post
+  return ut;
+}
+
+interface Verktyg {
+  fil: string;
+  aktor: Aktor;
+  modul: string;
+  namn: 'skrivHandelse' | 'executeAction';
+  konstant: string | null;
+}
+
+/** De tre skrivande verktygen i den slutna listan, med sin fasta aktör och sin enda väg till loggen. */
+const VERKTYGEN: readonly Verktyg[] = [
+  { fil: 'import/importeraArkiv.ts', aktor: FASTA_SYSTEMAKTORER[1]!, modul: 'services/handelser', namn: 'skrivHandelse', konstant: 'IMPORTAKTOR' },
+  { fil: 'import/aterlasLinear.ts', aktor: FASTA_SYSTEMAKTORER[2]!, modul: 'actions/execute', namn: 'executeAction', konstant: 'ATERLASAKTOR' },
+  { fil: 'scripts/skapaNyckel.ts', aktor: FASTA_SYSTEMAKTORER[0]!, modul: 'services/handelser', namn: 'skrivHandelse', konstant: null },
+];
+
+/**
+ * Story 1.4, AK 1: varje anrop i verktygen bär verktygets fasta aktör — skrivHandelse som tredje argument
+ * (konstanten eller literalen), executeAction som egenskapen aktor — och konstanten är den fasta aktören.
+ * omvagar() först: utan alias och referenser ser argumenten() varje anrop.
+ */
+function verktygensAktorFel(filer: { fil: string; text: string }[]): string[] {
+  const fel: string[] = [];
+  for (const v of VERKTYGEN) {
+    const f = filer.find((x) => x.fil === v.fil);
+    if (!f) {
+      fel.push(`${v.fil}: saknas`);
+      continue;
+    }
+    fel.push(...omvagar([f], v.modul, v.namn));
+    const anrop = argumenten(f.text, new RegExp(`\\b${v.namn}\\(`));
+    if (anrop.length === 0) fel.push(`${v.fil}: inget anrop av ${v.namn}`);
+    const vantad = v.konstant ?? aktorslitteral(v.aktor);
+    for (const a of anrop) {
+      const ok =
+        v.namn === 'skrivHandelse'
+          ? argumentlista(a)[2] === vantad
+          : a.includes(`aktor: ${vantad}`) && (a.match(/\baktor\b/g) ?? []).length === 1;
+      if (!ok) fel.push(`${v.fil}: ${v.namn}(${a.slice(0, 120)})`);
+    }
+    if (v.konstant) {
+      const kod = utanKommentarer(f.text).replace(/\s+/g, ' ');
+      if (!kod.includes(`const ${v.konstant}: Aktor = ${aktorslitteral(v.aktor)};`)) {
+        fel.push(`${v.fil}: ${v.konstant} är inte ${aktorslitteral(v.aktor)}`);
+      }
+    }
+  }
+  return fel;
+}
+
+/**
+ * API-vägens två skrivställen tar aktören ur parametern, aldrig ur en literal: skrivHandelse i
+ * executeAction (params.aktor, tredje argumentet) och laggTillKommentar i add_comment (ctx.aktor, femte).
+ * Ett nytt verktyg som läggs i en fil som redan står på listan fälls därmed också. Bara argumenten()
+ * här — omvagar() hade fällt egenskapen `skrivHandelse:` i ctx-objektet (execute.ts rad 42).
+ */
+const API_VAGENS_SKRIVSTALLEN: readonly { fil: string; anrop: RegExp; plats: number; vantad: string }[] = [
+  { fil: 'actions/execute.ts', anrop: /\bskrivHandelse\(/, plats: 2, vantad: 'params.aktor' },
+  { fil: 'actions/registry.ts', anrop: /\blaggTillKommentar\(/, plats: 4, vantad: 'ctx.aktor' },
+];
+
+function apiVagensAktorFel(filer: { fil: string; text: string }[]): string[] {
+  const fel: string[] = [];
+  for (const s of API_VAGENS_SKRIVSTALLEN) {
+    const f = filer.find((x) => x.fil === s.fil);
+    if (!f) {
+      fel.push(`${s.fil}: saknas`);
+      continue;
+    }
+    const anrop = argumenten(f.text, s.anrop);
+    if (anrop.length === 0) fel.push(`${s.fil}: inget anrop av ${s.anrop.source}`);
+    for (const a of anrop) {
+      if (argumentlista(a)[s.plats] !== s.vantad) fel.push(`${s.fil}: ${s.anrop.source}${a.slice(0, 120)})`);
+    }
+  }
+  return fel;
+}
+
+/** Filerna som binder skrivställena — Story 1.3:s lista (F14), samlad här för den negativa kontrollen. */
+const SLUTNA_LISTAN: readonly { modul: string; namn: string; filer: readonly string[] }[] = [
+  { modul: 'services/handelser', namn: 'skrivHandelse', filer: ['actions/execute.ts', 'import/importeraArkiv.ts', 'scripts/skapaNyckel.ts'] },
+  { modul: 'services/kommentarer', namn: 'laggTillKommentar', filer: ['actions/registry.ts', 'import/importeraArkiv.ts'] },
+  { modul: 'actions/execute', namn: 'executeAction', filer: ['http/routes/actions.ts', 'http/vy/skrivning.ts', 'import/aterlasLinear.ts'] },
+];
+
+/** Avvikelserna från den slutna listan och från verktygens fasta aktörer. Tom = listan håller. */
+function slutnaListansFel(filer: { fil: string; text: string }[]): string[] {
+  const fel: string[] = [];
+  for (const { modul, namn, filer: vantade } of SLUTNA_LISTAN) {
+    const faktiska = filerSomBinder(filer, modul, namn);
+    const extra = faktiska.filter((f) => !vantade.includes(f));
+    const saknas = vantade.filter((f) => !faktiska.includes(f));
+    if (extra.length > 0) fel.push(`${namn} binds också av: ${extra.join(', ')}`);
+    if (saknas.length > 0) fel.push(`${namn} binds inte längre av: ${saknas.join(', ')}`);
+  }
+  return [...fel, ...verktygensAktorFel(filer), ...apiVagensAktorFel(filer)];
+}
+
+/**
+ * Story 1.4, AK 2: avvikelserna i README:s FR-4-avsnitt från den slutna listan. Tom = avsnittet bär
+ * de fyra undantagen, de fasta aktörerna, beslutet och regeln, och FR-4-raden pekar på AK 3.
+ * Avsnittet slutar vid nästa rubrik (## eller ###), så att en text i ett annat avsnitt inte räknas.
+ */
+function readmeFel(readme: string): string[] {
+  const start = readme.indexOf('### FR-4 —');
+  if (start === -1) return ['README saknar avsnittet ### FR-4 —'];
+  const langd = readme.slice(start + 1).search(/\n#{2,3} /);
+  const avsnitt = langd === -1 ? readme.slice(start) : readme.slice(start, start + 1 + langd);
+  const rader = avsnitt.split('\n');
+  const fel: string[] = [];
+
+  const fr4 = rader.filter((r) => r.startsWith('| FR-4 |'));
+  if (!fr4.some((r) => r.includes('Story 1.4 AK 3'))) fel.push('FR-4-raden pekar inte på Story 1.4 AK 3');
+
+  // Exakt fyra undantag, i ordningen migrationerna, nyckelskriptet, importen, återläsningen.
+  const undantag = rader.filter((r) => r.startsWith('| FR-4, undantag: '));
+  if (undantag.length !== 4) fel.push(`${undantag.length} undantagsrader, inte 4`);
+  const kod = ['`src/db/migrate.ts`', '`src/scripts/skapaNyckel.ts`', '`src/import/importeraArkiv.ts`', '`src/import/aterlasLinear.ts`'];
+  undantag.forEach((r, i) => {
+    for (const krav of [kod[i] ?? '(ingen femte rad)', 'test/skrivvagar.test.ts', 'Davids beslut 2026-10-16 11:00']) {
+      if (!r.includes(krav)) fel.push(`undantagsrad ${i + 1} saknar ${krav}`);
+    }
+  });
+  const migrationer = undantag[0] ?? '';
+  if (!migrationer.includes('migrationerna') || !migrationer.includes('aldrig rader i `events` eller `comments`')) {
+    fel.push('migrationsraden säger inte "aldrig rader i `events` eller `comments`"');
+  }
+  // Samma fasta aktörer som provet prövar mot koden och datan — dokumentationen kan inte glida isär från dem.
+  for (const a of FASTA_SYSTEMAKTORER) {
+    const n = undantag.filter((r) => r.includes(`\`${a.typ} · ${a.namn}\``)).length;
+    if (n !== 1) fel.push(`${a.typ} · ${a.namn} står på ${n} undantagsrader`);
+  }
+
+  // Regeln och beslutet, i avsnittets text.
+  const text = avsnitt.replace(/\s+/g, ' ');
+  for (const krav of [
+    'Inget nytt skrivande verktyg får läggas till utanför `executeAction`',
+    'skriver via API:t med en nyckel',
+    'Davids beslut 2026-10-16 11:00',
+  ]) {
+    if (!text.includes(krav)) fel.push(`avsnittet saknar «${krav}»`);
+  }
+  return fel;
+}
+
+describe('FR-4/Story 1.4 AK 1 och AK 3: de slutna undantagen och invarianten över alla vägar', () => {
+  let app: Express;
+  let server: Server;
+  let bas: string;
+  let agentnyckel: string;
+  let nyckelF18: string;
+
+  beforeAll(async () => {
+    app = createApp();
+    glomAllaSessioner();
+    ({ server, bas } = await lyssna(app));
+    const t = await raknaAllaTabeller();
+    if (t.events!.n > 0 || t.comments!.n > 0 || t.issues!.n > 0) {
+      throw new Error('Story 1.4:s block måste stå först i filen: AK 3 läser alla rader i events och comments');
+    }
+    agentnyckel = await nyNyckel({ typ: 'agent', namn: 'f16 agent' });
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise<void>((klar) => server.close(() => klar()));
+  });
+
+  it('F16 (Story 1.4, AK 1 och AK 3): importens ärenden och kommentarer delar transaktion med sina händelserader', async () => {
+    const resultat = await importeraArkiv(ARKIVFIXTURER);
+    expect(resultat.nya_arenden).toBe(3);
+    expect(resultat.nya_kommentarer).toBe(3);
+    // Ärendena: en importerade_arende per ärende, med importens aktör och samma xmin.
+    const arenden = await pool.query<{ identifier: string; n: number; aktorer: string[]; samma: boolean | null }>(
+      `SELECT t.key || '-' || i.sequence_number AS identifier,
+              count(e.id)::int AS n,
+              array_remove(array_agg(DISTINCT e.aktor_typ || '·' || e.aktor_namn), NULL) AS aktorer,
+              bool_and(e.xmin = i.xmin) AS samma
+         FROM issues i
+         JOIN teams t ON t.id = i.team_id
+         LEFT JOIN events e ON e.issue_id = i.id AND e.verb = 'importerade_arende'
+        WHERE i.source_ref IS NOT NULL
+        GROUP BY 1`,
+    );
+    const somKarta = <T extends { n: number; aktorer: string[]; samma: boolean | null }>(
+      rader: T[], nyckel: (r: T) => string,
+    ) => Object.fromEntries(rader.map((r) => [nyckel(r), { n: r.n, aktorer: r.aktorer, samma: r.samma }]));
+    const enRad = { n: 1, aktorer: ['system·linear-import'], samma: true };
+    expect(somKarta(arenden.rows, (r) => r.identifier)).toEqual({ 'LOC-316': enRad, 'LOC-329': enRad, 'LOC-88': enRad });
+
+    // Kommentarerna: en importerade_kommentar som namnger kommentaren, med importens aktör och samma xmin.
+    const kommentarer = await pool.query<{ source_ref: string; n: number; aktorer: string[]; samma: boolean | null }>(
+      `SELECT c.source_ref,
+              count(e.id)::int AS n,
+              array_remove(array_agg(DISTINCT e.aktor_typ || '·' || e.aktor_namn), NULL) AS aktorer,
+              bool_and(e.xmin = c.xmin) AS samma
+         FROM comments c
+         LEFT JOIN events e ON e.verb = 'importerade_kommentar' AND e.payload->>'kommentar_id' = c.id::text
+        WHERE c.source_ref IS NOT NULL
+        GROUP BY c.source_ref`,
+    );
+    expect(somKarta(kommentarer.rows, (r) => r.source_ref)).toEqual({
+      'linear-arkiv:LOC-329#1': enRad,
+      'linear-arkiv:LOC-88#1': enRad,
+      'linear-arkiv:LOC-88#2': enRad,
+    });
+
+    // Allt i EN transaktion: en enda xmin bland importens rader.
+    const xminer = await pool.query<{ x: string }>(
+      `SELECT DISTINCT x FROM (
+         SELECT xmin::text AS x FROM issues WHERE source_ref IS NOT NULL
+         UNION ALL SELECT xmin::text FROM comments WHERE source_ref IS NOT NULL
+         UNION ALL SELECT xmin::text FROM events WHERE aktor_namn = 'linear-import') r`,
+    );
+    expect(xminer.rows).toHaveLength(1);
+    const importensXmin = xminer.rows[0]!.x;
+
+    expect(await aktorerITabell('events')).toEqual(['system·linear-import']);
+
+    // Kontroll: ett create_issue efteråt är en annan transaktion — men ärendet och dess rad delar den.
+    const skapat = await kor(app, agentnyckel, 'create_issue', { title: 'F16 kontroll', team_key: 'LOC' });
+    expect(skapat.status).toBe(200);
+    const kontroll = await pool.query<{ arende: string; handelse: string }>(
+      'SELECT i.xmin::text AS arende, e.xmin::text AS handelse FROM issues i JOIN events e ON e.issue_id = i.id WHERE i.id = $1',
+      [skapat.body.result.id],
+    );
+    expect(kontroll.rows).toHaveLength(1);
+    expect(kontroll.rows[0]!.arende).toBe(kontroll.rows[0]!.handelse);
+    expect(kontroll.rows[0]!.arende).not.toBe(importensXmin);
+    expect(await aktorerITabell('events')).toEqual(['agent·f16 agent', 'system·linear-import']);
+  });
+
+  it('F17 (Story 1.4, AK 1 och AK 3): återläsningens relationer och bilagor delar transaktion med dess händelserader', async () => {
+    const sedan = await storstaEventId();
+    const resultat = await aterlasLinear(LINEARFIXTUR, 'allt');
+    expect(resultat.relationer_nya).toBe(2);
+    expect(resultat.bilagor_nya).toBe(2);
+    const aktorer = await aktorerSedan(sedan);
+    expect(aktorer.length).toBeGreaterThan(0);
+    expect(aktorer.every((a) => a.aktor_typ === 'system' && a.aktor_namn === 'linear-aterlasning')).toBe(true);
+    for (const tabell of ['issue_relations', 'issue_attachments'] as const) {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id::text AS id FROM ${tabell} WHERE source_ref LIKE 'linear-arkiv:%'`,
+      );
+      expect(rows, tabell).toHaveLength(2);
+      expect(await utanAterlasningensHandelse(tabell, rows.map((r) => r.id)), tabell).toEqual([]);
+    }
+    // Kontroll: API-relationens händelserad har agentnyckelns aktör, inte återläsningens.
+    const svar = await kor(app, agentnyckel, 'link_issues', { fran: 'LOC-316', till: 'LOC-88', typ: 'related' });
+    expect(svar.status).toBe(200);
+    const kontroll = await pool.query<{ id: string }>(
+      'SELECT id::text AS id FROM issue_relations WHERE source_ref IS NULL',
+    );
+    expect(kontroll.rows).toHaveLength(1);
+    const ids = kontroll.rows.map((r) => r.id);
+    expect(await utanAterlasningensHandelse('issue_relations', ids)).toEqual(ids);
+  });
+
+  it('F18 (Story 1.4, AK 1 och AK 3): nyckelskriptet skriver nyckeln och systemhändelsen i samma transaktion', async () => {
+    expect(JSON.parse(readFileSync(path.join(ROT, 'package.json'), 'utf8')).scripts.nyckel)
+      .toBe('tsx src/scripts/skapaNyckel.ts');
+    const sedan = await storstaEventId();
+    const fore = await raknaAllaTabeller();
+    const { nyckel, stdout } = await korNyckelskriptet('manniska', 'f18 människa');
+    expect(nyckel).toMatch(/^[0-9a-f]{64}$/);
+    expect(stdout).not.toContain(nyckel);
+    const efter = await raknaAllaTabeller();
+    expect(skillnad(fore, efter)).toEqual({ api_keys: 1, events: 1 });
+    expect(andradeTabeller(fore, efter)).toEqual(['api_keys', 'events']);
+    const { rows } = await pool.query<{
+      nyckel_id: string; verb: string; aktor_typ: string; aktor_namn: string; payload_nyckel: string; samma: boolean;
+    }>(
+      `SELECT k.id::text AS nyckel_id, e.verb, e.aktor_typ, e.aktor_namn,
+              e.payload->>'nyckel_id' AS payload_nyckel, e.xmin = k.xmin AS samma
+         FROM api_keys k CROSS JOIN events e
+        WHERE k.aktor_namn = 'f18 människa' AND e.id > $1`,
+      [sedan],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      nyckel_id: rows[0]!.nyckel_id,
+      verb: 'skapade_aktorsidentitet',
+      aktor_typ: 'system',
+      aktor_namn: 'skapa-nyckel',
+      payload_nyckel: rows[0]!.nyckel_id,
+      samma: true,
+    });
+    nyckelF18 = nyckel;
+    // Kontroll: provhjälparen skriver bara nyckeln i en egen transaktion.
+    await nyNyckel({ typ: 'agent', namn: 'f18 kontroll' });
+    const kontroll = await pool.query<{ delar: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM api_keys k JOIN events e ON e.xmin = k.xmin
+        WHERE k.aktor_namn = 'f18 kontroll') AS delar`,
+    );
+    expect(kontroll.rows).toEqual([{ delar: false }]);
+  });
+
+  it('F19 (Story 1.4, AK 1 och AK 3): migrationskedjan skriver inga händelser eller kommentarer', async () => {
+    const katalog = path.join(ROT, 'migrations');
+    const filer = readdirSync(katalog).filter((f) => /^\d{4}_[a-z0-9_]+\.sql$/.test(f));
+    expect(filer.length).toBeGreaterThan(0);
+    const tom = await migreradTomDatabas();
+    expect(tom.applied).toBe(filer.length);
+    expect(tom.ledger).toBe(filer.length);
+    expect(tom.events).toBe(0);
+    expect(tom.comments).toBe(0);
+    expect(tom.tenants).toBeGreaterThan(0);
+    const texter = filer.map((fil) => ({ fil, text: readFileSync(path.join(katalog, fil), 'utf8') }));
+    expect(traffar(texter, /\bINSERT\s+INTO\s+(?:"?public"?\s*\.\s*)?"?(?:events|comments)\b/)).toEqual({});
+    // Kontroll: samma räkning mot scenariots databas hittar importens rader.
+    const c = await adminKlient();
+    try {
+      const { rows } = await c.query<{ events: number; comments: number }>(
+        `SELECT (SELECT count(*)::int FROM events) AS events,
+                (SELECT count(*)::int FROM comments) AS comments`,
+      );
+      expect(rows[0]!.events).toBeGreaterThan(0);
+      expect(rows[0]!.comments).toBeGreaterThan(0);
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('F20 (Story 1.4, AK 1 och AK 3): skrivställenas bindningar och aktörer följer den slutna listan', () => {
+    const alla = kallfiler();
+    const texten = (fil: string): string => alla.find((f) => f.fil === fil)!.text;
+    const med = (fil: string, text: string) => alla.map((f) => (f.fil === fil ? { fil, text } : f));
+    const IMPORT = 'import/importeraArkiv.ts';
+    const ATERLAS = 'import/aterlasLinear.ts';
+    const NYCKEL = 'scripts/skapaNyckel.ts';
+    const varianter: Record<string, { fil: string; text: string }> = {
+      'importens konstant byter aktör': { fil: IMPORT, text: texten(IMPORT).replace("namn: 'linear-import'", "namn: 'linear-import-2'") },
+      'importen skriver med en annan hårdkodad aktör': {
+        fil: IMPORT,
+        text: texten(IMPORT).replace(
+          'resultat.nya_arenden += 1;',
+          "resultat.nya_arenden += 1;\n        await skrivHandelse(client, TENANT_ID, { typ: 'system', namn: 'nytt' }, { issueId: id, verb: 'x' });",
+        ),
+      },
+      'återläsningen med en annan aktör': { fil: ATERLAS, text: texten(ATERLAS).replace('aktor: ATERLASAKTOR', "aktor: { typ: 'system', namn: 'annan' }") },
+      'återläsningens konstant byter aktör': { fil: ATERLAS, text: texten(ATERLAS).replace("namn: 'linear-aterlasning'", "namn: 'linear-aterlasning-2'") },
+      'nyckelskriptet med en annan aktör': { fil: NYCKEL, text: texten(NYCKEL).replace("namn: 'skapa-nyckel'", "namn: 'annat-skript'") },
+      'executeAction skriver med en hårdkodad aktör': {
+        fil: 'actions/execute.ts',
+        text: texten('actions/execute.ts').replace('params.aktor, handelse)', "{ typ: 'system', namn: 'nytt' }, handelse)"),
+      },
+      'add_comment med en hårdkodad aktör': {
+        fil: 'actions/registry.ts',
+        text: texten('actions/registry.ts').replace('arende.id, input.body, ctx.aktor)', "arende.id, input.body, { typ: 'system', namn: 'nytt' })"),
+      },
+    };
+    expect(slutnaListansFel(alla)).toEqual([]);
+    expect(Object.entries(varianter).filter(([, v]) => v.text === texten(v.fil)).map(([namn]) => namn),
+      'oförändrade varianter').toEqual([]);
+    const slapps = Object.entries(varianter)
+      .filter(([, v]) => slutnaListansFel(med(v.fil, v.text)).length === 0)
+      .map(([namn]) => namn);
+    expect(slapps, `släpps igenom: ${slapps.join(', ')}`).toEqual([]);
+  });
+
+  it('F21 (Story 1.4, AK 3): alla vägars rader bär tillåtna aktörer och arkivkommentarerna binds till importens händelserader', async () => {
+    expect(nyckelF18, 'F18 måste ha körts före F21').toBeTruthy();
+    const skapat = await kor(app, agentnyckel, 'create_issue', { title: 'F21 ärende', team_key: 'LOC' });
+    expect(skapat.status).toBe(200);
+    const nytt = skapat.body.result.identifier;
+    expect(typeof nytt).toBe('string');
+    expect((await kor(app, agentnyckel, 'add_comment', { identifier: 'LOC-88', body: 'F21 api' })).status).toBe(200);
+    expect((await kor(app, agentnyckel, 'update_issue', { identifier: 'LOC-316', priority: 3 })).status).toBe(200);
+    expect((await kor(app, agentnyckel, 'update_issue_state', { identifier: nytt, state_typ: 'started' })).status).toBe(200);
+    const webblasare = await inloggad(bas, nyckelF18);
+    const kommenterad = await webblasare.post('/vy/arende/LOC-88/kommentar').type('form').send({ body: 'F21 vy' });
+    expect(kommenterad.status).toBe(303);
+    expect(kommenterad.headers['location']).toContain('notis=kommenterad');
+    const rattad = await webblasare.post('/vy/arende/LOC-88/ratta').type('form')
+      .send({ titel: 'LOC-88 rättad i F21', beskrivning: 'F21 beskrivning' });
+    expect(rattad.status).toBe(303);
+    expect(rattad.headers['location']).toContain('notis=arendet_rattat');
+
+    // Hela tabellerna, utan baslinje. De positiva mängderna gör att en tom tenantläsning inte kan bli grön.
+    expect(await ogiltigaAktorerAllaVagar()).toEqual([]);
+    expect(await aktorerITabell('events')).toEqual([
+      'agent·f16 agent', 'manniska·f18 människa',
+      ...FASTA_SYSTEMAKTORER.map((a) => `${a.typ}·${a.namn}`),
+    ].sort());
+    expect(await aktorerITabell('comments')).toEqual([
+      'agent·f16 agent', 'manniska·david mancilla', 'manniska·f18 människa',
+    ].sort());
+    const importerade = await pool.query<{ id: string }>(
+      'SELECT id::text AS id FROM comments WHERE source_ref IS NOT NULL',
+    );
+    expect(importerade.rows).toHaveLength(3);
+    expect(await kommentarerUtanforNycklarna()).toEqual(importerade.rows.map((r) => r.id).sort());
+  });
+
+  it('F22 (Story 1.4, AK 3): ett nytt verktyg fälls i data och källtext, även med en falsk importbindning', async () => {
+    // (a) Data: ett nytt verktyg med en egen hårdkodad aktör, som skriver förbi executeAction.
+    const loc88 = (
+      await pool.query<{ id: string }>(
+        "SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id WHERE t.key = 'LOC' AND i.sequence_number = 88",
+      )
+    ).rows[0]!.id;
+    const nyttVerktyg: Aktor = { typ: 'system', namn: 'f22 nytt verktyg' };
+    const { c1, c2 } = await withTransaction(async (client) => {
+      await skrivHandelse(client, TENANT_ID, nyttVerktyg, { issueId: null, verb: 'f22_prov' });
+      const k1 = await laggTillKommentar(client, TENANT_ID, loc88, 'F22 utan nyckel', { typ: 'manniska', namn: 'f22 påhittad' });
+      const k2 = await laggTillKommentar(
+        client, TENANT_ID, loc88, 'F22 falsk import', { typ: 'manniska', namn: 'f22 arkivnamn' },
+        { source_ref: 'f22-falsk-import#1' },
+      );
+      // En bindning som är importens i allt utom aktören — fel verktyg. Den ska inte bära kommentaren.
+      await skrivHandelse(client, TENANT_ID, nyttVerktyg, {
+        issueId: loc88,
+        verb: 'importerade_kommentar',
+        payload: {
+          kommentar_id: k2.id,
+          source_ref: 'f22-falsk-import#1',
+          kommentarens_aktor_typ: 'manniska',
+          kommentarens_aktor_namn: 'f22 arkivnamn',
+        },
+      });
+      return { c1: k1.id, c2: k2.id };
+    });
+    const verktygetsRader = (
+      await pool.query<{ id: string }>("SELECT id::text AS id FROM events WHERE aktor_namn = 'f22 nytt verktyg'")
+    ).rows.map((r) => ({ tabell: 'events', id: r.id }));
+    expect(verktygetsRader).toHaveLength(2);
+    expect(radnycklar(await ogiltigaAktorerAllaVagar())).toEqual(
+      radnycklar([{ tabell: 'comments', id: c1 }, { tabell: 'comments', id: c2 }, ...verktygetsRader]),
+    );
+
+    // (b) Källtext: en ny fil som binder ett skrivställe fälls av den slutna listan och namnges.
+    const pahittade = [
+      {
+        fil: 'scripts/nyttVerktyg.ts',
+        text: "import { skrivHandelse } from '../services/handelser.js';\nawait skrivHandelse(client, TENANT_ID, { typ: 'system', namn: 'nytt-verktyg' }, { issueId: null, verb: 'x' });\n",
+      },
+      {
+        fil: 'import/nyImport.ts',
+        text: "import { laggTillKommentar } from '../services/kommentarer.js';\nawait laggTillKommentar(client, TENANT_ID, id, 'x', { typ: 'system', namn: 'ny-import' });\n",
+      },
+      {
+        fil: 'scripts/nyKorning.ts',
+        text: "import { executeAction } from '../actions/execute.js';\nawait executeAction({ aktor: { typ: 'system', namn: 'ny-korning' }, actionName: 'x', input: {} });\n",
+      },
+    ];
+    for (const p of pahittade) {
+      expect(slutnaListansFel([...kallfiler(), p]).join('\n'), p.fil).toContain(p.fil);
+    }
+  });
+});
 
 describe('FR-4/AK 1 och AK 4: ingen skrivning utan nyckel, och events är orubbliga', () => {
   let app: Express;
@@ -1246,5 +1890,31 @@ describe('FR-4/AK 5: varje rad som skrivs via /api och vyn bär en nyckels aktö
       .filter(([, text]) => vyvagensFel(text).length === 0)
       .map(([namn]) => namn);
     expect(vySlapps, `släpps igenom i vyn: ${vySlapps.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('FR-4/Story 1.4 AK 2: listan är dokumenterad i README', () => {
+  it('F23 (Story 1.4, AK 2): README:s FR-4-avsnitt bär de fyra undantagen, beslutet, regeln och pekar på AK 3', () => {
+    const readme = readFileSync(path.join(ROT, 'README.md'), 'utf8');
+    expect(readmeFel(readme)).toEqual([]);
+
+    // Kontroll i samma it: varje led i mätningen slår ut på en variant av den riktiga texten.
+    const stycke = /\*\*Skrivvägarna förbi nyckelhärledningen[\s\S]*?\n\n/.exec(readme)?.[0] ?? '';
+    expect(stycke, 'stycket om den slutna listan').not.toBe('');
+    const varianter: Record<string, string> = {
+      'FR-4-raden utan AK 3': readme.replace('; Story 1.4 AK 3: invarianten', '; invarianten'),
+      'återläsningens rad borta': readme.replace(/^\| FR-4, undantag: återläsningen.*\n/m, ''),
+      'importens aktör ändrad': readme.replace('fast aktör `system · linear-import`', 'fast aktör `system · linear-import-2`'),
+      'migrationsraden utan "aldrig"': readme.replace(
+        /^(\| FR-4, undantag: migrationerna.*?)aldrig rader i `events` eller `comments`/m,
+        '$1',
+      ),
+      'regelstycket i ett annat avsnitt': `${readme.replace(stycke, '')}\n### Ett annat avsnitt\n\n${stycke}`,
+    };
+    expect(Object.entries(varianter).filter(([, v]) => v === readme).map(([namn]) => namn), 'oförändrade varianter').toEqual([]);
+    const slapps = Object.entries(varianter)
+      .filter(([, v]) => readmeFel(v).length === 0)
+      .map(([namn]) => namn);
+    expect(slapps, `släpps igenom: ${slapps.join(', ')}`).toEqual([]);
   });
 });

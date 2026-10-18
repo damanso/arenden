@@ -345,7 +345,7 @@ förflutna. `~/.hermes/prov/handelsevag.py` låser talet vid exakt 186 i **båda
 riktningarna: växer det har en ny kommentar kommit in förbi skrivvägen, krymper
 det har någon backfyllt händelser som aldrig hände.
 
-### FR-4 — varje mutation via actions, aktören ur nyckeln (Story 1.3)
+### FR-4 — varje mutation via actions, aktören ur nyckeln (Story 1.3 och 1.4)
 
 En mutation från `/api` eller vyn går bara genom `executeAction`. Aktören kommer ur en nyckel —
 bearer, eller en vysession som fötts ur en nyckel — och aldrig ur indata. Ett undantag finns i dag:
@@ -358,13 +358,28 @@ provet håller listan över de filer som når dem sluten för de former det läs
 importer och återexporter (namngivna, med alias, hela modulen), dynamiska importer med fast sökväg,
 och i en fil som binder namnet varje alias och varje förekomst som inte är ett direkt anrop. I vyn
 prövar det att varje `kor()` tar skrivruttens aktör ur `kravSessionsAktor(req)`. En importsökväg som
-byggs först vid körning ser provet inte; där gäller lagerregeln och granskningen. Importen och
-nyckelskriptet skriver förbi `executeAction` med fasta systemaktörer, och återläsningen anropar
-`executeAction` med en fast systemaktör. Davids besked om dem är Story 1.4.
+byggs först vid körning ser provet inte; där gäller lagerregeln och granskningen.
+
+**Skrivvägarna förbi nyckelhärledningen är en sluten lista** (Davids beslut 2026-10-16 11:00, svar på
+kodgranskningens fråga 1; Story 1.4): migrationerna, nyckelskriptet `src/scripts/skapaNyckel.ts`,
+importen och återläsningen. Redovisningssessionen ovan hör inte till listan: den är en känd avvikelse
+som Story 3.4 tar bort (B-03). Ett tomt system kan inte autentisera sitt första nyckelutfärdande med en
+nyckel som ännu inte finns, och importen och återläsningen är operatörsverktyg på värden. De tre som
+skriver data bär var sin fasta systemaktör och skriver händelseraden i samma transaktion som raden den
+gäller; migrationerna skriver aldrig rader i `events` eller `comments`. Inget nytt skrivande verktyg
+får läggas till utanför `executeAction`, och allt nytt — även onboardingen (Story 9.4) — skriver via
+API:t med en nyckel. En kommentar som importen förde in bär arkivets författare, som ärendesidan visar
+(FR-12). Mutationens aktör, `system · linear-import`, står på händelseraden `importerade_kommentar`
+som namnger kommentaren — för kommentarer som importerats sedan K-10; de 186 äldre saknar raden och
+backfylls inte (K-10 ovan).
 
 | Krav | Mekanism | Kod | Test |
 | --- | --- | --- | --- |
-| FR-4 | `autentisera` före varje `/api`-rutt (401 före valideringen); aktören ur `kravAktor(req)` på `/api` och ur `kravSessionsAktor(req)` genom `skrivrutt()` och `kor()` i vyn; `.strict()` på varje schema; räknaren i `executeAction` rullar tillbaka en write-action utan händelserad; `events` append-only (GRANT och triggrar); skrivställena för `events` och `comments` är en sluten lista | `src/http/app.ts`, `src/http/middleware/autentisera.ts`, `src/http/routes/actions.ts`, `src/http/vy/skrivning.ts` (`skrivrutt`, `kor`), `src/http/vy/session.ts`, `src/actions/execute.ts`, `src/actions/registry.ts`, `src/services/handelser.ts`, `src/services/kommentarer.ts`, `migrations/0004_events.sql` | `test/skrivvagar.test.ts` (AK 1–4; AK 5: invarianten över API:t och vyn; AK 6: inga skrivsatser i transportlagret), `test/proveniens.test.ts` (KRAV-8/10/20c) |
+| FR-4 | `autentisera` före varje `/api`-rutt (401 före valideringen); aktören ur `kravAktor(req)` på `/api` och ur `kravSessionsAktor(req)` genom `skrivrutt()` och `kor()` i vyn; `.strict()` på varje schema; räknaren i `executeAction` rullar tillbaka en write-action utan händelserad; `events` append-only (GRANT och triggrar); skrivställena för `events` och `comments` är en sluten lista; de fyra slutna undantagen nedan bär fasta systemaktörer (Davids beslut 2026-10-16 11:00) | `src/http/app.ts`, `src/http/middleware/autentisera.ts`, `src/http/routes/actions.ts`, `src/http/vy/skrivning.ts` (`skrivrutt`, `kor`), `src/http/vy/session.ts`, `src/actions/execute.ts`, `src/actions/registry.ts`, `src/services/handelser.ts`, `src/services/kommentarer.ts`, `migrations/0004_events.sql` | `test/skrivvagar.test.ts` (AK 1–4; AK 5: invarianten över API:t och vyn; AK 6: inga skrivsatser i transportlagret; Story 1.4 AK 1: verktygens fasta aktörer i samma transaktion; Story 1.4 AK 3: invarianten över alla vägar), `test/proveniens.test.ts` (KRAV-8/10/20c) |
+| FR-4, undantag: migrationerna | ingen aktör: schema, ledgern (`schema_migrations`) och migrationskedjans egna grundrader och backfyllningar, aldrig rader i `events` eller `comments`; Davids beslut 2026-10-16 11:00 | `src/db/migrate.ts`, `migrations/` | `test/skrivvagar.test.ts` (Story 1.4 AK 1) |
+| FR-4, undantag: nyckelskriptet (`npm run nyckel`) | fast aktör `system · skapa-nyckel`; `skapade_aktorsidentitet` i samma transaktion som `api_keys`-raden; Davids beslut 2026-10-16 11:00 | `src/scripts/skapaNyckel.ts` | `test/skrivvagar.test.ts` (Story 1.4 AK 1 och AK 3), `test/rattelser.test.ts` |
+| FR-4, undantag: importen (`npm run import`) | fast aktör `system · linear-import`; `importerade_arende` och `importerade_kommentar` i samma transaktion som ärendet och kommentaren; Davids beslut 2026-10-16 11:00 | `src/import/importeraArkiv.ts` | `test/skrivvagar.test.ts` (Story 1.4 AK 1 och AK 3), `test/import.test.ts` |
+| FR-4, undantag: återläsningen (`npm run aterlas`) | fast aktör `system · linear-aterlasning`, genom `executeAction`: varje write-action skriver sin händelserad i samma transaktion; Davids beslut 2026-10-16 11:00 | `src/import/aterlasLinear.ts` | `test/skrivvagar.test.ts` (Story 1.4 AK 1 och AK 3), `test/aterlasning.test.ts` |
 
 ### FR-16 — åtagandehändelserna bär skäl och revision (Story 5.2)
 
