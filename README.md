@@ -366,6 +366,28 @@ nyckelskriptet skriver förbi `executeAction` med fasta systemaktörer, och åte
 | --- | --- | --- | --- |
 | FR-4 | `autentisera` före varje `/api`-rutt (401 före valideringen); aktören ur `kravAktor(req)` på `/api` och ur `kravSessionsAktor(req)` genom `skrivrutt()` och `kor()` i vyn; `.strict()` på varje schema; räknaren i `executeAction` rullar tillbaka en write-action utan händelserad; `events` append-only (GRANT och triggrar); skrivställena för `events` och `comments` är en sluten lista | `src/http/app.ts`, `src/http/middleware/autentisera.ts`, `src/http/routes/actions.ts`, `src/http/vy/skrivning.ts` (`skrivrutt`, `kor`), `src/http/vy/session.ts`, `src/actions/execute.ts`, `src/actions/registry.ts`, `src/services/handelser.ts`, `src/services/kommentarer.ts`, `migrations/0004_events.sql` | `test/skrivvagar.test.ts` (AK 1–4; AK 5: invarianten över API:t och vyn; AK 6: inga skrivsatser i transportlagret), `test/proveniens.test.ts` (KRAV-8/10/20c) |
 
+### FR-16 — åtagandehändelserna bär skäl och revision (Story 5.2)
+
+Två regler gäller (B-07, Story 5.2). De står ordagrant som i regelkällan:
+
+- Åtagandets händelser skrivs bara genom `skrivAtagandeHandelse` i `src/actions/registry.ts`, som lägger `identifier` och åtagandets `revision` efter åtgärden sist i payloaden. Det gäller verben `registrerade_atagande`, `atagandet_fanns_redan`, `tog_over_atagande`, `andrade_atagande`, `hindrade_atagande`, `redovisade_resultat`, `avslutade_atagande` och `aterppnade_atagande` (FR-16 delkrav 6, B-07; Story 5.2). Varje uppdatering bär sitt skäl ur handlingens egen motivering:
+  - registrering: `grund`;
+  - övertagande: `nasta.grund`, i fältet `grund`;
+  - ändring: `grund`, annars `nasta.grund`, annars ett obligatoriskt `skal` (`skal_saknas`, som prövas sist). Ändringen bär också `andring` med de fält som ändrades (`{ fran, till }`);
+  - hinder: `orsak` och `belagg`;
+  - resultat: `sammanfattning`, hela `belagg` och `kontrollerat`;
+  - avslut: `skal` och `grund`;
+  - återöppning: `grund` och `tidigare: { resultat, avslutsskal }`.
+
+  En åtgärd som tar bort data ur åtagandet bär det borttagna i sin händelserad. Befintliga payloadfält tas aldrig bort.
+- Varje åtgärd som ändrar ett befintligt åtagande kräver `forvantad_revision` och prövar den med `kravRevision` direkt efter `kravAtagande`, före varje annan regel. Utan fältet blir svaret 400 `revision_saknas` och med en annan revision 400 `gammal_revision` (B-07; Story 5.2). I schemat är fältet `.optional()` med flit, så att felet får sin egen kod och plats. Ett nytt prov eller anrop som ändrar ett åtagande skickar alltid fältet, och ett `andra_atagande` utan `grund` och `nasta` skickar `skal`, utom de avvisade anrop som prövar just den regeln.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-16 delkrav 6, revisionskontroll | `kravRevision` direkt efter `kravAtagande` i de sex tjänstefunktionerna; `forvantad_revision` är valfritt i schemat men obligatoriskt i tjänsten, så att felet får egen kod och plats i ordningen | `src/services/atagande.ts`, `src/actions/registry.ts` | `test/atagande-handelser.test.ts` (AK 5–7), `test/atagande.test.ts` |
+| FR-16 delkrav 6, skäl och revision på raden | `skrivAtagandeHandelse` är den enda vägen för de åtta åtagandeverben och lägger `identifier` och `revision` sist; `skal_saknas` i `andraAtagande`; `andring` ur radläget före och efter | `src/actions/registry.ts`, `src/services/atagande.ts` | `test/atagande-handelser.test.ts` (AK 1–3, AK 8) |
+| FR-16 delkrav 3, återöppningen | `aterppnaAtagande` kräver revision och bär `tidigare` ur det låsta radläget; `events` är append-only | `src/services/atagande.ts`, `src/actions/registry.ts`, `migrations/0004_events.sql` | `test/atagande-handelser.test.ts` (AK 4) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

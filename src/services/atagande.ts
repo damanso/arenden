@@ -12,6 +12,12 @@
 //   4. utåthandling som blir intern            → kräver ny grund
 //
 // Ingen av dem är en kommentar i koden. Alla fyra kastar.
+//
+// Därtill gäller varje åtgärd som ändrar ett befintligt åtagande (FR-16
+// delkrav 6, B-07; Story 5.2): forvantad_revision krävs (revision_saknas), en
+// ändring utan ny grund och utan nytt nästa steg kräver skal (skal_saknas),
+// och återöppningen lämnar det den tar bort till sin händelserad (tidigare).
+import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import type { Aktor } from '../lib/aktor.js';
@@ -167,8 +173,21 @@ function kravAtagande(rad: Rad): Lage {
   return rad.atagande_lage;
 }
 
+/**
+ * FR-16 delkrav 6, B-07 (Story 5.2 AK 6): revisionen är OBLIGATORISK på varje
+ * åtgärd som ändrar ett befintligt åtagande. Schemat har forvantad_revision som
+ * .optional() MED FLIT: ett utelämnat fält ska få sin egen felkod och prövas här,
+ * efter kravAtagande och före varje annan regel, inte som ett anonymt
+ * validation_error före allt annat.
+ */
 function kravRevision(rad: Rad, forvantad: number | undefined): void {
-  if (forvantad !== undefined && forvantad !== rad.atagande_revision) {
+  if (forvantad === undefined) {
+    throw new BadRequestError(
+      'revision_saknas',
+      'ange forvantad_revision — läs åtagandet och utgå från dess revision innan nästa sidoeffekt',
+    );
+  }
+  if (forvantad !== rad.atagande_revision) {
     throw new BadRequestError(
       'gammal_revision',
       `åtagandet är på revision ${rad.atagande_revision}, anropet utgick från ${forvantad} — ` +
@@ -336,6 +355,37 @@ export async function overtaAtagande(
   return tillAtagande(await las(client, tenantId, rad.id));
 }
 
+/** Story 5.2 AK 2: fälten andra_atagande kan ändra (tillhor härleds), i den form de jämförs och loggas. */
+const ANDRINGSFALT = ['tillhor', 'nasta', 'foljs_upp', 'villkor', 'grund'] as const;
+type AndringsFalt = (typeof ANDRINGSFALT)[number];
+export type Andring = Partial<Record<AndringsFalt, { fran: unknown; till: unknown }>>;
+
+function andringsvarden(rad: Rad): Record<AndringsFalt, unknown> {
+  return {
+    tillhor: rad.atagande_tillhor,
+    nasta: rad.atagande?.nasta ?? null,
+    // pg ger Date; en ISO-sträng jämförs och loggas likadant på båda sidor.
+    foljs_upp: rad.atagande_foljs_upp ? rad.atagande_foljs_upp.toISOString() : null,
+    villkor: rad.atagande?.villkor ?? null,
+    grund: rad.atagande?.grund ?? null,
+  };
+}
+
+/**
+ * Ett fält står i andring om och endast om dess värde före och efter skiljer sig.
+ * Båda radlägena kommer ur databasen (det låsta före och omläsningen efter), så
+ * samma värde har samma form, och nyckelordningen i jsonb spelar ingen roll.
+ */
+function andringMellan(fore: Rad, efter: Rad): Andring {
+  const f = andringsvarden(fore);
+  const e = andringsvarden(efter);
+  const andring: Andring = {};
+  for (const falt of ANDRINGSFALT) {
+    if (!isDeepStrictEqual(f[falt], e[falt])) andring[falt] = { fran: f[falt], till: e[falt] };
+  }
+  return andring;
+}
+
 /**
  * Ändrar nästa steg, uppföljning eller villkor. Byter nästa steg slag FRÅN
  * utåthandling krävs en ny grund: annars vore "gör det internt i stället" en
@@ -350,9 +400,10 @@ export async function andraAtagande(
     foljs_upp?: string | null;
     villkor?: Villkor[];
     grund?: Referens;
+    skal?: string;
     forvantad_revision?: number;
   },
-): Promise<Atagande> {
+): Promise<{ atagande: Atagande; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const lage = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
@@ -360,6 +411,17 @@ export async function andraAtagande(
     throw new BadRequestError(
       'atagandet_ar_stangt',
       'ett stängt åtagande ändras genom att återöppnas med nytt belägg, inte genom att skrivas om',
+    );
+  }
+  // Story 5.1:s uppfoljning_saknas står, när den byggs, HÄR, före skälet.
+  // FR-16 delkrav 6, B-07 (Story 5.2 AK 3): en ändring utan ny grund och utan nytt
+  // nästa steg bär inget eget skäl och kräver `skal`. Prövas SIST bland reglerna,
+  // så att varje annan regel ger sin egen felkod. utathandling_kringgas kan bara
+  // träffa ett anrop med nasta, och då krävs inget skäl.
+  if (input.grund === undefined && input.nasta === undefined && input.skal === undefined) {
+    throw new BadRequestError(
+      'skal_saknas',
+      'en ändring utan ny grund och utan nytt nästa steg kräver ett skäl (skal)',
     );
   }
   const data: AtagandeJson = { ...rad.atagande };
@@ -380,7 +442,8 @@ export async function andraAtagande(
     data,
     ...(input.foljs_upp !== undefined ? { foljsUpp: input.foljs_upp } : {}),
   });
-  return tillAtagande(await las(client, tenantId, rad.id));
+  const efter = await las(client, tenantId, rad.id);
+  return { atagande: tillAtagande(efter), andring: andringMellan(rad, efter) };
 }
 
 export async function hindraAtagande(
@@ -483,15 +546,33 @@ export async function avslutaAtagande(
   return tillAtagande(await las(client, tenantId, rad.id));
 }
 
+/** FR-16 delkrav 3 (Story 5.2 AK 4): det återöppningen tar bort. null = det fanns inget sådant. */
+export interface Tidigare {
+  resultat: NonNullable<AtagandeJson['resultat']> | null;
+  avslutsskal: NonNullable<AtagandeJson['avslutsskal']> | null;
+}
+
 /** Återöppnar ett stängt åtagande. Historiken bevaras; revisionen höjs. */
 export async function aterppnaAtagande(
   client: PoolClient,
   tenantId: string,
-  input: { identifier: string; grund: Referens; nasta: Nasta; foljs_upp: string },
-): Promise<Atagande> {
+  input: {
+    identifier: string;
+    grund: Referens;
+    nasta: Nasta;
+    foljs_upp: string;
+    forvantad_revision?: number;
+  },
+): Promise<{ atagande: Atagande; tidigare: Tidigare }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
+  kravRevision(rad, input.forvantad_revision);
   kravOvergang(fran, 'registrerat');
+  // Ur det LÅSTA radläget, innan något tas bort: händelseraden bär exakt det som försvinner.
+  const tidigare: Tidigare = {
+    resultat: rad.atagande?.resultat ?? null,
+    avslutsskal: rad.atagande?.avslutsskal ?? null,
+  };
   const data: AtagandeJson = {
     ...rad.atagande,
     grund: [...(rad.atagande?.grund ?? []), input.grund],
@@ -505,7 +586,7 @@ export async function aterppnaAtagande(
     foljsUpp: input.foljs_upp,
     utforare: null,
   });
-  return tillAtagande(await las(client, tenantId, rad.id));
+  return { atagande: tillAtagande(await las(client, tenantId, rad.id)), tidigare };
 }
 
 export async function hamtaAtagande(

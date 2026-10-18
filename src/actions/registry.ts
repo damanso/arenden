@@ -61,6 +61,7 @@ import {
   redovisaResultat,
   registreraAtagande,
   registreraSvarsversion,
+  type Atagande,
 } from '../services/atagande.js';
 import {
   listaKundkopplingar,
@@ -195,6 +196,36 @@ const VillkorSchema = z
   .refine((v) => v.utfall === 'okant' || (v.belagg !== undefined && v.belagg !== null), {
     message: 'ett villkor som inte är okänt kräver belägg',
   });
+
+// ---- Åtagandets händelser (FR-16 delkrav 6, B-07; Story 5.2) ---------------
+//
+// De åtta åtagandeverben skrivs BARA här. identifier och revision tas ur det
+// åtagande tjänsten just skrev och läste om, alltså revisionen EFTER åtgärden.
+// De läggs sist, så att inget fält i `falt` kan skriva över dem. Aktören och
+// tiden sätts inte här: executeAction tar aktören ur nyckeln, och tiden är
+// händelseradens egen, i samma transaktion som åtgärden.
+type AtagandeVerb =
+  | 'registrerade_atagande'
+  | 'atagandet_fanns_redan'
+  | 'tog_over_atagande'
+  | 'andrade_atagande'
+  | 'hindrade_atagande'
+  | 'redovisade_resultat'
+  | 'avslutade_atagande'
+  | 'aterppnade_atagande';
+
+async function skrivAtagandeHandelse(
+  ctx: ActionContext,
+  verb: AtagandeVerb,
+  atagande: Atagande,
+  falt: Record<string, unknown>,
+): Promise<void> {
+  await ctx.skrivHandelse({
+    issueId: atagande.issue_id,
+    verb,
+    payload: { ...falt, identifier: atagande.identifier, revision: atagande.revision },
+  });
+}
 
 export const ACTIONS: RegistreradAction[] = [
   def({
@@ -797,16 +828,18 @@ export const ACTIONS: RegistreradAction[] = [
       .strict(),
     handler: async (ctx, input) => {
       const { atagande, nyskapad } = await registreraAtagande(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: nyskapad ? 'registrerade_atagande' : 'atagandet_fanns_redan',
-        payload: {
-          identifier: atagande.identifier,
+      // Registreringen bär sin grund som skäl (Story 5.2 AK 1). atagandet_fanns_redan
+      // är ingen uppdatering och behåller sin payload: inget ändrades, så inget skäl.
+      await skrivAtagandeHandelse(
+        ctx,
+        nyskapad ? 'registrerade_atagande' : 'atagandet_fanns_redan',
+        atagande,
+        {
           lage: atagande.lage,
           tillhor: atagande.tillhor,
-          revision: atagande.revision,
+          ...(nyskapad ? { grund: input.grund } : {}),
         },
-      });
+      );
       return { atagande, nyskapad };
     },
   }),
@@ -825,16 +858,12 @@ export const ACTIONS: RegistreradAction[] = [
       .strict(),
     handler: async (ctx, input) => {
       const atagande = await overtaAtagande(ctx.client, ctx.tenantId, ctx.aktor, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'tog_over_atagande',
-        payload: {
-          identifier: atagande.identifier,
-          utforare_typ: atagande.utforare_typ,
-          utforare_namn: atagande.utforare_namn,
-          nasta: atagande.data.nasta,
-          revision: atagande.revision,
-        },
+      await skrivAtagandeHandelse(ctx, 'tog_over_atagande', atagande, {
+        utforare_typ: atagande.utforare_typ,
+        utforare_namn: atagande.utforare_namn,
+        nasta: atagande.data.nasta,
+        // Skälet (Story 5.2 AK 1): nästa stegs grund.
+        grund: input.nasta.grund,
       });
       return atagande;
     },
@@ -851,6 +880,11 @@ export const ACTIONS: RegistreradAction[] = [
         foljs_upp: z.string().datetime({ offset: true }).nullable().optional(),
         villkor: z.array(VillkorSchema).optional(),
         grund: ReferensSchema.optional(),
+        // Samma SkalSchema som update_issue, men här är skälet OBLIGATORISKT när
+        // ändringen saknar egen grund och eget nästa steg (B-07, Story 5.2 AK 3).
+        // Kravet ligger i tjänsten, så att det får egen felkod (skal_saknas) och
+        // prövas sist bland reglerna, inte som ett validation_error före allt annat.
+        skal: SkalSchema.optional(),
         forvantad_revision: z.number().int().nonnegative().optional(),
       })
       .strict()
@@ -863,18 +897,18 @@ export const ACTIONS: RegistreradAction[] = [
         { message: 'ange minst en ändring (nasta, foljs_upp, villkor eller grund)' },
       ),
     handler: async (ctx, input) => {
-      const atagande = await andraAtagande(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'andrade_atagande',
-        payload: {
-          identifier: atagande.identifier,
-          tillhor: atagande.tillhor,
-          nasta: atagande.data.nasta,
-          revision: atagande.revision,
-        },
+      const { atagande, andring } = await andraAtagande(ctx.client, ctx.tenantId, input);
+      // Skälet (Story 5.2 AK 1 och AK 3): den nya grunden, annars nästa stegs grund,
+      // annars det angivna skal. Varje fält skrivs bara när det finns.
+      const grund = input.grund ?? input.nasta?.grund;
+      await skrivAtagandeHandelse(ctx, 'andrade_atagande', atagande, {
+        tillhor: atagande.tillhor,
+        nasta: atagande.data.nasta,
+        andring,
+        ...(grund !== undefined ? { grund } : {}),
+        ...(input.skal !== undefined ? { skal: input.skal } : {}),
       });
-      return atagande;
+      return atagande; // svaret är åtagandet som förut (AK 8)
     },
   }),
 
@@ -894,14 +928,10 @@ export const ACTIONS: RegistreradAction[] = [
       .strict(),
     handler: async (ctx, input) => {
       const atagande = await hindraAtagande(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'hindrade_atagande',
-        payload: {
-          identifier: atagande.identifier,
-          orsak: input.orsak,
-          revision: atagande.revision,
-        },
+      // Skälet (Story 5.2 AK 1): orsaken och hindrets belägg.
+      await skrivAtagandeHandelse(ctx, 'hindrade_atagande', atagande, {
+        orsak: input.orsak,
+        belagg: input.belagg,
       });
       return atagande;
     },
@@ -921,15 +951,15 @@ export const ACTIONS: RegistreradAction[] = [
       .strict(),
     handler: async (ctx, input) => {
       const atagande = await redovisaResultat(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'redovisade_resultat',
-        payload: {
-          identifier: atagande.identifier,
-          sammanfattning: input.sammanfattning,
-          antal_belagg: input.belagg.length,
-          revision: atagande.revision,
-        },
+      const resultat = atagande.data.resultat;
+      // CHECK issues_atagande_resultat (0014): ett genomfört åtagande bär alltid sitt resultat.
+      if (!resultat) throw new Error('redovisa_resultat: resultatet saknas efter skrivningen');
+      // Skälet (Story 5.2 AK 1): sammanfattningen, hela beläggslistan och serverns kontrolltid.
+      await skrivAtagandeHandelse(ctx, 'redovisade_resultat', atagande, {
+        sammanfattning: input.sammanfattning,
+        antal_belagg: input.belagg.length,
+        belagg: input.belagg,
+        kontrollerat: resultat.kontrollerat,
       });
       return atagande;
     },
@@ -949,15 +979,9 @@ export const ACTIONS: RegistreradAction[] = [
       .strict(),
     handler: async (ctx, input) => {
       const atagande = await avslutaAtagande(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'avslutade_atagande',
-        payload: {
-          identifier: atagande.identifier,
-          skal: input.text,
-          grund: input.grund,
-          revision: atagande.revision,
-        },
+      await skrivAtagandeHandelse(ctx, 'avslutade_atagande', atagande, {
+        skal: input.text,
+        grund: input.grund,
       });
       return atagande;
     },
@@ -973,18 +997,15 @@ export const ACTIONS: RegistreradAction[] = [
         grund: ReferensSchema,
         nasta: NastaSchema,
         foljs_upp: z.string().datetime({ offset: true }),
+        forvantad_revision: z.number().int().nonnegative().optional(),
       })
       .strict(),
     handler: async (ctx, input) => {
-      const atagande = await aterppnaAtagande(ctx.client, ctx.tenantId, input);
-      await ctx.skrivHandelse({
-        issueId: atagande.issue_id,
-        verb: 'aterppnade_atagande',
-        payload: {
-          identifier: atagande.identifier,
-          grund: input.grund,
-          revision: atagande.revision,
-        },
+      const { atagande, tidigare } = await aterppnaAtagande(ctx.client, ctx.tenantId, input);
+      // FR-16 delkrav 3 (Story 5.2 AK 4): det återöppningen tog bort står kvar på raden.
+      await skrivAtagandeHandelse(ctx, 'aterppnade_atagande', atagande, {
+        grund: input.grund,
+        tidigare,
       });
       return atagande;
     },

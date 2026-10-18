@@ -30,6 +30,15 @@ async function nyttArende(app: Express, nyckel: string, titel: string): Promise<
   return svar.body.result.identifier as string;
 }
 
+// Story 5.2 (AK 9): varje åtgärd som ändrar ett befintligt åtagande skickar
+// forvantad_revision. Utan den svarar tjänsten revision_saknas, och provet hade
+// mätt revisionsspärren i stället för den regel det gäller.
+async function revisionNu(app: Express, nyckel: string, identifier: string): Promise<number> {
+  const svar = await kor(app, nyckel, 'get_atagande', { identifier });
+  expect(svar.status).toBe(200);
+  return svar.body.result.revision as number;
+}
+
 describe('åtagandet: den beständiga länken', () => {
   let app: Express;
   let hermes: string;
@@ -90,13 +99,16 @@ describe('åtagandet: den beständiga länken', () => {
       nasta: INTERNT,
       foljs_upp: SEN,
       utforare_namn: 'cto',
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(pastatt.status).toBe(400);
+    expect(pastatt.body.error).toBe('validation_error');
 
     const svar = await kor(app, david, 'ta_over_atagande', {
       identifier: id,
       nasta: INTERNT,
       foljs_upp: SEN,
+      forvantad_revision: await revisionNu(app, david, id),
     });
     expect(svar.status).toBe(200);
     expect(svar.body.result.lage).toBe('overtaget');
@@ -114,19 +126,28 @@ describe('åtagandet: den beständiga länken', () => {
       nasta: INTERNT,
       foljs_upp: SEN,
     });
-    await kor(app, hermes, 'ta_over_atagande', { identifier: id, nasta: INTERNT, foljs_upp: SEN });
+    const overtagen = await kor(app, hermes, 'ta_over_atagande', {
+      identifier: id,
+      nasta: INTERNT,
+      foljs_upp: SEN,
+      forvantad_revision: await revisionNu(app, hermes, id),
+    });
+    expect(overtagen.status).toBe(200);
 
     const utan = await kor(app, hermes, 'redovisa_resultat', {
       identifier: id,
       sammanfattning: 'Det är gjort',
       belagg: [],
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(utan.status).toBe(400);
+    expect(utan.body.error).toBe('validation_error');
 
     const med = await kor(app, hermes, 'redovisa_resultat', {
       identifier: id,
       sammanfattning: 'Det är gjort',
       belagg: [{ typ: 'prov', id: 'brieflankar', version: '2026-09-09' }],
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(med.status).toBe(200);
     expect(med.body.result.lage).toBe('genomfort');
@@ -148,6 +169,7 @@ describe('åtagandet: den beständiga länken', () => {
       belagg: { typ: 'beslut', id: '145' },
       nasta: INTERNT,
       foljs_upp: SEN,
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(hindrad.status).toBe(200);
     expect(hindrad.body.result.lage).toBe('hindrat');
@@ -156,6 +178,7 @@ describe('åtagandet: den beständiga länken', () => {
       identifier: id,
       sammanfattning: 'Hindret är gammalt nu',
       belagg: [{ typ: 'prov', id: 'x' }],
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(genvag.status).toBe(400);
     expect(genvag.body.error).toBe('otillaten_overgang');
@@ -222,7 +245,11 @@ describe('åtagandet: den beständiga länken', () => {
       foljs_upp: SEN,
     });
 
-    const utan = await kor(app, hermes, 'andra_atagande', { identifier: id, nasta: INTERNT });
+    const utan = await kor(app, hermes, 'andra_atagande', {
+      identifier: id,
+      nasta: INTERNT,
+      forvantad_revision: await revisionNu(app, hermes, id),
+    });
     expect(utan.status).toBe(400);
     expect(utan.body.error).toBe('utathandling_kringgas');
 
@@ -230,6 +257,7 @@ describe('åtagandet: den beständiga länken', () => {
       identifier: id,
       nasta: INTERNT,
       grund: { typ: 'beslut', id: '160', version: '1' },
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(med.status).toBe(200);
     expect(med.body.result.tillhor).toBe('hermes');
@@ -246,7 +274,13 @@ describe('åtagandet: den beständiga länken', () => {
     });
     const gammal = skapad.body.result.atagande.revision as number;
 
-    await kor(app, hermes, 'andra_atagande', { identifier: id, foljs_upp: SEN });
+    const andrad = await kor(app, hermes, 'andra_atagande', {
+      identifier: id,
+      foljs_upp: SEN,
+      skal: 'Uppföljningen flyttas så att revisionen höjs i provet',
+      forvantad_revision: await revisionNu(app, hermes, id),
+    });
+    expect(andrad.status).toBe(200);
 
     const svar = await kor(app, hermes, 'ta_over_atagande', {
       identifier: id,
@@ -276,12 +310,19 @@ describe('åtagandet: den beständiga länken', () => {
         },
       ],
     });
-    await kor(app, hermes, 'ta_over_atagande', { identifier: id, nasta: INTERNT, foljs_upp: SEN });
+    const overtagen = await kor(app, hermes, 'ta_over_atagande', {
+      identifier: id,
+      nasta: INTERNT,
+      foljs_upp: SEN,
+      forvantad_revision: await revisionNu(app, hermes, id),
+    });
+    expect(overtagen.status).toBe(200);
 
     const nekad = await kor(app, hermes, 'redovisa_resultat', {
       identifier: id,
       sammanfattning: 'Gjort',
       belagg: [{ typ: 'prov', id: 'y' }],
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(nekad.status).toBe(400);
     expect(nekad.body.error).toBe('villkor_haller_inte');
@@ -298,8 +339,11 @@ describe('åtagandet: den beständiga länken', () => {
           utfall: 'uppfyllt',
         },
       ],
+      skal: 'Villkoret prövas utan belägg',
+      forvantad_revision: await revisionNu(app, hermes, id),
     });
     expect(utanBelagg.status).toBe(400);
+    expect(utanBelagg.body.error).toBe('validation_error');
   });
 
   // ---- 11. momentloggen mäter arbete, inte påståenden -------------------
@@ -375,7 +419,14 @@ describe('åtagandet: den beständiga länken', () => {
       nasta: INTERNT,
       foljs_upp: SEN,
     });
-    await kor(app, hermes, 'ta_over_atagande', { identifier: id, nasta: INTERNT, foljs_upp: SEN });
+    const overtagen = await kor(app, hermes, 'ta_over_atagande', {
+      identifier: id,
+      nasta: INTERNT,
+      foljs_upp: SEN,
+      forvantad_revision: await revisionNu(app, hermes, id),
+    });
+    expect(overtagen.status).toBe(200);
+    const revision = overtagen.body.result.revision as number;
 
     const fel = await withTransaction(async (client) => {
       try {
@@ -383,6 +434,7 @@ describe('åtagandet: den beständiga länken', () => {
           identifier: id,
           sammanfattning: 'Utan belägg',
           belagg: [],
+          forvantad_revision: revision,
         });
         return null;
       } catch (e) {
