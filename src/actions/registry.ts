@@ -61,6 +61,7 @@ import {
   redovisaResultat,
   registreraAtagande,
   registreraSvarsversion,
+  type Andring,
   type Atagande,
 } from '../services/atagande.js';
 import {
@@ -214,16 +215,39 @@ type AtagandeVerb =
   | 'avslutade_atagande'
   | 'aterppnade_atagande';
 
+type UppdateringsVerb = Exclude<AtagandeVerb, 'atagandet_fanns_redan'>;
+
+// FR-16 delkrav 6, B-07 (Story 5.2 AK 12): varje uppdateringsverb kräver sin
+// ändring. No-op-raden tar ingen, eftersom den inte ändrar något åtagandefält.
+function skrivAtagandeHandelse(
+  ctx: ActionContext,
+  verb: 'atagandet_fanns_redan',
+  atagande: Atagande,
+  falt: Record<string, unknown>,
+): Promise<void>;
+function skrivAtagandeHandelse(
+  ctx: ActionContext,
+  verb: UppdateringsVerb,
+  atagande: Atagande,
+  falt: Record<string, unknown>,
+  andring: Andring,
+): Promise<void>;
 async function skrivAtagandeHandelse(
   ctx: ActionContext,
   verb: AtagandeVerb,
   atagande: Atagande,
   falt: Record<string, unknown>,
+  andring?: Andring,
 ): Promise<void> {
   await ctx.skrivHandelse({
     issueId: atagande.issue_id,
     verb,
-    payload: { ...falt, identifier: atagande.identifier, revision: atagande.revision },
+    payload: {
+      ...falt,
+      ...(andring !== undefined ? { andring } : {}),
+      identifier: atagande.identifier,
+      revision: atagande.revision,
+    },
   });
 }
 
@@ -827,20 +851,18 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const { atagande, nyskapad } = await registreraAtagande(ctx.client, ctx.tenantId, input);
-      // Registreringen bär sin grund som skäl (Story 5.2 AK 1). atagandet_fanns_redan
-      // är ingen uppdatering och behåller sin payload: inget ändrades, så inget skäl.
-      await skrivAtagandeHandelse(
-        ctx,
-        nyskapad ? 'registrerade_atagande' : 'atagandet_fanns_redan',
-        atagande,
-        {
-          lage: atagande.lage,
-          tillhor: atagande.tillhor,
-          ...(nyskapad ? { grund: input.grund } : {}),
-        },
-      );
-      return { atagande, nyskapad };
+      const svar = await registreraAtagande(ctx.client, ctx.tenantId, input);
+      const falt = { lage: svar.atagande.lage, tillhor: svar.atagande.tillhor };
+      if (svar.nyskapad) {
+        // Registreringen bär grunden (AK 1) och varje registrerat värde (AK 12).
+        await skrivAtagandeHandelse(ctx, 'registrerade_atagande', svar.atagande, {
+          ...falt, grund: input.grund,
+        }, svar.andring);
+      } else {
+        // Ingen uppdatering: no-op-raden behåller sin payload, utan ändring och skäl.
+        await skrivAtagandeHandelse(ctx, 'atagandet_fanns_redan', svar.atagande, falt);
+      }
+      return { atagande: svar.atagande, nyskapad: svar.nyskapad };
     },
   }),
 
@@ -857,14 +879,14 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const atagande = await overtaAtagande(ctx.client, ctx.tenantId, ctx.aktor, input);
+      const { atagande, andring } = await overtaAtagande(ctx.client, ctx.tenantId, ctx.aktor, input);
       await skrivAtagandeHandelse(ctx, 'tog_over_atagande', atagande, {
         utforare_typ: atagande.utforare_typ,
         utforare_namn: atagande.utforare_namn,
         nasta: atagande.data.nasta,
         // Skälet (Story 5.2 AK 1): nästa stegs grund.
         grund: input.nasta.grund,
-      });
+      }, andring);
       return atagande;
     },
   }),
@@ -904,10 +926,9 @@ export const ACTIONS: RegistreradAction[] = [
       await skrivAtagandeHandelse(ctx, 'andrade_atagande', atagande, {
         tillhor: atagande.tillhor,
         nasta: atagande.data.nasta,
-        andring,
         ...(grund !== undefined ? { grund } : {}),
         ...(input.skal !== undefined ? { skal: input.skal } : {}),
-      });
+      }, andring);
       return atagande; // svaret är åtagandet som förut (AK 8)
     },
   }),
@@ -927,12 +948,12 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const atagande = await hindraAtagande(ctx.client, ctx.tenantId, input);
+      const { atagande, andring } = await hindraAtagande(ctx.client, ctx.tenantId, input);
       // Skälet (Story 5.2 AK 1): orsaken och hindrets belägg.
       await skrivAtagandeHandelse(ctx, 'hindrade_atagande', atagande, {
         orsak: input.orsak,
         belagg: input.belagg,
-      });
+      }, andring);
       return atagande;
     },
   }),
@@ -950,7 +971,7 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const atagande = await redovisaResultat(ctx.client, ctx.tenantId, input);
+      const { atagande, andring } = await redovisaResultat(ctx.client, ctx.tenantId, input);
       const resultat = atagande.data.resultat;
       // CHECK issues_atagande_resultat (0014): ett genomfört åtagande bär alltid sitt resultat.
       if (!resultat) throw new Error('redovisa_resultat: resultatet saknas efter skrivningen');
@@ -960,7 +981,7 @@ export const ACTIONS: RegistreradAction[] = [
         antal_belagg: input.belagg.length,
         belagg: input.belagg,
         kontrollerat: resultat.kontrollerat,
-      });
+      }, andring);
       return atagande;
     },
   }),
@@ -978,11 +999,11 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const atagande = await avslutaAtagande(ctx.client, ctx.tenantId, input);
+      const { atagande, andring } = await avslutaAtagande(ctx.client, ctx.tenantId, input);
       await skrivAtagandeHandelse(ctx, 'avslutade_atagande', atagande, {
         skal: input.text,
         grund: input.grund,
-      });
+      }, andring);
       return atagande;
     },
   }),
@@ -1001,12 +1022,12 @@ export const ACTIONS: RegistreradAction[] = [
       })
       .strict(),
     handler: async (ctx, input) => {
-      const { atagande, tidigare } = await aterppnaAtagande(ctx.client, ctx.tenantId, input);
+      const { atagande, tidigare, andring } = await aterppnaAtagande(ctx.client, ctx.tenantId, input);
       // FR-16 delkrav 3 (Story 5.2 AK 4): det återöppningen tog bort står kvar på raden.
       await skrivAtagandeHandelse(ctx, 'aterppnade_atagande', atagande, {
         grund: input.grund,
         tidigare,
-      });
+      }, andring);
       return atagande;
     },
   }),

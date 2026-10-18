@@ -16,7 +16,9 @@
 // Därtill gäller varje åtgärd som ändrar ett befintligt åtagande (FR-16
 // delkrav 6, B-07; Story 5.2): forvantad_revision krävs (revision_saknas), en
 // ändring utan ny grund och utan nytt nästa steg kräver skal (skal_saknas),
-// och återöppningen lämnar det den tar bort till sin händelserad (tidigare).
+// varje skrivning går genom skrivOchJamfor och lämnar sin ändring till
+// händelseraden (andring, över hela åtagandets fältlista),
+// och återöppningen lämnar dessutom det den tar bort i tidigare.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
@@ -303,7 +305,10 @@ export async function registreraAtagande(
   client: PoolClient,
   tenantId: string,
   input: RegistreraIn,
-): Promise<{ atagande: Atagande; nyskapad: boolean }> {
+): Promise<
+  | { atagande: Atagande; nyskapad: false }
+  | { atagande: Atagande; nyskapad: true; andring: Andring }
+> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   if (rad.atagande_lage) {
     return { atagande: tillAtagande(rad), nyskapad: false };
@@ -326,8 +331,12 @@ export async function registreraAtagande(
     villkor: input.villkor ?? [],
     ...(input.utfall_precisering ? { utfall_precisering: input.utfall_precisering } : {}),
   };
-  await skriv(client, rad, { lage: 'registrerat', data, foljsUpp: input.foljs_upp });
-  return { atagande: tillAtagande(await las(client, tenantId, rad.id)), nyskapad: true };
+  const svar = await skrivOchJamfor(client, tenantId, rad, {
+    lage: 'registrerat',
+    data,
+    foljsUpp: input.foljs_upp,
+  });
+  return { ...svar, nyskapad: true };
 }
 
 /**
@@ -339,35 +348,76 @@ export async function overtaAtagande(
   tenantId: string,
   aktor: Aktor,
   input: { identifier: string; nasta: Nasta; foljs_upp: string; forvantad_revision?: number },
-): Promise<Atagande> {
+): Promise<{ atagande: Atagande; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
   kravOvergang(fran, 'overtaget');
   const data: AtagandeJson = { ...rad.atagande, nasta: input.nasta };
   delete data.hinder;
-  await skriv(client, rad, {
+  return skrivOchJamfor(client, tenantId, rad, {
     lage: 'overtaget',
     data,
     foljsUpp: input.foljs_upp,
     utforare: aktor,
   });
-  return tillAtagande(await las(client, tenantId, rad.id));
 }
 
-/** Story 5.2 AK 2: fälten andra_atagande kan ändra (tillhor härleds), i den form de jämförs och loggas. */
-const ANDRINGSFALT = ['tillhor', 'nasta', 'foljs_upp', 'villkor', 'grund'] as const;
-type AndringsFalt = (typeof ANDRINGSFALT)[number];
-export type Andring = Partial<Record<AndringsFalt, { fran: unknown; till: unknown }>>;
+/**
+ * FR-16 delkrav 6, B-07 (Story 5.2 AK 2 och AK 12): hela åtagandets slutna
+ * fältlista. tsc kräver varje AtagandeJson-nyckel och atagande_-kolumn i Rad.
+ * Revisionen står på händelseraden som revision och jämförs inte här.
+ */
+const KOLUMNFALT = {
+  lage: 'atagande_lage',
+  tillhor: 'atagande_tillhor',
+  utforare_typ: 'atagande_utforare_typ',
+  utforare_namn: 'atagande_utforare_namn',
+  overtaget_nar: 'atagande_overtaget_nar',
+  foljs_upp: 'atagande_foljs_upp',
+} as const satisfies Record<string, keyof Rad>;
+const DATAFALT = [
+  'grund', 'nasta', 'villkor', 'utfall_precisering', 'hinder', 'resultat', 'avslutsskal',
+] as const satisfies readonly (keyof AtagandeJson)[];
 
+type SaknatDatafalt = Exclude<keyof AtagandeJson, (typeof DATAFALT)[number]>;
+type SaknadKolumn = Exclude<
+  Extract<keyof Rad, `atagande_${string}`>,
+  (typeof KOLUMNFALT)[keyof typeof KOLUMNFALT] | 'atagande_revision'
+>;
+// Blir någon av typerna annat än never kan `true` inte tilldelas, och tsc fäller bygget.
+const FALTLISTAN_AR_HEL: [SaknatDatafalt, SaknadKolumn] extends [never, never] ? true : false = true;
+void FALTLISTAN_AR_HEL;
+
+type AndringsFalt = keyof typeof KOLUMNFALT | (typeof DATAFALT)[number];
+export type Andring = Partial<Record<AndringsFalt, { fran: unknown; till: unknown }>>;
+const ANDRINGSFALT: readonly AndringsFalt[] = [
+  ...(Object.keys(KOLUMNFALT) as (keyof typeof KOLUMNFALT)[]),
+  ...DATAFALT,
+];
+
+/** pg ger Date; en ISO-sträng jämförs och loggas likadant på båda sidor. */
+function iso(tid: Date | null): string | null {
+  return tid ? tid.toISOString() : null;
+}
+
+/** Värdena före respektive efter. Ett fält som saknas är null — också före registreringen (atagande = {}). */
 function andringsvarden(rad: Rad): Record<AndringsFalt, unknown> {
+  const data: Partial<AtagandeJson> = rad.atagande ?? {};
   return {
+    lage: rad.atagande_lage,
     tillhor: rad.atagande_tillhor,
-    nasta: rad.atagande?.nasta ?? null,
-    // pg ger Date; en ISO-sträng jämförs och loggas likadant på båda sidor.
-    foljs_upp: rad.atagande_foljs_upp ? rad.atagande_foljs_upp.toISOString() : null,
-    villkor: rad.atagande?.villkor ?? null,
-    grund: rad.atagande?.grund ?? null,
+    utforare_typ: rad.atagande_utforare_typ,
+    utforare_namn: rad.atagande_utforare_namn,
+    overtaget_nar: iso(rad.atagande_overtaget_nar),
+    foljs_upp: iso(rad.atagande_foljs_upp),
+    grund: data.grund ?? null,
+    nasta: data.nasta ?? null,
+    villkor: data.villkor ?? null,
+    utfall_precisering: data.utfall_precisering ?? null,
+    hinder: data.hinder ?? null,
+    resultat: data.resultat ?? null,
+    avslutsskal: data.avslutsskal ?? null,
   };
 }
 
@@ -384,6 +434,23 @@ function andringMellan(fore: Rad, efter: Rad): Andring {
     if (!isDeepStrictEqual(f[falt], e[falt])) andring[falt] = { fran: f[falt], till: e[falt] };
   }
   return andring;
+}
+
+/**
+ * FR-16 delkrav 6, B-07 (Story 5.2 AK 12): den ENDA vägen till skriv(). Varje åtgärd som
+ * skriver ett åtagande får tillbaka sin ändring, räknad ur det LÅSTA radläget före och
+ * omläsningen efter, över hela fältlistan. Det som tas bort står därför i ändringen med
+ * sitt gamla värde, utan att någon åtgärd behöver komma ihåg vad den tar bort.
+ */
+async function skrivOchJamfor(
+  client: PoolClient,
+  tenantId: string,
+  rad: Rad,
+  falt: Parameters<typeof skriv>[2],
+): Promise<{ atagande: Atagande; andring: Andring }> {
+  await skriv(client, rad, falt);
+  const efter = await las(client, tenantId, rad.id);
+  return { atagande: tillAtagande(efter), andring: andringMellan(rad, efter) };
 }
 
 /**
@@ -437,13 +504,11 @@ export async function andraAtagande(
   }
   if (input.villkor) data.villkor = input.villkor;
   if (input.grund) data.grund = [...(data.grund ?? []), input.grund];
-  await skriv(client, rad, {
+  return skrivOchJamfor(client, tenantId, rad, {
     lage,
     data,
     ...(input.foljs_upp !== undefined ? { foljsUpp: input.foljs_upp } : {}),
   });
-  const efter = await las(client, tenantId, rad.id);
-  return { atagande: tillAtagande(efter), andring: andringMellan(rad, efter) };
 }
 
 export async function hindraAtagande(
@@ -457,7 +522,7 @@ export async function hindraAtagande(
     foljs_upp: string;
     forvantad_revision?: number;
   },
-): Promise<Atagande> {
+): Promise<{ atagande: Atagande; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
@@ -467,8 +532,7 @@ export async function hindraAtagande(
     nasta: input.nasta,
     hinder: { orsak: input.orsak, belagg: input.belagg },
   };
-  await skriv(client, rad, { lage: 'hindrat', data, foljsUpp: input.foljs_upp });
-  return tillAtagande(await las(client, tenantId, rad.id));
+  return skrivOchJamfor(client, tenantId, rad, { lage: 'hindrat', data, foljsUpp: input.foljs_upp });
 }
 
 /**
@@ -485,7 +549,7 @@ export async function redovisaResultat(
     belagg: Referens[];
     forvantad_revision?: number;
   },
-): Promise<Atagande> {
+): Promise<{ atagande: Atagande; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
@@ -519,8 +583,7 @@ export async function redovisaResultat(
     },
   };
   delete data.hinder;
-  await skriv(client, rad, { lage: 'genomfort', data, foljsUpp: null });
-  return tillAtagande(await las(client, tenantId, rad.id));
+  return skrivOchJamfor(client, tenantId, rad, { lage: 'genomfort', data, foljsUpp: null });
 }
 
 export async function avslutaAtagande(
@@ -532,7 +595,7 @@ export async function avslutaAtagande(
     grund: Referens;
     forvantad_revision?: number;
   },
-): Promise<Atagande> {
+): Promise<{ atagande: Atagande; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
@@ -542,8 +605,7 @@ export async function avslutaAtagande(
     nasta: null,
     avslutsskal: { text: input.text, grund: input.grund },
   };
-  await skriv(client, rad, { lage: 'avslutat', data, foljsUpp: null });
-  return tillAtagande(await las(client, tenantId, rad.id));
+  return skrivOchJamfor(client, tenantId, rad, { lage: 'avslutat', data, foljsUpp: null });
 }
 
 /** FR-16 delkrav 3 (Story 5.2 AK 4): det återöppningen tar bort. null = det fanns inget sådant. */
@@ -563,7 +625,7 @@ export async function aterppnaAtagande(
     foljs_upp: string;
     forvantad_revision?: number;
   },
-): Promise<{ atagande: Atagande; tidigare: Tidigare }> {
+): Promise<{ atagande: Atagande; tidigare: Tidigare; andring: Andring }> {
   const rad = await viaIdentifier(client, tenantId, input.identifier);
   const fran = kravAtagande(rad);
   kravRevision(rad, input.forvantad_revision);
@@ -580,13 +642,13 @@ export async function aterppnaAtagande(
   };
   delete data.resultat;
   delete data.avslutsskal;
-  await skriv(client, rad, {
+  const svar = await skrivOchJamfor(client, tenantId, rad, {
     lage: 'registrerat',
     data,
     foljsUpp: input.foljs_upp,
     utforare: null,
   });
-  return { atagande: tillAtagande(await las(client, tenantId, rad.id)), tidigare };
+  return { ...svar, tidigare };
 }
 
 export async function hamtaAtagande(

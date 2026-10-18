@@ -430,7 +430,7 @@ describe('FR-16/Story 5.2: åtagandehändelserna bär skäl och revision', () =>
       expect(await avtryck(id)).toEqual(fore);
 
       // (d) ett genomfört åtagande med rätt revision: atagandet_ar_stangt.
-      const d =await kor(app, hermes, 'andra_atagande', {
+      const d = await kor(app, hermes, 'andra_atagande', {
         identifier: stangt,
         foljs_upp: SENARE,
         forvantad_revision: await revisionNu(stangt),
@@ -698,6 +698,163 @@ describe('FR-16/Story 5.2: åtagandehändelserna bär skäl och revision', () =>
       expect(r8.verb).toBe('avslutade_atagande');
       expect(r8.payload.skal).toEqual('Ersatt av ett annat åtagande');
       expect(r8.payload.grund).toEqual({ typ: 'beslut', id: '160' });
+    });
+  });
+
+  describe('FR-16/Story 5.2 AK 12: varje uppdatering bär ändringen, också det den tar bort', () => {
+    const PRECISERING = 'Bygget är klart när provet är grönt i drift';
+    const ISO_SEN = '2026-09-30T08:00:00.000Z';
+    const ISO_SENARE = '2026-10-30T08:00:00.000Z';
+
+    /** Åtagandet som get_atagande visar det — fran- och till-värdena i fallen läses härifrån. */
+    async function atagandeNu(identifier: string) {
+      return steg(hermes, 'get_atagande', { identifier });
+    }
+
+    it('F17 (AK 12): registreringen bär varje registrerat värde med fran null, och atagandet_fanns_redan saknar andring', async () => {
+      const id = await nyttArende('F17');
+      await steg(hermes, 'registrera_atagande', {
+        identifier: id,
+        grund: GRUND,
+        nasta: INTERNT,
+        foljs_upp: SEN,
+        villkor: [V_OKANT],
+        utfall_precisering: PRECISERING,
+      });
+      await steg(hermes, 'registrera_atagande', { identifier: id, grund: GRUND, nasta: INTERNT, foljs_upp: SEN });
+      const rader = (await handelser(id)).filter((h) => h.verb !== 'skapade_arende');
+      expect(rader.map((h) => h.verb)).toEqual(['registrerade_atagande', 'atagandet_fanns_redan']);
+      const [rad, igen] = rader;
+      // Motkontroll först: no-op-raden går den oförändrade vägen. Samma läsning ser att andring
+      // saknas där, så jämförelsen nedan (och i F18–F22) slår ut mot en rad utan fältet.
+      expect(Object.hasOwn(igen.payload, 'andring')).toBe(false);
+      expect(rad.payload.andring).toStrictEqual({
+        lage: { fran: null, till: 'registrerat' },
+        tillhor: { fran: null, till: 'hermes' },
+        foljs_upp: { fran: null, till: ISO_SEN },
+        grund: { fran: null, till: GRUND },
+        nasta: { fran: null, till: INTERNT },
+        villkor: { fran: null, till: [V_OKANT] },
+        utfall_precisering: { fran: null, till: PRECISERING },
+      });
+    });
+
+    it('F18 (AK 12): övertagandet ur hinder bär det borttagna hindret, det gamla nästa steget och utföraren', async () => {
+      const id = await iLage('hindrat', 'F18');
+      const fore = await atagandeNu(id);
+      expect(fore.data.hinder).toEqual({ orsak: 'DNS-ändringen är inte gjord', belagg: HINDER });
+      const svar = await steg(david, 'ta_over_atagande', {
+        identifier: id,
+        nasta: RIKTNING,
+        foljs_upp: SENARE,
+        forvantad_revision: fore.revision,
+      });
+      const rad = await sistaHandelse(id);
+      expect(rad.verb).toBe('tog_over_atagande');
+      expect(rad.payload.andring).toStrictEqual({
+        lage: { fran: 'hindrat', till: 'overtaget' },
+        tillhor: { fran: 'hermes', till: 'agare' },
+        nasta: { fran: INTERNT, till: RIKTNING },
+        foljs_upp: { fran: ISO_SEN, till: ISO_SENARE },
+        hinder: { fran: fore.data.hinder, till: null },
+        utforare_typ: { fran: null, till: 'manniska' },
+        utforare_namn: { fran: null, till: 'david' },
+        overtaget_nar: { fran: null, till: svar.overtaget_nar },
+      });
+    });
+
+    it('F19 (AK 12): hindret bär hindret, det gamla nästa steget och den gamla uppföljningstiden', async () => {
+      const id = await iLage('overtaget', 'F19');
+      await steg(hermes, 'hindra_atagande', {
+        identifier: id,
+        orsak: 'Väntar på DNS',
+        belagg: HINDER,
+        nasta: RIKTNING,
+        foljs_upp: SENARE,
+        forvantad_revision: await revisionNu(id),
+      });
+      const rad = await sistaHandelse(id);
+      expect(rad.verb).toBe('hindrade_atagande');
+      expect(rad.payload.andring).toStrictEqual({
+        lage: { fran: 'overtaget', till: 'hindrat' },
+        tillhor: { fran: 'hermes', till: 'agare' },
+        nasta: { fran: INTERNT, till: RIKTNING },
+        foljs_upp: { fran: ISO_SEN, till: ISO_SENARE },
+        hinder: { fran: null, till: { orsak: 'Väntar på DNS', belagg: HINDER } },
+      });
+    });
+
+    it('F20 (AK 12): resultatet bär det nollställda nästa steget och den nollställda uppföljningstiden', async () => {
+      const id = await iLage('overtaget', 'F20');
+      await steg(hermes, 'redovisa_resultat', {
+        identifier: id,
+        sammanfattning: 'Klart enligt provet',
+        belagg: BELAGG,
+        forvantad_revision: await revisionNu(id),
+      });
+      const R = (await atagandeNu(id)).data.resultat;
+      const rad = await sistaHandelse(id);
+      expect(rad.verb).toBe('redovisade_resultat');
+      expect(rad.payload.andring).toStrictEqual({
+        lage: { fran: 'overtaget', till: 'genomfort' },
+        nasta: { fran: INTERNT, till: null },
+        foljs_upp: { fran: ISO_SEN, till: null },
+        resultat: { fran: null, till: R },
+      });
+    });
+
+    it('F21 (AK 12): avslutet bär det nollställda nästa steget och den nollställda uppföljningstiden', async () => {
+      const id = await iLage('registrerat', 'F21');
+      await steg(hermes, 'avsluta_atagande', {
+        identifier: id,
+        text: 'Behövs inte längre',
+        grund: NY_GRUND,
+        forvantad_revision: await revisionNu(id),
+      });
+      const rad = await sistaHandelse(id);
+      expect(rad.verb).toBe('avslutade_atagande');
+      expect(rad.payload.andring).toStrictEqual({
+        lage: { fran: 'registrerat', till: 'avslutat' },
+        nasta: { fran: INTERNT, till: null },
+        foljs_upp: { fran: ISO_SEN, till: null },
+        avslutsskal: { fran: null, till: { text: 'Behövs inte längre', grund: NY_GRUND } },
+      });
+    });
+
+    it('F22 (AK 12): återöppningen bär resultatet, avslutsskälet och utföraren den nollställer', async () => {
+      const ny = { grund: NY_GRUND, nasta: INTERNT, foljs_upp: SENARE };
+      // (a) ur genomfört: resultatet och utföraren nollställs.
+      const a = await iLage('genomfort', 'F22 a');
+      const foreA = await atagandeNu(a);
+      await steg(hermes, 'aterppna_atagande', { identifier: a, ...ny, forvantad_revision: foreA.revision });
+      const radA = await sistaHandelse(a);
+      expect(radA.verb).toBe('aterppnade_atagande');
+      expect(radA.payload.andring).toStrictEqual({
+        lage: { fran: 'genomfort', till: 'registrerat' },
+        grund: { fran: GRUND, till: [...GRUND, NY_GRUND] },
+        nasta: { fran: null, till: INTERNT },
+        foljs_upp: { fran: null, till: ISO_SENARE },
+        resultat: { fran: foreA.data.resultat, till: null },
+        utforare_typ: { fran: 'manniska', till: null },
+        utforare_namn: { fran: 'david', till: null },
+        overtaget_nar: { fran: foreA.overtaget_nar, till: null },
+      });
+      expect(radA.payload.tidigare).toStrictEqual({ resultat: foreA.data.resultat, avslutsskal: null }); // AK 4, oförändrat
+      // (b) ur avslutat: avslutsskälet och utföraren nollställs.
+      const b = await iLage('avslutat', 'F22 b');
+      const foreB = await atagandeNu(b);
+      await steg(hermes, 'aterppna_atagande', { identifier: b, ...ny, forvantad_revision: foreB.revision });
+      const radB = await sistaHandelse(b);
+      expect(radB.payload.andring).toStrictEqual({
+        lage: { fran: 'avslutat', till: 'registrerat' },
+        grund: { fran: GRUND, till: [...GRUND, NY_GRUND] },
+        nasta: { fran: null, till: INTERNT },
+        foljs_upp: { fran: null, till: ISO_SENARE },
+        avslutsskal: { fran: foreB.data.avslutsskal, till: null },
+        utforare_typ: { fran: 'manniska', till: null },
+        utforare_namn: { fran: 'david', till: null },
+        overtaget_nar: { fran: foreB.overtaget_nar, till: null },
+      });
     });
   });
 });

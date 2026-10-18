@@ -368,24 +368,26 @@ nyckelskriptet skriver förbi `executeAction` med fasta systemaktörer, och åte
 
 ### FR-16 — åtagandehändelserna bär skäl och revision (Story 5.2)
 
-Två regler gäller (B-07, Story 5.2). De står ordagrant som i regelkällan:
+Tre regler gäller (B-07, Story 5.2). De står ordagrant som i regelkällan:
 
 - Åtagandets händelser skrivs bara genom `skrivAtagandeHandelse` i `src/actions/registry.ts`, som lägger `identifier` och åtagandets `revision` efter åtgärden sist i payloaden. Det gäller verben `registrerade_atagande`, `atagandet_fanns_redan`, `tog_over_atagande`, `andrade_atagande`, `hindrade_atagande`, `redovisade_resultat`, `avslutade_atagande` och `aterppnade_atagande` (FR-16 delkrav 6, B-07; Story 5.2). Varje uppdatering bär sitt skäl ur handlingens egen motivering:
   - registrering: `grund`;
   - övertagande: `nasta.grund`, i fältet `grund`;
-  - ändring: `grund`, annars `nasta.grund`, annars ett obligatoriskt `skal` (`skal_saknas`, som prövas sist). Ändringen bär också `andring` med de fält som ändrades (`{ fran, till }`);
+  - ändring: `grund`, annars `nasta.grund`, annars ett obligatoriskt `skal` (`skal_saknas`, som prövas sist);
   - hinder: `orsak` och `belagg`;
   - resultat: `sammanfattning`, hela `belagg` och `kontrollerat`;
   - avslut: `skal` och `grund`;
   - återöppning: `grund` och `tidigare: { resultat, avslutsskal }`.
 
-  En åtgärd som tar bort data ur åtagandet bär det borttagna i sin händelserad. Befintliga payloadfält tas aldrig bort.
+  Befintliga payloadfält tas aldrig bort.
+- Varje uppdatering av ett åtagande, det vill säga de sju verben utom `atagandet_fanns_redan`, bär `andring`: de av åtagandets fält som åtgärden ändrade, vart och ett som `{ fran, till }`. Tjänstelagret räknar den på ett ställe, i `skrivOchJamfor` i `src/services/atagande.ts`, som är den enda som anropar `skriv`. Jämförelsen går mellan det låsta radläget före och omläsningen efter, över åtagandets hela, slutna fältlista: `lage`, `tillhor`, `utforare_typ`, `utforare_namn`, `overtaget_nar`, `foljs_upp`, `grund`, `nasta`, `villkor`, `utfall_precisering`, `hinder`, `resultat` och `avslutsskal`. tsc fäller bygget om en nyckel i `AtagandeJson` eller en `atagande_`-kolumn saknas i listan, och `skrivAtagandeHandelse` tar inte ett uppdateringsverb utan `andring`. Ett fält som åtgärden tar bort eller nollställer står därför med sitt gamla värde i `fran` och `null` i `till`, och registreringen bär varje registrerat värde med `fran: null` (FR-16 delkrav 6, B-07; Story 5.2 AK 12). Rader som skrevs innan regeln byggdes saknar fältet, utom `andrade_atagande`, och inget fylls i efterhand.
 - Varje åtgärd som ändrar ett befintligt åtagande kräver `forvantad_revision` och prövar den med `kravRevision` direkt efter `kravAtagande`, före varje annan regel. Utan fältet blir svaret 400 `revision_saknas` och med en annan revision 400 `gammal_revision` (B-07; Story 5.2). I schemat är fältet `.optional()` med flit, så att felet får sin egen kod och plats. Ett nytt prov eller anrop som ändrar ett åtagande skickar alltid fältet, och ett `andra_atagande` utan `grund` och `nasta` skickar `skal`, utom de avvisade anrop som prövar just den regeln.
 
 | Krav | Mekanism | Kod | Test |
 | --- | --- | --- | --- |
 | FR-16 delkrav 6, revisionskontroll | `kravRevision` direkt efter `kravAtagande` i de sex tjänstefunktionerna; `forvantad_revision` är valfritt i schemat men obligatoriskt i tjänsten, så att felet får egen kod och plats i ordningen | `src/services/atagande.ts`, `src/actions/registry.ts` | `test/atagande-handelser.test.ts` (AK 5–7), `test/atagande.test.ts` |
-| FR-16 delkrav 6, skäl och revision på raden | `skrivAtagandeHandelse` är den enda vägen för de åtta åtagandeverben och lägger `identifier` och `revision` sist; `skal_saknas` i `andraAtagande`; `andring` ur radläget före och efter | `src/actions/registry.ts`, `src/services/atagande.ts` | `test/atagande-handelser.test.ts` (AK 1–3, AK 8) |
+| FR-16 delkrav 6, skäl och revision på raden | `skrivAtagandeHandelse` är den enda vägen för de åtta åtagandeverben och lägger `identifier` och `revision` sist; `skal_saknas` i `andraAtagande` | `src/actions/registry.ts`, `src/services/atagande.ts` | `test/atagande-handelser.test.ts` (AK 1, AK 3, AK 8) |
+| FR-16 delkrav 6, ändringen på raden | `skrivOchJamfor` är den enda som anropar `skriv` och ger `andringMellan` mellan det låsta radläget och omläsningen, över den slutna fältlistan som tsc håller hel; `skrivAtagandeHandelse` kräver `andring` för varje uppdateringsverb | `src/services/atagande.ts`, `src/actions/registry.ts` | `test/atagande-handelser.test.ts` (AK 2, AK 12) |
 | FR-16 delkrav 3, återöppningen | `aterppnaAtagande` kräver revision och bär `tidigare` ur det låsta radläget; `events` är append-only | `src/services/atagande.ts`, `src/actions/registry.ts`, `migrations/0004_events.sql` | `test/atagande-handelser.test.ts` (AK 4) |
 
 ## Gränser för Etapp 2a
