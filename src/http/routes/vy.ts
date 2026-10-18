@@ -16,12 +16,21 @@ import { config } from '../../config.js';
 import { withTransaction } from '../../db/tx.js';
 import { NotFoundError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
-import { IdentifierSchema, StateTypSchema, safeText, type StateTyp } from '../../lib/validation.js';
+import {
+  IdentifierSchema,
+  StateTypSchema,
+  safeText,
+  tolkaArendenummer,
+  tolkaArendenumrenIText,
+  type StateTyp,
+  type TolkatArendenummer,
+} from '../../lib/validation.js';
 import {
   aktorerMedSpar,
   barnFor,
   byggMittLage,
   hamtaArende,
+  hittaArendenMedNummer,
   listaArenden,
   listaEtikettnamn,
   listaProjektnamn,
@@ -633,6 +642,25 @@ vyRouter.get('/sok', async (req, res) => {
   if (projekt !== undefined) val.projekt = projekt;
   if (aktor !== undefined) val.aktor = aktor;
 
+  // B-20, D-1: numret ligger utanför fritextindexet och vinner över fasetterna.
+  // Vanlig fritext öppnar ingen extra transaktion; för stora nummer slås aldrig upp.
+  const helt = q === undefined ? null : tolkaArendenummer(q);
+  const nummer = helt !== null ? [helt] : q === undefined ? [] : tolkaArendenumrenIText(q);
+  const fragor = nummer.flatMap((t) => t.slag === 'nummer' ? [{ teamKey: t.teamKey, nummer: t.nummer }] : []);
+  const svar = fragor.length === 0
+    ? []
+    : await withTransaction((client) => hittaArendenMedNummer(client, TENANT_ID, fragor));
+  let plats = 0;
+  const nummertraffar = nummer.map((t) => ({
+    tolkat: t,
+    arenden: t.slag === 'nummer' ? svar[plats++] ?? [] : [],
+  }));
+  const forsta = nummertraffar[0];
+  if (helt !== null && forsta?.arenden.length === 1) {
+    res.redirect(303, arendeUrl(forsta.arenden[0]!.identifier));
+    return;
+  }
+
   const harArendefilter = status !== undefined || etikett !== undefined || projekt !== undefined;
   // Listan behövs när ärendefasetterna ska tillämpas — och när aktörsfasetten
   // står ensam utan fritext (då är den träffmängden). Bar /vy/sok listar inget:
@@ -675,6 +703,32 @@ vyRouter.get('/sok', async (req, res) => {
     resultat = kvar.map(arendeKort).join('');
   }
 
+  const besked = (t: TolkatArendenummer) =>
+    `<p class=notis>Inget ärende har ${t.teamKey === null ? 'nummer' : 'numret'} ${esc(t.text)}.</p>`;
+  let nummerHtml = '';
+  if (helt !== null && forsta) {
+    if (forsta.arenden.length >= 2) {
+      nummerHtml = `<h2>Ärenden med nummer ${esc(helt.text)} (${esc(forsta.arenden.length)})</h2>` +
+        forsta.arenden.map(arendeKort).join('');
+    } else {
+      // AK 4: beskedet först, sedan samma filtrerade fritext som tidigare.
+      nummerHtml = besked(helt) + `<h2>Ärenden som nämner ${esc(helt.text)}</h2>` +
+        (data.traffar !== null && data.traffar.length >= TAK_SOK
+          ? `<p class=notis>Taket ${esc(TAK_SOK)} träffar är nått — förfina sökningen.</p>`
+          : '') +
+        (antal === 0
+          ? '<p class=notis>Inga andra ärenden nämner numret heller. <a href="/vy">Till överblicken</a></p>'
+          : resultat);
+    }
+  }
+
+  // AK 5: samma uppslag som ovan, men ingen omdirigering när annan text finns.
+  if (helt === null && nummertraffar.length > 0) {
+    nummerHtml = '<h2>Ärendenumret i sökningen</h2>' + nummertraffar.map(({ tolkat, arenden }) =>
+      arenden.length > 0 ? arenden.map(arendeKort).join('') : besked(tolkat),
+    ).join('');
+  }
+
   const aktiva = AKTIVA_NAMN.filter(({ nyckel }) => val[nyckel] !== undefined)
     .map(({ nyckel, namn }) => {
       const varde = nyckel === 'status' ? STATE_TEXT[status!] : val[nyckel]!;
@@ -698,6 +752,7 @@ vyRouter.get('/sok', async (req, res) => {
     `<input type=search id=q name=q value="${esc(val.q)}" ` +
     'placeholder="Sök i titlar, beskrivningar och kommentarer">' +
     `${doldaFalt}<button type=submit>Sök</button></form>` +
+    nummerHtml +
     (raQ !== undefined && q === undefined
       ? '<p class=notis>Sökordet kunde inte tolkas (för långt eller otillåtna tecken) och ignorerades.</p>'
       : '') +
@@ -735,7 +790,7 @@ vyRouter.get('/sok', async (req, res) => {
       data.aktorer.length,
     ) +
     '</div>' +
-    (data.traffar === null && data.filtrerade === null
+    (helt !== null ? '' : data.traffar === null && data.filtrerade === null
       ? '<p class=notis>Skriv ett sökord eller välj en fasett ovan.</p>'
       : `<p class=summering>${esc(antal)} träffar.</p>` +
         (data.traffar !== null && data.traffar.length >= TAK_SOK
@@ -744,8 +799,8 @@ vyRouter.get('/sok', async (req, res) => {
         (antal === 0
         ? tomtLage(
             'Inga träffar.',
-            'Sökningen läser ärendetext och kommentarer. Prova ett'
-              + ' ärendenummer, ett kundnamn eller ett kortare ord.',
+            'Sökningen läser ärendetext och kommentarer. Skriv ett ärendenummer,'
+              + ' t.ex. LOC-503, för att öppna ärendet direkt.',
             '/vy',
             'Bläddra i stället →',
           )

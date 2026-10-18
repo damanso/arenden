@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
-import { delaIdentifier, type StateTyp } from '../lib/validation.js';
+import { delaIdentifier, MAX_ARENDENUMMER, type StateTyp } from '../lib/validation.js';
 import { kravTeam, stateAvTyp, type WorkflowState } from './team.js';
 
 export interface Arende {
@@ -806,6 +806,39 @@ export async function sokArenden(
     [tenantId, fraga, limit],
   );
   return rows;
+}
+
+export interface Nummerfraga {
+  teamKey: string | null;
+  nummer: number;
+}
+
+/**
+ * B-20 (D-1): ärenden med de här numren, i EN fråga. Utan teamnyckel söks alla team.
+ * Svaret har en lista per fråga, i samma ordning: [] när numret inte finns, fler än en
+ * när samma nummer finns i flera team (teamnyckeln stigande). Gränsen bor också här, så
+ * att ingen väg skickar ett tal utanför integer till Postgres.
+ */
+export async function hittaArendenMedNummer(
+  client: PoolClient,
+  tenantId: string,
+  fragor: Nummerfraga[],
+): Promise<Arende[][]> {
+  const nummer = [...new Set(fragor.map((f) => f.nummer))].filter(
+    (n) => Number.isInteger(n) && n >= 0 && n <= MAX_ARENDENUMMER,
+  );
+  if (nummer.length === 0) return fragor.map(() => []);
+  const { rows } = await client.query<Arende & { nummer: number }>(
+    `SELECT ${KOLUMNER}, i.sequence_number AS nummer ${FRAN}
+      WHERE i.tenant_id = $1 AND i.sequence_number = ANY($2::int[])
+      ORDER BY t.key, i.sequence_number`,
+    [tenantId, nummer],
+  );
+  return fragor.map((f) =>
+    rows
+      .filter((r) => r.nummer === f.nummer && (f.teamKey === null || r.team_key === f.teamKey))
+      .map(({ nummer: _, ...arende }) => arende),
+  );
 }
 
 // ---- K-1: rättningsvägar för etiketter och namn ----------------------------

@@ -115,7 +115,7 @@ open http://127.0.0.1:3002/vy          # eller i webbläsaren på maskinen
 | --- | --- |
 | `GET /vy` | **Ärenden** — öppna ärenden grupperade per projekt och team, räknare per grupp och totalt, färskast överst |
 | `GET /vy/digest` | **Vad hände** — händelser per dag, inom dagen per källa (agent/människa/system); `?dagar=7\|30\|90\|alla` |
-| `GET /vy/sok?q=...` | **Sök** — fritext över titel, beskrivning och kommentarer + fasetter `?status=&etikett=&projekt=&aktor=` |
+| `GET /vy/sok?q=...` | **Sök** — fritext över titel, beskrivning och kommentarer + fasetter `?status=&etikett=&projekt=&aktor=`; ett ärendenummer (`LOC-503`, `loc 503`, `503`) öppnar ärendet direkt (D-1) |
 | `GET /vy/arende/LOC-316` | **Ärendesidan** — fälten, beskrivningen, alla kommentarer och hela historiken |
 | `GET /vy/mitt` | **Vad ligger på mig** — fem högar, var och en med sin regel utskriven; `?aktor=` väljer vem det ses från (K-9) |
 
@@ -389,6 +389,26 @@ Tre regler gäller (B-07, Story 5.2). De står ordagrant som i regelkällan:
 | FR-16 delkrav 6, skäl och revision på raden | `skrivAtagandeHandelse` är den enda vägen för de åtta åtagandeverben och lägger `identifier` och `revision` sist; `skal_saknas` i `andraAtagande` | `src/actions/registry.ts`, `src/services/atagande.ts` | `test/atagande-handelser.test.ts` (AK 1, AK 3, AK 8) |
 | FR-16 delkrav 6, ändringen på raden | `skrivOchJamfor` är den enda som anropar `skriv` och ger `andringMellan` mellan det låsta radläget och omläsningen, över den slutna fältlistan som tsc håller hel; `skrivAtagandeHandelse` kräver `andring` för varje uppdateringsverb | `src/services/atagande.ts`, `src/actions/registry.ts` | `test/atagande-handelser.test.ts` (AK 2, AK 12) |
 | FR-16 delkrav 3, återöppningen | `aterppnaAtagande` kräver revision och bär `tidigare` ur det låsta radläget; `events` är append-only | `src/services/atagande.ts`, `src/actions/registry.ts`, `migrations/0004_events.sql` | `test/atagande-handelser.test.ts` (AK 4) |
+
+### D-1 — sökningen öppnar ärendet på sitt nummer (Story 11.1)
+
+Ärendets nummer lagras aldrig: `identifier` härleds ur teamets nyckel och `sequence_number`, så numret
+finns inte i sökindexet. `/vy/sok` tolkar därför `q` som ett ärendenummer före fritexten (B-20).
+Tolkningen är den rena funktionen `tolkaArendenummer()` i `src/lib/validation.ts`, och den känner igen en
+sluten lista skrivsätt: teamnyckeln följd av bindestreck, hårt bindestreck, tankstreck, långt tankstreck
+eller minustecken (U+2011, U+2013, U+2014, U+2212), av blanksteg eller av ingen avskiljare alls; gemener
+och versaler; inledande nollor; och bart nummer med eller utan `#`. Ett nummer över 2 147 483 647 kan
+inte finnas och slås aldrig upp. `hittaArendenMedNummer()` i `src/services/arenden.ts` slår upp
+sökningens nummer i en enda fråga på `(team, sequence_number)`. Sökningen svarar i fyra lägen: ett nummer
+med en träff ger 303 till ärendet, samma nummer i flera team ger en lista, ett nummer utan träff ger
+«Inget ärende har numret …» med fritextträffarna för samma sträng under, och en längre sökning visar
+numren överst och fritexten som förut. `search_issues` och fritextens rangordning är oförändrade, och
+API:ts nummeruppslag är `get_issue`.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| D-1 | `tolkaArendenummer()` är ren och tolkar en sluten lista skrivsätt; `MAX_ARENDENUMMER` gäller i tolkningen och i tjänstelagret; ett enda uppslag med `= ANY($2::int[])`; omdirigeringen bara när hela sökningen är ett nummer med exakt en träff | `src/lib/validation.ts`, `src/services/arenden.ts`, `src/http/routes/vy.ts` | `test/sok-nummer.test.ts` (AK 1–7) |
+| FR-2, FR-11 (regression) | en sökning utan nummer går fritextvägen som förut; `sokArenden`, `listaArenden`, fasetterna och `search_issues` är orörda | oförändrade | `test/sok.test.ts`, `test/vy.test.ts` (KRAV-3), `test/sok-nummer.test.ts` (F18) |
 
 ## Gränser för Etapp 2a
 
