@@ -425,6 +425,20 @@ API:ts nummeruppslag är `get_issue`.
 | D-1 | `tolkaArendenummer()` är ren och tolkar en sluten lista skrivsätt; `MAX_ARENDENUMMER` gäller i tolkningen och i tjänstelagret; ett enda uppslag med `= ANY($2::int[])`; omdirigeringen bara när hela sökningen är ett nummer med exakt en träff | `src/lib/validation.ts`, `src/services/arenden.ts`, `src/http/routes/vy.ts` | `test/sok-nummer.test.ts` (AK 1–7) |
 | FR-2, FR-11 (regression) | en sökning utan nummer går fritextvägen som förut; `sokArenden`, `listaArenden`, fasetterna och `search_issues` är orörda | oförändrade | `test/sok.test.ts`, `test/vy.test.ts` (KRAV-3), `test/sok-nummer.test.ts` (F18) |
 
+### FR-37 — svenska felbesked i vyn (Story 2.2)
+
+Vyns felsidor säger på svenska vad som hände och varför (B-14). Ett `AppError` utom `UnauthenticatedError` i skrivramen `skrivrutt()` eller i in- och utloggningens ursprungskontroll `ursprungOk()` blir felsida genom `felbesked()`, som slår upp koden i den slutna tabellen `FELBESKED` i `src/http/vy/skrivning.ts`: `atagandet_styr_statusen` ger 400 och «Tillståndet följer åtagandet» med ärendets nummer och en länk tillbaka, `kraver_manniska` ger 403 och «Det här kräver en människa», och `cross_origin` ger 403 och «Gick inte att utföra». En kod som inte står i tabellen ger «Gick inte att utföra» och tjänstens meddelande som förut, eller en fast mening när meddelandet bara är koden. Statusen är felets egen, som på `/api`. Felkoden står bara i ett `code`-element efter meningen. Ett valideringsfel ger «Ogiltig inmatning» med fältets svenska namn ur `FALTNAMN` och en fast mening; zods egna meddelanden läses aldrig. 401-sidan «Inloggning krävs» är oförändrad. Felsidorna visar ingen aktör i hörnet. API:ts JSON-svar är oförändrade.
+
+Regeln står ordagrant som i regelkällan:
+
+- Vyns felsidor (B-14, Story 2.2): ett `AppError` utom `UnauthenticatedError` i `skrivrutt()` eller `ursprungOk()` blir felsida bara genom `svaraMedFelbesked()` och den slutna felkodstabellen `FELBESKED` i `src/http/vy/skrivning.ts`, som ger svensk rubrik och mening. En ny felkod som ytan kan möta läggs i tabellen. En kod som inte står där visar tjänstens meddelande, eller en fast mening när meddelandet bara är koden, och felkoden står bara i ett `code`-element efter meningen, aldrig ensam. Ett valideringsfel visar fältets namn ur `FALTNAMN` och en fast mening, och zods `message` läses aldrig i vylagret. Felsidor anropar `sida()` utan aktör, så hörnet är tyst. Statusen är felets egen, som på `/api`.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-37, FR-14, FR-32 (felbeskeden) | `felbesked()` är den enda vägen från ett `AppError` utom `UnauthenticatedError` till en felsida i vyn och läser den slutna tabellen `FELBESKED`; okänd kod ger tjänstens meddelande; koden står bara i `code` efter meningen | `src/http/vy/skrivning.ts` (`skrivrutt`, `ursprungOk`, `svaraMedFelbesked`, `felbesked`, `felsida`) | `test/felbesked-yta.test.ts` (AK 1, AK 2, AK 5) |
+| FR-37 (valideringsfel) | `ogiltigInmatning()` läser aldrig zods meddelande; fältnamnet ur `FALTNAMN`, meningen ur tre fasta mallar | `src/http/vy/skrivning.ts` (`ogiltigInmatning`, `FALTNAMN`) | `test/felbesked-yta.test.ts` (AK 3, AK 5) |
+| FR-37 (felsidornas form) | `felsida()` ger `h1`, en `p.notis`, vägen tillbaka och ett tyst hörn; all text genom `esc()` | `src/http/vy/skrivning.ts` (`felsida`) | `test/felbesked-yta.test.ts` (AK 4) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

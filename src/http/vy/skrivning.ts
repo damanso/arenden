@@ -13,6 +13,9 @@
 //     `script-src 'none'` (src/http/app.ts), så ett skript hade ändå inte kört.
 //   * All dynamisk text genom esc() (KRAV-6) och varje aktör genom proveniens()
 //     (KRAV-5).
+//   * Felsidorna säger på svenska vad som hände (B-14, Story 2.2). Ett AppError
+//     utom UnauthenticatedError blir felsida bara genom svaraMedFelbesked() och
+//     den slutna tabellen FELBESKED; felkoden står aldrig ensam.
 import express, { type Request, type Response, type Router } from 'express';
 import { ZodError } from 'zod';
 import { executeAction } from '../../actions/execute.js';
@@ -21,6 +24,7 @@ import { withTransaction } from '../../db/tx.js';
 import type { Aktor } from '../../lib/aktor.js';
 import { AppError, UnauthenticatedError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
+import { IdentifierSchema } from '../../lib/validation.js';
 import { listaEtikettnamn, listaProjektnamn } from '../../services/arenden.js';
 import type { Kommentar } from '../../services/kommentarer.js';
 import { listaNycklar, slaUppAktor, type NyckelIVy } from '../../services/nycklar.js';
@@ -112,18 +116,143 @@ function medNotis(vag: string, kod: string): string {
 
 // ---- Felsvar som HTML ------------------------------------------------------
 
-function felsida(rubrik: string, text: string, extra = ''): string {
+// B-14 och UX-specifikationen: en felkod får stå i `code` efter meningen, aldrig
+// ensam. `kod` är därför det enda sättet en kod når sidan, i ett eget stycke
+// direkt efter p.notis, så att David kan citera den.
+function felsida(rubrik: string, text: string, extra = '', kod?: string): string {
+  const felkod = kod === undefined ? '' : `<p>Felkod: <code>${esc(kod)}</code></p>`;
+  // Ingen aktör, alltså ett tyst hörn (mall.ts: "sidan vet inte"). En felsida vet
+  // inte om sessionen gäller — 403 vid korsande ursprung kan komma från en
+  // inloggad webbläsare — och då är tystnad bättre än ett påstående om
+  // inloggningsläget.
   return sida(
     rubrik,
-    `<h1>${esc(rubrik)}</h1><p class=notis>${esc(text)}</p>${extra}` +
+    `<h1>${esc(rubrik)}</h1><p class=notis>${esc(text)}</p>${felkod}${extra}` +
       '<p><a href="/vy">Till överblicken</a></p>',
-    undefined,
-    null,
   );
 }
 
-function svaraFel(res: Response, status: number, rubrik: string, text: string, extra = ''): void {
-  res.status(status).type('html').send(felsida(rubrik, text, extra));
+function svaraFel(
+  res: Response,
+  status: number,
+  rubrik: string,
+  text: string,
+  extra = '',
+  kod?: string,
+): void {
+  res.status(status).type('html').send(felsida(rubrik, text, extra, kod));
+}
+
+interface Felbeskrivning {
+  rubrik: string;
+  /** Ärendenumret ur adressen, eller null när adressen inte bär något giltigt. */
+  mening: (nummer: string | null) => string;
+  /** Sidan länkar tillbaka till ärendet när numret är känt. */
+  tillArendet: boolean;
+}
+
+/**
+ * B-14: den SLUTNA felkodstabellen, med UX-specifikationens rubriker och meningar
+ * ("Spärr- och felbesked på svenska"). Tjänstelagrets meddelanden är skrivna för
+ * /api och loggar, i ASCII och med API-namn; det är vyn som översätter. En ny
+ * felkod som ytan kan möta läggs HÄR. Statusen står inte i tabellen: den är
+ * felets egen, samma som /api svarar (FR-32).
+ */
+const FELBESKED: Record<string, Felbeskrivning> = {
+  atagandet_styr_statusen: {
+    rubrik: 'Tillståndet följer åtagandet',
+    mening: (nummer) =>
+      `${nummer ?? 'Ärendet'} bär ett åtagande, och då följer tillståndet åtagandets läge. ` +
+      'Klart går när åtagandet är genomfört och Avbrutet när det är avslutat.',
+    tillArendet: true,
+  },
+  kraver_manniska: {
+    rubrik: 'Det här kräver en människa',
+    mening: () => 'Handgreppet bokförs alltid som människa. Logga in med din människonyckel.',
+    tillArendet: false,
+  },
+  cross_origin: {
+    rubrik: 'Gick inte att utföra',
+    mening: () => 'Begäran kom inte från vyns egna sidor och avvisades. Ingenting sparades.',
+    tillArendet: false,
+  },
+};
+
+/**
+ * Ett AppError utan eget meddelande har koden som meddelande (src/lib/errors.ts).
+ * Då hade koden stått ensam som mening, och det förbjuder B-14.
+ */
+const OKAND_KOD_MENING = 'Tjänsten avvisade ändringen utan en förklaring i klartext.';
+
+/**
+ * Rubrik, mening och det som står efter meningen för ett AppError. Ren. Uppslaget
+ * går genom Object.hasOwn(): en objektliteral ärver `constructor` och `toString`,
+ * och ett ärvt namn får aldrig tas för en post i tabellen. En kod utanför
+ * tabellen visar tjänstens meddelande som förut.
+ */
+function felbesked(err: AppError, nummer: string | null): { rubrik: string; mening: string; extra: string } {
+  const post = Object.hasOwn(FELBESKED, err.code) ? FELBESKED[err.code] : undefined;
+  if (post === undefined) {
+    const mening = err.message !== err.code ? err.message : OKAND_KOD_MENING;
+    return { rubrik: 'Gick inte att utföra', mening, extra: '' };
+  }
+  const extra =
+    post.tillArendet && nummer !== null
+      ? `<p><a href="${esc(arendeUrlFor(nummer))}">Tillbaka till ${esc(nummer)}</a></p>`
+      : '';
+  return { rubrik: post.rubrik, mening: post.mening(nummer), extra };
+}
+
+/**
+ * Fälten i de scheman som vyns skrivrutter skickar till (src/actions/registry.ts),
+ * med sina svenska namn. Sluten: en nyckel utanför tabellen heter «Ett fält».
+ */
+const FALTNAMN: Record<string, string> = {
+  title: 'Titel',
+  description: 'Beskrivning',
+  body: 'Kommentar',
+  till: 'Nytt namn',
+  fran: 'Nuvarande namn',
+  label: 'Etikett',
+  identifier: 'Ärendenummer',
+  kommentar_id: 'Kommentarens id',
+  nyckel_id: 'Nyckelns id',
+};
+
+function faltnamn(nyckel: string | number | undefined): string {
+  if (nyckel === undefined) return 'Formuläret';
+  const namn = typeof nyckel === 'string' && Object.hasOwn(FALTNAMN, nyckel) ? FALTNAMN[nyckel] : undefined;
+  return namn ?? 'Ett fält';
+}
+
+/**
+ * B-14: valideringsfelet på svenska. Ur zods första fel läses bara slaget,
+ * sökvägen och gränserna — ALDRIG `message`. Zods standardtexter är engelska, och
+ * scheman med egna meningar kan bära API-namn; en regel utan undantag går att
+ * visa genom konstruktion. Talet skrivs utan tusentalsavgränsare, så att texten
+ * är densamma oavsett miljöns språkinställning.
+ */
+function ogiltigInmatning(err: ZodError): string {
+  const fel = err.issues[0];
+  const falt = faltnamn(fel?.path[0]);
+  if (fel?.code === 'too_small' && fel.type === 'string' && fel.minimum === 1) {
+    return `${falt} måste fyllas i.`;
+  }
+  if (fel?.code === 'too_big' && fel.type === 'string') {
+    return `${falt} får vara högst ${String(fel.maximum)} tecken.`;
+  }
+  return `${falt} har ett värde som inte kan tas emot.`;
+}
+
+/**
+ * Enda vägen från ett AppError (utom 401) till en felsida, för skrivrutt() och
+ * ursprungOk(). Ärendenumret tas ur adressen och prövas mot IdentifierSchema —
+ * aldrig ur tjänstens mening — så ett ogiltigt värde i adressen upprepas aldrig.
+ */
+function svaraMedFelbesked(req: Request, res: Response, err: AppError): void {
+  const tolkat = IdentifierSchema.safeParse(ruttfalt(req.params['identifier']));
+  const { rubrik, mening, extra } = felbesked(err, tolkat.success ? tolkat.data : null);
+  svaraFel(res, err.status, rubrik, mening, extra, err.code);
 }
 
 /**
@@ -134,8 +263,11 @@ function svaraFel(res: Response, status: number, rubrik: string, text: string, e
  *   3. Först därefter körs actionen.
  *
  * Fel blir HTML-sidor, inte API:ts JSON: det här är en yta en människa tittar på.
+ *
+ * Exporterad för provet (Story 2.2, AK 1): ingen vyrutt kastar ännu två av
+ * felkoderna i FELBESKED, så provet monterar ramen med en hanterare som kastar dem.
  */
-function skrivrutt(
+export function skrivrutt(
   hanterare: (req: Request, res: Response, aktor: Aktor) => Promise<void>,
 ): (req: Request, res: Response) => Promise<void> {
   return async (req, res) => {
@@ -158,11 +290,11 @@ function skrivrutt(
         return;
       }
       if (err instanceof ZodError) {
-        svaraFel(res, 400, 'Ogiltig inmatning', err.issues[0]?.message ?? 'fältet kunde inte tolkas');
+        svaraFel(res, 400, 'Ogiltig inmatning', ogiltigInmatning(err));
         return;
       }
       if (err instanceof AppError) {
-        svaraFel(res, err.status, 'Gick inte att utföra', err.message);
+        svaraMedFelbesked(req, res, err);
         return;
       }
       throw err;
@@ -177,7 +309,7 @@ function ursprungOk(req: Request, res: Response): boolean {
     return true;
   } catch (err) {
     if (err instanceof AppError) {
-      svaraFel(res, err.status, 'Gick inte att utföra', err.message);
+      svaraMedFelbesked(req, res, err);
       return false;
     }
     throw err;
