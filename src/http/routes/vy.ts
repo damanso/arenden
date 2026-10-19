@@ -540,7 +540,7 @@ vyRouter.get('/mitt', async (req, res) => {
       const aktiv = x.aktor_namn === lage.aktor;
       return (
         `<a class="fasett${aktiv ? ' aktiv' : ''}"${aktiv ? ' aria-current=true' : ''} ` +
-        `href="/vy/mitt?aktor=${encodeURIComponent(x.aktor_namn)}">` +
+        `href="/vy/mitt?aktor=${esc(encodeURIComponent(x.aktor_namn))}">` +
         `${esc(x.aktor_namn)} <span class=summering>${esc(x.antal)}</span></a>`
       );
     })

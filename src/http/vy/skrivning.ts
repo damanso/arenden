@@ -285,7 +285,7 @@ export function skrivrutt(
           'Inloggning krävs',
           'Att läsa kräver ingen nyckel. Att ÄNDRA gör det: aktören i händelseloggen ' +
             'härleds alltid ur en nyckel, aldrig ur formuläret.',
-          `<p><a href="/vy/logga-in?fran=${retur}">Logga in</a></p>`,
+          `<p><a href="/vy/logga-in?fran=${esc(retur)}">Logga in</a></p>`,
         );
         return;
       }
@@ -345,7 +345,7 @@ export function skrivlage(aktor: Aktor | null, retur: string): string {
   if (aktor) return '';
   return (
     '<p class=notis>Läsläge. ' +
-    `<a href="/vy/logga-in?fran=${encodeURIComponent(sakerRetur(retur))}">Logga in</a>` +
+    `<a href="/vy/logga-in?fran=${esc(encodeURIComponent(sakerRetur(retur)))}">Logga in</a>` +
     ' för att kommentera eller rätta — ändringarna bär då din aktörsidentitet.</p>'
   );
 }
@@ -409,13 +409,13 @@ export function kommentarsverktyg(aktor: Aktor | null, kommentar: Kommentar, ret
   const returFalt = `<input type=hidden name=fran value="${esc(retur)}">`;
   return (
     '<details class=rattelse><summary>Rätta eller ta bort</summary>' +
-    `<form class=skrivform method=post action="/vy/kommentar/${id}/ratta">` +
+    `<form class=skrivform method=post action="/vy/kommentar/${esc(kommentar.id)}/ratta">` +
     returFalt +
     `<label class=dold for="ratta-${id}">Rättad text</label>` +
     `<textarea id="ratta-${id}" name=body rows=6 required>${esc(kommentar.body)}</textarea>` +
     '<div class=skrivrad><button type=submit>Spara rättelsen</button>' +
     '<span class=meta>Den gamla texten sparas i historiken.</span></div></form>' +
-    `<form class=skrivform method=post action="/vy/kommentar/${id}/tabort">` +
+    `<form class=skrivform method=post action="/vy/kommentar/${esc(kommentar.id)}/tabort">` +
     returFalt +
     '<div class=skrivrad><button class=mild type=submit>Ta bort kommentaren</button>' +
     '<span class=meta>Mjuk borttagning — raden finns kvar och går att återställa.</span>' +
@@ -502,7 +502,7 @@ export function monteraSkrivrutter(router: Router): void {
         '<h2>Logga in med ditt Locollabs-konto</h2>' +
         '<p class=summering>Samma användarnamn och lösenord som i redovisningen. ' +
         'Loggar du in där är du inloggad här också — det är samma system.</p>' +
-        '<p><a class=btn href="' + REDOVISNINGENS_LOGIN + '">Till inloggningen</a></p>' +
+        '<p><a class=btn href="' + esc(REDOVISNINGENS_LOGIN) + '">Till inloggningen</a></p>' +
         '<p class=notis>Har du redan loggat in i redovisningen och ändå ser den här ' +
         'sidan: logga <b>ut</b> där och in igen. Sessioner som skapades före ' +
         '2026-09-07 18:46 gällde bara redovisningen och når inte hit.</p>' +

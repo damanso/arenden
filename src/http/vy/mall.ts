@@ -10,7 +10,7 @@
 //      ur fri text — och ingen rad lämnas omärkt.
 
 import type { Aktor } from '../../lib/aktor.js';
-import { modell, type Post } from './navigation.js';
+import { modell, type Modell, type Post } from './navigation.js';
 
 const ERSATTNING: Record<string, string> = {
   '&': '&amp;',
@@ -708,13 +708,14 @@ export function ikon(namn: string, storlek = 16): string {
 /**
  * Brodsmulan: var man ar. Sista ledet ar ALDRIG en lank — man star redan dar.
  * Delarna ar [text, vag|null]; texten escapas, vagen ar husets egen.
+ * Vagen gar anda genom esc() som varje annat attribut (FR-34).
  */
 export function brodsmula(delar: [string, string | null][]): string {
   const led = delar.map(([text, vag], i) => {
     const sep = i ? '<span class=sep>\u203a</span>' : '';
     const sist = i === delar.length - 1;
     return sep + (vag && !sist
-      ? '<a href="' + vag + '">' + esc(text) + '</a>'
+      ? '<a href="' + esc(vag) + '">' + esc(text) + '</a>'
       : '<b>' + esc(text) + '</b>');
   });
   return '<nav class=smula aria-label="Var du är">' + led.join('') + '</nav>';
@@ -724,11 +725,14 @@ export function brodsmula(delar: [string, string | null][]): string {
  * Ett tomt lage sager vad tomheten BETYDER och pekar vidare. "Inga träffar."
  * ar ett databassvar; en manniska som moter det vet inte om hon sokt fel,
  * om det saknas data eller om allt ar gjort.
+ *
+ * Vagen gar genom esc() som varje annat attribut (FR-34), ocksa nar den ar
+ * husets egen.
  */
 export function tomtLage(rubrik: string, mening: string,
                          vag?: string, lanktext?: string): string {
   const vidare = vag && lanktext
-    ? ' <a href="' + vag + '">' + esc(lanktext) + '</a>'
+    ? ' <a href="' + esc(vag) + '">' + esc(lanktext) + '</a>'
     : '';
   return '<div class=tomt><b>' + esc(rubrik) + '</b>' + esc(mening) + vidare + '</div>';
 }
@@ -827,8 +831,12 @@ const YTOR: { vag: string; text: string; yta: Yta; ikonnamn: string }[] = [
  * ingen annan vag dit, och utan den hade Hem och Bibliotek blivit omojliga
  * att na.
  */
-function produktmeny(aktivVag: string | null): string {
-  const m = modell();
+// Exporterad och med modellen som parameter for provets skull: en modell med
+// farliga adresser kan inte komma ur den genererade kontraktsfilen (Story 2.4,
+// AK 1). sida() anropar den utan modell och far modell() som forut.
+// Adresserna kommer ur kontraktet och gar genom esc() som all annan dynamisk
+// text (FR-34, B-15); jamforelserna mot aktivVag gors pa de raa vardena.
+export function produktmeny(aktivVag: string | null, m: Modell = modell()): string {
   let grupp: (typeof m.groups)[number] | null = null;
   let post: Post | null = null;
   for (const g of m.groups) {
@@ -850,7 +858,7 @@ function produktmeny(aktivVag: string | null): string {
   const rubrik = (g: (typeof m.groups)[number]): string => {
     const ga = grupp !== null && g.id === grupp.id && post === null;
     return g.entry?.href
-      ? `<a class="eyebrow navmenu__grpl${ga ? ' is-active' : ''}" href="${g.entry.href}"` +
+      ? `<a class="eyebrow navmenu__grpl${ga ? ' is-active' : ''}" href="${esc(g.entry.href)}"` +
         `${ga ? ' aria-current=page' : ''} data-destination-id="${esc(g.entry.id)}">${esc(g.label)}</a>`
       : `<span class=eyebrow>${esc(g.label)}</span>`;
   };
@@ -867,7 +875,7 @@ function produktmeny(aktivVag: string | null): string {
           .map((p) => {
             const pa = post !== null && p.id === post.id;
             return (
-              `<a class="navmenu__link${pa ? ' is-active' : ''}" href="${p.href ?? '#'}"` +
+              `<a class="navmenu__link${pa ? ' is-active' : ''}" href="${esc(p.href ?? '#')}"` +
               `${pa ? ' aria-current=page' : ''} data-destination-id="${esc(p.id)}">${esc(p.label)}</a>`
             );
           })
@@ -884,7 +892,7 @@ function produktmeny(aktivVag: string | null): string {
 
   const omradet = grupp
     ? grupp.entry?.href
-      ? `<a class=nav__omrade href="${grupp.entry.href}"${post === null ? ' aria-current=page' : ''}` +
+      ? `<a class=nav__omrade href="${esc(grupp.entry.href)}"${post === null ? ' aria-current=page' : ''}` +
         ` data-destination-id="${esc(grupp.entry.id)}">${esc(grupp.label)}</a>`
       : `<span class=nav__omrade>${esc(grupp.label)}</span>`
     : '';
@@ -893,7 +901,7 @@ function produktmeny(aktivVag: string | null): string {
     .map((p) => {
       const pa = post !== null && p.id === post.id;
       return (
-        `<a${pa ? ' class=active' : ''} href="${p.href ?? '#'}"` +
+        `<a${pa ? ' class=active' : ''} href="${esc(p.href ?? '#')}"` +
         `${pa ? ' aria-current=page' : ''} data-destination-id="${esc(p.id)}">${esc(p.label)}</a>`
       );
     })

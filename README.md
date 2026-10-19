@@ -439,6 +439,20 @@ Regeln står ordagrant som i regelkällan:
 | FR-37 (valideringsfel) | `ogiltigInmatning()` läser aldrig zods meddelande; fältnamnet ur `FALTNAMN`, meningen ur tre fasta mallar | `src/http/vy/skrivning.ts` (`ogiltigInmatning`, `FALTNAMN`) | `test/felbesked-yta.test.ts` (AK 3, AK 5) |
 | FR-37 (felsidornas form) | `felsida()` ger `h1`, en `p.notis`, vägen tillbaka och ett tyst hörn; all text genom `esc()` | `src/http/vy/skrivning.ts` (`felsida`) | `test/felbesked-yta.test.ts` (AK 4) |
 
+### FR-34 — en escape-funktion, också för menyns adresser (Story 2.4)
+
+All dynamisk text i vyn går genom `esc()` i `src/http/vy/mall.ts`, den enda HTML-escapefunktionen under `src/http/` (FR-34, KRAV-6). Det gäller också produktmenyns fyra adresser, gruppens rubrik, panelens länkar, området och snabbraden. De kommer ur navigationskontraktet genom `modell()` i `src/http/vy/navigation.ts`, och `produktmeny()` skriver dem genom `esc()` (B-15). Med dagens kontrakt ändrar `esc()` ingen adress, så menyn är densamma. Provet `test/escape-yta.test.ts` läser varje fil under `src/http/`. Det fäller ett `href`- eller `action`-värde vars dynamiska del inte börjar med `esc(`, ett sådant attribut utan dubbla citattecken och ett värde som inte slutar på sin rad. En adress ur data skrivs `esc(sakerUrl(…))`, och ett värde som bara går genom `sakerUrl()` fälls. Undantagen är en sluten lista med skäl: de två fragmenten i `src/http/vy/markdown.ts` som byggs ur text som redan gått genom `esc()`. Andra skrivsätt för ett attribut läser provet inte. Där gäller regeln och granskningen.
+
+Regeln står ordagrant som i regelkällan:
+
+- Adresser i vyn (FR-34, B-15, Story 2.4): `esc()` i `src/http/vy/mall.ts` är den enda HTML-escapefunktionen under `src/http/`. Varje dynamisk del av ett `href`- eller `action`-värde, i en mall eller i en sammanfogning, börjar med `esc(`, också för adresser ur `kontrakt/navigation.v1.json`. En adress ur data går genom `sakerUrl()` inuti `esc()`, som `esc(sakerUrl(…))`. Värdet står inom dubbla citattecken och på samma rad som attributet. Ett fragment som redan gått genom `esc()` står i undantagslistan `UNDANTAG` i `test/escape-yta.test.ts` med fil, uttryck och skäl, och listan är sluten.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-34 (menyns adresser) | `produktmeny()` skriver gruppens rubrik, panelens länkar, området och snabbraden genom `esc()`; modellen är en parameter, så provet kan ge farliga adresser | `src/http/vy/mall.ts` (`produktmeny`) | `test/escape-yta.test.ts` (AK 1) |
+| FR-34 (en escape-funktion) | `esc()` är den enda HTML-escapefunktionen och importeras ur `mall.ts`; varje dynamisk del av ett `href`- eller `action`-värde börjar med `esc(`, med `sakerUrl()` inuti för adresser ur data, utom den slutna listan `UNDANTAG` | `src/http/vy/mall.ts`, `src/http/vy/skrivning.ts`, `src/http/routes/vy.ts` | `test/escape-yta.test.ts` (AK 2) |
+| FR-34, KRAV-6 (regression) | ärendetexten escapas före markdown och autolänkar (`renderaArendetext()`), annan text genom `esc()`; CSP:n `script-src 'none'` är den yttre spärren | `src/http/routes/vy.ts`, `src/http/vy/markdown.ts`, `src/http/app.ts` | `test/escape-yta.test.ts` (AK 3), `test/vy.test.ts` (KRAV-6) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
