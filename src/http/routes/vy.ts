@@ -57,7 +57,13 @@ import {
 import { listaBorttagnaKommentarer, listaKommentarer } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
-import { renderaArendetext, renderaMarkdown } from '../vy/markdown.js';
+import {
+  AVVECKLAD_LINEAR_LANK,
+  linearAdress,
+  renderaArendetext,
+  renderaMarkdown,
+  TIDIGARE_LINEAR_LANK,
+} from '../vy/markdown.js';
 import {
   brodsmula,
   datum,
@@ -264,18 +270,37 @@ function handelseDetalj(verb: string, payload: unknown): string {
  * Dokumentlänken. url:en går genom sakerUrl() FÖRE esc(): esc gör en farlig
  * adress ofarlig att visa men inte ofarlig att klicka på, och det är klicket
  * som betyder något här. Utan giltigt http/https-schema blir raden ren text.
+ *
+ * FR-37, B-14 (Story 2.3): en adress till Linear blir aldrig en utåtlänk.
+ * linearAdress() klassar sakerUrl():s svar. Med ett ärendenummer blir huvudet
+ * en intern länk till ärendet, och titeln står kvar som text under den: den
+ * säger vad dokumentet var och står ingen annanstans på sidan. Utan nummer
+ * blir huvudet titeln som ren text. Adressen i databasen rörs inte.
  */
 function bilageRad(b: Bilaga): string {
   const url = sakerUrl(b.url);
   const titel = esc(b.titel);
-  const huvud = url
-    ? `<a href="${esc(url)}" rel="noopener noreferrer" target=_blank>${titel}</a>`
-    : titel;
+  const linear = url ? linearAdress(url) : null;
+  const nummer = linear?.nummer ?? null;
+  let huvud: string;
+  if (!url) {
+    huvud = `${titel}<span>ingen giltig adress</span>`;
+  } else if (nummer !== null) {
+    huvud =
+      `<a href="${esc(arendeUrl(nummer))}">${esc(nummer)}</a>` +
+      `<span>${esc(TIDIGARE_LINEAR_LANK)}</span>`;
+  } else if (linear !== null) {
+    huvud = `${titel}<span>${esc(AVVECKLAD_LINEAR_LANK)}</span>`;
+  } else {
+    huvud =
+      `<a href="${esc(url)}" rel="noopener noreferrer" target=_blank>${titel}</a>` +
+      `<span>${esc(new URL(url).hostname)}</span>`;
+  }
   return (
     '<li class=rad><div class=huvud>' +
     huvud +
-    (url ? `<span>${esc(new URL(url).hostname)}</span>` : '<span>ingen giltig adress</span>') +
     '</div>' +
+    (nummer !== null ? `<div class=text>${titel}</div>` : '') +
     (b.undertitel ? `<div class=text>${esc(b.undertitel)}</div>` : '') +
     '</li>'
   );

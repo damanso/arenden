@@ -1,6 +1,6 @@
 // Autolänkning och enkel markdown för vyn (Dokumentlänkar + Markdown i vyn).
 //
-// TVÅ regler, och de är samma som resten av vylagret vilar på:
+// TRE regler, och de är samma som resten av vylagret vilar på:
 //   1. KRAV-6 (etapp 2a) / KRAV-3 (markdown): ALL text som kommer från
 //      databasen eller vaulten går genom esc() i mall.js — EN gång, på hela
 //      strängen, INNAN någon konstruktion tolkas. Allt nedanför arbetar därför
@@ -8,6 +8,10 @@
 //   2. KRAV-3 (dokumentlänkar): en referens till ett dokument UTANFÖR vitlistan
 //      — eller ett filnamn som finns på flera ställen — lämnas som ren text.
 //      Ingen markering, ingen titel, inget som avslöjar att dokumentet finns.
+//   3. FR-37, B-14 (Story 2.3): en adress vars värd är linear.app eller en
+//      underdomän blir aldrig en utåtlänk. linearAdress() avgör, och både
+//      markdownlänkarna här och bilageRad() i routes/vy.ts frågar den före
+//      sitt href.
 //
 // VARFÖR ESCAPEN LIGGER FÖRST OCH INTE SIST (KRAV-3, och det viktigaste valet i
 // filen): innehållet skrivs av agenter som läser mail, transkript och
@@ -50,6 +54,51 @@ const MARKDOWN = new RegExp(
 
 export function dokUrl(rel: string): string {
   return `/vy/dok/${rel.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+// ---- FR-37, B-14 (Story 2.3): Linear-adresser blir aldrig utåtlänkar ------
+
+/** Svaret för en Linear-adress: ärendenumret i sökvägen, eller null utan nummer. */
+export type LinearAdress = { nummer: string | null };
+
+/** Metan för en Linear-adress med nummer, som nu är en intern länk. */
+export const TIDIGARE_LINEAR_LANK = 'tidigare Linear-länk';
+/** Metan för en Linear-adress utan nummer, som nu är ren text. */
+export const AVVECKLAD_LINEAR_LANK = 'Linear-länk — Linear är avvecklat';
+
+const LINEARVARD = 'linear.app';
+const LINEARNUMMER = /^LOC-\d+$/;
+
+/**
+ * FR-37: «inga länkar till Linear». Plattformen är källan, och en kvarglömd
+ * adress till Linear i en bilaga eller ett dokument får inte bli en väg dit.
+ *
+ * Värden läses ur URL-tolkens hostname, aldrig ur adressens text: tolken har
+ * redan gjort värden till gemener och skilt den från schema, användarnamn och
+ * port, så versaler, `f23@` eller `:443` avgör aldrig. En avslutande punkt står
+ * kvar i hostname och tas bort här. En textsökning efter «linear.app» hade
+ * gått att kringgå åt båda hållen (notlinear.app, example.com/linear.app).
+ *
+ * Bara http och https klassas: inget annat schema blir ett href på de två
+ * ställen som frågar (sakerUrl() och markdownlänkarnas schemaprov).
+ *
+ * Numret räknas bara som ett HELT segment i sökvägen, med versaler som
+ * autolänkarens ARENDE. Linears ärendeadresser har numret som eget segment;
+ * ett nummer i frågan eller inne i ett längre segment är inget ärende, och en
+ * sådan adress blir ren text i stället för en gissad länk.
+ */
+export function linearAdress(adress: string): LinearAdress | null {
+  let tolkad: URL;
+  try {
+    tolkad = new URL(adress);
+  } catch {
+    return null;
+  }
+  if (tolkad.protocol !== 'http:' && tolkad.protocol !== 'https:') return null;
+  const vard = tolkad.hostname.replace(/\.$/, '');
+  if (vard !== LINEARVARD && !vard.endsWith(`.${LINEARVARD}`)) return null;
+  const nummer = tolkad.pathname.split('/').find((segment) => LINEARNUMMER.test(segment));
+  return { nummer: nummer ?? null };
 }
 
 /**
@@ -120,6 +169,10 @@ function ersatt(
     const text = g['mdtext'] ?? url;
     // Bara http(s) släpps ut som extern länk — aldrig javascript:/data:.
     if (/^https?:\/\//i.test(url)) {
+      // FR-37, B-14 (Story 2.3): avesc() bara för klassningen, som för
+      // losUpp() — den avkodade adressen skrivs aldrig ut.
+      const linear = linearAdress(avesc(url));
+      if (linear !== null) return linearlank(text, linear);
       return `<a href="${url}" rel="noreferrer noopener">${text}</a>`;
     }
     return dokumentlank(avesc(url), text, hel, index);
@@ -148,6 +201,21 @@ function dokumentlank(
   // rel kommer ur det vitlistade indexet, inte ur innehållet; esc() här är
   // därför inte innehållsescape utan ett bälte kring en URL vi själva byggt.
   return `<a href="${esc(dokUrl(rel))}">${text}</a>`;
+}
+
+/**
+ * FR-37, B-14 (Story 2.3): en markdownlänk till Linear. Länktexten står kvar så
+ * att meningen går att läsa, och metan står inom parentes efter den, eftersom
+ * löptexten inte har någon metaklass. text är redan escapad, och numret är
+ * LOC-\d+, som esc() lämnar orört; båda skrivs därför som de är, liksom
+ * konstanterna (F1 i test/linear-lankar.test.ts visar att esc() lämnar dem).
+ */
+function linearlank(text: string, adress: LinearAdress): string {
+  if (adress.nummer === null) return `${text} (${AVVECKLAD_LINEAR_LANK})`;
+  // vag byggs här av husets väg och numret; esc() är, som i dokumentlank(),
+  // inte innehållsescape utan ett bälte kring en adress vi själva byggt.
+  const vag = `/vy/arende/${adress.nummer}`;
+  return `${text} (<a href="${esc(vag)}">${adress.nummer}</a>, ${TIDIGARE_LINEAR_LANK})`;
 }
 
 // ---- KRAV-2: speglade kunddokument ----------------------------------------
