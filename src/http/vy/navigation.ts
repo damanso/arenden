@@ -40,12 +40,23 @@ type Grupp = {
   entry_id: string | null;
 };
 
-type Kontrakt = {
+export type KontraktRutt = {
+  service: string;
+  method: string;
+  router_pattern: string;
+  public_pattern: string;
+  category: string;
+  owner_id: string | null;
+  verification: string;
+};
+
+export type Kontrakt = {
   contract_version: string;
   decision_157: 'pending' | 'yes' | 'no';
   groups: Grupp[];
   destinations: Destination[];
   surfaces: Record<string, string[]>;
+  routes: KontraktRutt[];
 };
 
 export type Post = { id: string; label: string; hint: string; href: string | null };
@@ -109,8 +120,15 @@ function post(d: Destination, bolag?: string | null): Post {
   return { id: d.id, label: d.label, hint: d.hint, href: adress(d, bolag) };
 }
 
-export function modell(beslut?: string | null, bolag?: string | null): Modell {
-  const k = kontraktet();
+/**
+ * Kontraktet är en parameter för provets skull: test/adresskontrakt.test.ts ger funktionen kopian med
+ * den nya tillståndsrutten och visar att menyn är densamma (Story 2.6, AK 2). Standardvärdet är den
+ * laddade kopian, så sida(), HUVUDVAL och navmodell räknar fram samma modell som förut.
+ *
+ * modell() läser aldrig `routes`. Rutterna är adressregistret, som test/adresskontrakt.test.ts och
+ * provet adresskontraktet i provvakten jämför med koden (FR-32, FR-15).
+ */
+export function modell(beslut?: string | null, bolag?: string | null, k: Kontrakt = kontraktet()): Modell {
   const b = beslut ?? k.decision_157;
   const perId = new Map(k.destinations.map((d) => [d.id, d]));
   // #157: vid JA lämnar Idag och Att göra den grupperade menyn. Sidorna
