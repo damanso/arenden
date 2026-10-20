@@ -35,11 +35,11 @@ import {
   listaEtikettnamn,
   listaProjektnamn,
   oppnaMedSpar,
-  sokArenden,
+  sokArendenIVy,
   type Arende,
   type Hog,
   type MittArende,
-  type Soktraff,
+  type SoktraffIVy,
 } from '../../services/arenden.js';
 import {
   bilagorFor,
@@ -70,6 +70,8 @@ import {
   sakerUrl,
   sida,
   statuschip,
+  statusord,
+  statusordForTyp,
   tomtLage,
   verbText,
 } from '../vy/mall.js';
@@ -108,14 +110,6 @@ const TAK_ARENDEN = 5000;
 const TAK_SOK = 200;
 const TAK_DIGEST = 500;
 const TAK_FASETTER = 40;
-
-const STATE_TEXT: Record<StateTyp, string> = {
-  backlog: 'Backlog',
-  unstarted: 'Todo',
-  started: 'Pågår',
-  completed: 'Klart',
-  canceled: 'Avbrutet',
-};
 
 // ---- Indata ---------------------------------------------------------------
 
@@ -193,11 +187,11 @@ function arendeKort(a: Arende): string {
   );
 }
 
-function traffKort(t: Soktraff): string {
+function traffKort(t: SoktraffIVy): string {
   return (
     `<a class=kort href="${esc(arendeUrl(t.identifier))}">` +
     `<b>${esc(t.identifier)} — ${esc(t.title)}</b>` +
-    `<span class=meta>${statuschip(t.state_typ, STATE_TEXT[t.state_typ])}</span>` +
+    `<span class=meta>${statuschip(t.state_typ, t.state_namn)}</span>` +
     metarad([
       t.traff_i === 'kommentar' ? 'träff i kommentar' : 'träff i ärendetexten',
     ]) +
@@ -257,6 +251,10 @@ function handelseDetalj(verb: string, payload: unknown): string {
   const fran = bytesvarde(p.fran);
   const till = bytesvarde(p.till);
   if (fran === null || till === null) return '';
+  // FR-37, B-14 (Story 2.1): bara statusbytets värden är tillståndsnamn och
+  // översätts. Andra verbs värden är titlar, datum och namn, och de visas som
+  // de är lagrade — en titel som råkar heta som ett tillstånd är ingen status.
+  if (verb === 'andrade_status') return ` ${esc(statusord(fran))} → ${esc(statusord(till))}`;
   return ` ${esc(fran)} → ${esc(till)}`;
 }
 
@@ -348,7 +346,7 @@ vyRouter.get('/', async (req, res) => {
   const perTyp = new Map<string, number>();
   for (const a of resultat.arenden) perTyp.set(a.state_typ, (perTyp.get(a.state_typ) ?? 0) + 1);
   const summering = OPPNA.filter((t) => perTyp.has(t))
-    .map((t) => `${STATE_TEXT[t]}: ${perTyp.get(t) ?? 0}`)
+    .map((t) => `${statusordForTyp(t)}: ${perTyp.get(t) ?? 0}`)
     .join(' · ');
 
   const kropp =
@@ -668,7 +666,7 @@ vyRouter.get('/sok', async (req, res) => {
   const behoverLista = harArendefilter || (q === undefined && aktor !== undefined);
 
   const data = await withTransaction(async (client) => ({
-    traffar: q === undefined ? null : await sokArenden(client, TENANT_ID, q, TAK_SOK),
+    traffar: q === undefined ? null : await sokArendenIVy(client, TENANT_ID, q, TAK_SOK),
     // Status/etikett/projekt är SAMMA filter som list_issues.
     filtrerade: behoverLista
       ? (
@@ -731,7 +729,7 @@ vyRouter.get('/sok', async (req, res) => {
 
   const aktiva = AKTIVA_NAMN.filter(({ nyckel }) => val[nyckel] !== undefined)
     .map(({ nyckel, namn }) => {
-      const varde = nyckel === 'status' ? STATE_TEXT[status!] : val[nyckel]!;
+      const varde = nyckel === 'status' ? statusordForTyp(status!) : val[nyckel]!;
       return (
         `<a class="fasett aktiv" aria-current=true ` +
         `href="${esc(sokLank(val, nyckel, undefined))}">${esc(namn)}: ${esc(varde)} ×</a>`
@@ -764,7 +762,7 @@ vyRouter.get('/sok', async (req, res) => {
     fasettgrupp(
       'Status',
       'status',
-      StateTypSchema.options.map((t) => ({ varde: t, text: STATE_TEXT[t] })),
+      StateTypSchema.options.map((t) => ({ varde: t, text: statusordForTyp(t) })),
       val,
       StateTypSchema.options.length,
     ) +

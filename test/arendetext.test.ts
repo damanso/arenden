@@ -394,7 +394,7 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
 
     expect(historik).toContain('Före → Efter');
     // POSITIV KONTROLL: raden finns. Utan den bevisar frånvaron nedan inget.
-    expect(historik).toContain('rattade beskrivning');
+    expect(historik).toContain('rättade beskrivningen');
     // Det som hålet handlar om: brödtexten får inte hamna på en historikrad.
     expect(historik).not.toContain('Kort text. → ');
     expect(historik).not.toContain('y'.repeat(200));

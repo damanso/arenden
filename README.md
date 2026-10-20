@@ -467,6 +467,20 @@ Regeln står ordagrant som i regelkällan:
 | FR-32 (tillståndsrutten före koden) | den slutna listan `VANTANDE` med `POST /vy/arende/:identifier/tillstand`, med samma kategori, ägare och verifiering som `POST /vy/arende/:identifier/ratta`; en byggd rutt måste lämna listan | `kontrakt/navigation.v1.json` (genererad i valvet) | `test/adresskontrakt.test.ts` (AK 1) |
 | FR-32, FR-15 (menyn oförändrad) | `modell()` tar kopian som parameter och läser bara grupper, destinationer och ytor, aldrig rutter | `src/http/vy/navigation.ts` (`modell`) | `test/adresskontrakt.test.ts` (AK 2) |
 
+### FR-37 — statusord och händelseverb på svenska (Story 2.1)
+
+Ytan visar tillstånd och händelser på svenska (B-14). De lagrade tillståndsnamnen är Linears (`STANDARD_STATES` i `src/services/team.ts`) och står kvar i databasen, eftersom händelserna är append-only och importen mappar arkivets namn rakt av. Vyn översätter dem vid visning genom tabellen `STATUSORD` i `src/http/vy/mall.ts`, med en rad per typ: Backlog blir Ej planerat, Todo blir Att göra, In Progress blir Pågår, Done blir Klart och Canceled blir Avbrutet. `statuschip()` översätter det lagrade namnet och tar klassen ur typen, och summeringsraden på `/vy`, statusfasetten och raden Aktiva filter på `/vy/sok` tar ordet för typen ur samma rad. Historikens rad för `andrade_status` översätts på samma sätt, och bara den, eftersom andra verbs värden är titlar och namn. Ett namn som inte står i tabellen visas som det är lagrat. Sökträffarna i vyn läser det lagrade namnet genom `sokArendenIVy()` i `src/services/arenden.ts`, och `search_issues` svarar med samma sex fält som förut. Varje verb som koden skriver har en svensk text i `VERB`. Provet läser verben ur källkoden, i de filer som väljer ett verb åt händelseloggen, och fäller ett verb utan text med verbets namn.
+
+Regeln står ordagrant som i regelkällan:
+
+- Statusord och händelseverb i vyn (FR-37, B-14, Story 2.1): ett tillstånd visas i vyn bara genom tabellen `STATUSORD` i `src/http/vy/mall.ts`, som har en rad per typ och översätter de fem standardnamnen: Backlog blir Ej planerat, Todo blir Att göra, In Progress blir Pågår, Done blir Klart och Canceled blir Avbrutet. Ett lagrat namn visas genom `statusord()` och en typ genom `statusordForTyp()`, som läser samma rad. Ett namn som inte står i tabellen visas som det är lagrat, och chippets klass kommer ur typen. Översättningen sker bara vid visning, och `workflow_states.namn` och händelsernas payload ändras aldrig för den. Varje verb som koden skriver har en svensk visningstext i `VERB` i samma fil, och den som inför ett nytt verb skriver texten i samma diff. Provet `test/svenska-yta.test.ts` läser verben ur källkoden i en sluten lista filer och skrivsätt och fäller ett verb utan text. Ett nytt skrivsätt läggs i provets lista. `verbText()` slår upp texten med `Object.hasOwn()`, och reservvägen `verb.replace(/_/g, ' ')` står kvar som sista skydd.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-37 (statusord) | en tabell `STATUSORD` med en rad per typ; `statusord()` och `statusordForTyp()` läser samma rad; `statuschip()` översätter, och klassen kommer ur typen; ett okänt namn visas som det är lagrat | `src/http/vy/mall.ts` (`STATUSORD`, `statusord`, `statusordForTyp`, `statuschip`), `src/http/routes/vy.ts`, `src/services/arenden.ts` (`sokArendenIVy`) | `test/svenska-yta.test.ts` (AK 1, AK 2) |
+| FR-37 (inga engelska standardnamn) | översättningen sker bara vid visning, och `STATE_TEXT` finns inte; databasens namn och händelsernas payload är oförändrade | `src/http/vy/mall.ts`, `src/http/routes/vy.ts` | `test/svenska-yta.test.ts` (AK 3, AK 4) |
+| FR-37 (händelseverb) | varje verb som koden skriver har en post i `VERB`; provet läser verben ur en sluten lista filer och skrivsätt; `verbText()` slår upp med `Object.hasOwn()`, och reservvägen står kvar | `src/http/vy/mall.ts` (`VERB`, `verbText`) | `test/svenska-yta.test.ts` (AK 5, AK 6) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

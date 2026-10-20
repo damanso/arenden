@@ -72,7 +72,7 @@ describe('Etapp 2a KRAV-1..10: Davids läsvy', () => {
     expect(svar.text).toContain('ILT-Education · LOC');
     expect(svar.text).toMatch(/öppna ärenden i \d+ grupper/);
     // Status, prio och due syns på korten.
-    expect(svar.text).toContain('Backlog');
+    expect(svar.text).toContain('Ej planerat');
     expect(svar.text).toContain('ingen prio');
   });
 
@@ -101,7 +101,7 @@ describe('Etapp 2a KRAV-1..10: Davids läsvy', () => {
 
     expect(svar.status).toBe(200);
     expect(svar.text).toContain(fixtur.titel);
-    expect(svar.text).toContain('Backlog');
+    expect(svar.text).toContain('Ej planerat');
     expect(svar.text).toContain('ILT-Education');
     expect(svar.text).toContain('Väntar-extern');
     expect(svar.text).toContain('<strong>Väntar på:</strong> Daniel');

@@ -769,22 +769,31 @@ export interface Soktraff {
   traff_i: string;
 }
 
+/** Sökträffen i vyn: chippet visar det lagrade namnet (FR-37, Story 2.1 AK 2). */
+export interface SoktraffIVy extends Soktraff {
+  state_namn: string;
+}
+
 /**
  * KRAV-9/11: fritext över ärenden OCH kommentarer, rankad. Ett ord som bara
  * finns i en kommentar ska hitta ärendet — därför OR:as issues.sokvektor med en
  * EXISTS över comments.sokvektor, och rangen är den bästa av de två.
+ *
+ * Den ENDA sökfrågan: sokArenden() och sokArendenIVy() läser båda härifrån, så
+ * att ordningen bara bestäms på ett ställe (Story 2.5 ändrar den här).
  */
-export async function sokArenden(
+async function sokTraffar(
   client: PoolClient,
   tenantId: string,
   fraga: string,
   limit: number,
-): Promise<Soktraff[]> {
-  const { rows } = await client.query<Soktraff>(
+): Promise<SoktraffIVy[]> {
+  const { rows } = await client.query<SoktraffIVy>(
     `SELECT i.id,
             t.key || '-' || i.sequence_number AS identifier,
             i.title,
             s.typ AS state_typ,
+            s.namn AS state_namn,
             GREATEST(
               ts_rank(i.sokvektor, q.tsq),
               COALESCE((SELECT max(ts_rank(c.sokvektor, q.tsq)) FROM comments c
@@ -806,6 +815,41 @@ export async function sokArenden(
     [tenantId, fraga, limit],
   );
   return rows;
+}
+
+/**
+ * search_issues svarar med exakt de sex fälten, som förut (test/sok-nummer.test.ts
+ * F18): det lagrade namnet är vyns, inte API:ts, så träffen byggs om utan det.
+ */
+export async function sokArenden(
+  client: PoolClient,
+  tenantId: string,
+  fraga: string,
+  limit: number,
+): Promise<Soktraff[]> {
+  const traffar = await sokTraffar(client, tenantId, fraga, limit);
+  return traffar.map((t) => ({
+    id: t.id,
+    identifier: t.identifier,
+    title: t.title,
+    state_typ: t.state_typ,
+    rang: t.rang,
+    traff_i: t.traff_i,
+  }));
+}
+
+/**
+ * Vyns sökning (FR-37, B-14, Story 2.1 AK 2): träffen bär det lagrade
+ * tillståndsnamnet, så att chippet visar t.ex. 'Granskning' i stället för
+ * typens ord. Samma fråga som sokArenden(), så ordningen ändras bara på ett ställe.
+ */
+export async function sokArendenIVy(
+  client: PoolClient,
+  tenantId: string,
+  fraga: string,
+  limit: number,
+): Promise<SoktraffIVy[]> {
+  return sokTraffar(client, tenantId, fraga, limit);
 }
 
 export interface Nummerfraga {

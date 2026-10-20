@@ -10,6 +10,7 @@
 //      ur fri text — och ingen rad lämnas omärkt.
 
 import type { Aktor } from '../../lib/aktor.js';
+import type { StateTyp } from '../../lib/validation.js';
 import { modell, type Modell, type Post } from './navigation.js';
 
 const ERSATTNING: Record<string, string> = {
@@ -962,10 +963,47 @@ export function sida(
 }
 
 /**
+ * FR-37, B-14 (Story 2.1): de lagrade tillståndsnamnen är Linears och står kvar
+ * i databasen — händelserna är append-only, och importen mappar arkivets namn
+ * rakt av. Ytan översätter dem därför vid visning, och bara här. En rad per
+ * TYP, inte per namn: Record över StateTyp gör att tsc kräver alla fem, och
+ * chippet (som slår upp det lagrade namnet) och summeringen (som slår upp
+ * typen) läser samma rad och kan aldrig säga olika ord.
+ */
+export const STATUSORD: Record<StateTyp, { namn: string; ord: string }> = {
+  backlog: { namn: 'Backlog', ord: 'Ej planerat' },
+  unstarted: { namn: 'Todo', ord: 'Att göra' },
+  started: { namn: 'In Progress', ord: 'Pågår' },
+  completed: { namn: 'Done', ord: 'Klart' },
+  canceled: { namn: 'Canceled', ord: 'Avbrutet' },
+};
+
+// Uppslaget går bara över tabellens fem rader, så ett ärvt namn som
+// 'toString' aldrig blir en träff (samma lärdom som FELBESKED, Story 2.2).
+const ORD_FOR_NAMN = new Map<string, string>(
+  Object.values(STATUSORD).map((r): [string, string] => [r.namn, r.ord]),
+);
+
+/**
+ * Ordet för ett LAGRAT namn: exakt och skiftlägeskänsligt. Ett namn som inte
+ * står i tabellen (t.ex. ett importerat 'Granskning') visas som det är lagrat —
+ * uppslaget hittar aldrig på ett tillstånd (Story 2.1 AK 2).
+ */
+export function statusord(namn: string): string {
+  return ORD_FOR_NAMN.get(namn) ?? namn;
+}
+
+/** Ordet för en TYP — summeringen, statusfasetten och raden Aktiva filter. */
+export function statusordForTyp(typ: StateTyp): string {
+  return STATUSORD[typ].ord;
+}
+
+/**
  * Designkontraktet: status ar en CHIP, inte lopande text. Klassen kommer ur
- * state_typ (maskinvardet), ORDET ur state_namn — sa uppslaget aldrig kan
- * hitta pa ett tillstand som inte finns, och texten aldrig slutar vara den
- * arkivet faktiskt bar.
+ * state_typ (maskinvardet), ORDET ur det lagrade namnet genom statusord() —
+ * som bara oversatter de fem standardnamnen (FR-37, B-14, Story 2.1). Ett
+ * okant namn visas som det ar lagrat, sa uppslaget aldrig kan hitta pa ett
+ * tillstand som inte finns, och texten aldrig slutar vara den arkivet bar.
  *
  * Mappningen ar husets tre utfall: klart ar gront, avbrutet rott, pagaende
  * bar accenten, och det som annu inte borjat star dampat. Ett OKANT state_typ
@@ -981,7 +1019,7 @@ const STATE_CHIP: Record<string, string> = {
 
 export function statuschip(stateTyp: string, stateNamn: string): string {
   const klass = STATE_CHIP[stateTyp] ?? 'chip--muted';
-  return `<span class="chip ${klass}">${esc(stateNamn)}</span>`;
+  return `<span class="chip ${klass}">${esc(statusord(stateNamn))}</span>`;
 }
 
 // ---- Proveniens (KRAV-5, AI Act art. 50) ----------------------------------
@@ -1050,7 +1088,13 @@ export function prioNamn(priority: number | null): string {
   return priority === null ? 'ingen prio' : (PRIO[priority] ?? `prio ${priority}`);
 }
 
-const VERB: Record<string, string> = {
+/**
+ * Visningstexten för varje verb som koden skriver. Exporterad för provet
+ * (FR-37, B-14, Story 2.1 AK 5): test/svenska-yta.test.ts läser verben ur
+ * källkoden och jämför dem med tabellen, så ett nytt verb utan text fäller
+ * npm run check med verbets namn.
+ */
+export const VERB: Readonly<Record<string, string>> = {
   skapade_arende: 'skapade ärendet',
   importerade_arende: 'importerade ärendet',
   andrade_status: 'ändrade status',
@@ -1083,10 +1127,45 @@ const VERB: Record<string, string> = {
   aterkallade_nyckel: 'återkallade en nyckel',
   nyckeln_var_redan_aterkallad: 'nyckeln var redan återkallad',
   skapade_aktorsidentitet: 'utfärdade en aktörsidentitet',
+  // FR-37 (Story 2.1): UX-specifikationens sjutton, Visningstexter för alla verb.
+  andrade_titel: 'rättade titeln',
+  rattade_beskrivning: 'rättade beskrivningen',
+  satte_etikett: 'satte en etikett',
+  andrade_kundkoppling: 'ändrade kundkopplingen',
+  registrerade_atagande: 'registrerade ett åtagande',
+  tog_over_atagande: 'tog över åtagandet',
+  andrade_atagande: 'ändrade åtagandet',
+  hindrade_atagande: 'markerade åtagandet som hindrat',
+  redovisade_resultat: 'redovisade resultatet',
+  avslutade_atagande: 'avslutade åtagandet',
+  aterppnade_atagande: 'återöppnade åtagandet',
+  kopplade_beslut: 'kopplade ett beslut',
+  skrev_arbetsmoment: 'loggade ett arbetsmoment',
+  registrerade_insats: 'registrerade en insats',
+  besvarade_insats: 'besvarade en insats',
+  skot_upp_insats: 'sköt upp en insats',
+  aterkallade_insats: 'återkallade en insats',
+  // FR-37 (Story 2.1): no-op-verben och importens kommentarsverb (K-10). De
+  // står inte i UX-specifikationen; texterna följer tabellens egna mönster för
+  // samma slags verb (som etiketten_fanns_inte, namnet_oforandrat, lank_fanns_redan).
+  etiketten_fanns_redan: 'etiketten fanns redan på ärendet',
+  kundkoppling_oforandrad: 'lämnade kundkopplingen oförändrad',
+  atagandet_fanns_redan: 'åtagandet fanns redan',
+  beslutet_var_redan_kopplat: 'beslutet var redan kopplat',
+  behandlade_svarsversion: 'behandlade en svarsversion',
+  svarsversionen_var_behandlad: 'svarsversionen var redan behandlad',
+  insatsen_fanns_redan: 'insatsen fanns redan',
+  importerade_kommentar: 'importerade en kommentar',
 };
 
+/**
+ * Verbets egen post, annars reservvägen: ett verb utan text blir aldrig en tom
+ * rad. Object.hasOwn gör att ett ärvt namn som 'toString' aldrig tas för en
+ * post (samma uppslag som felbesked() i skrivning.ts).
+ */
 export function verbText(verb: string): string {
-  return VERB[verb] ?? verb.replace(/_/g, ' ');
+  const text = Object.hasOwn(VERB, verb) ? VERB[verb] : undefined;
+  return text ?? verb.replace(/_/g, ' ');
 }
 
 // ---- K-3: bilagor och relationer -------------------------------------------
