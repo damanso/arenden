@@ -7,6 +7,8 @@
 //    för tyst drift.
 //  - Advisory lock — två samtidiga körningar kan inte kapplöpa.
 //  - Varje migration körs i en egen transaktion.
+//  - VÄGRAR köra som rollen "app" (APP_ROLL), som roll eller som inloggningsroll, före allt annat, och
+//    returnerar rollen som körde, som CLI-läget skriver ut (FR-38, B-11, Story 7.1).
 //
 // OBS: detta är ett CLI som även används av testkoden via `migrate()`. Det läser
 // DATABASE_ADMIN_URL/DATABASE_URL DIREKT ur process.env i CLI-läget (undantaget
@@ -22,6 +24,11 @@ import pg from 'pg';
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations/', import.meta.url));
 // Konstant nyckel för pg_advisory_lock, unik för det här systemet.
 const ADVISORY_LOCK_KEY = 502_874_311;
+// Rollen som migrations/0001_grund.sql skapar: den enda roll appen får köra som och den roll
+// migrationerna aldrig kör som (FR-38, B-11, Story 7.1). Konstanten står här, eftersom den här modulen
+// inte får kräva appens konfiguration och därför inte kan importera poolen; poolen importerar den
+// härifrån, så att det finns en enda källa.
+export const APP_ROLL = 'app';
 
 export interface MigrationFile {
   version: number;
@@ -71,6 +78,8 @@ export async function loadMigrations(dir = DEFAULT_MIGRATIONS_DIR): Promise<Migr
 export interface MigrateResult {
   applied: string[];
   alreadyApplied: number;
+  /** Rollen som körde (`current_user`), för CLI-utskriften och provet (FR-38). */
+  roll: string;
 }
 
 export async function migrate(
@@ -81,6 +90,23 @@ export async function migrate(
   const client = new pg.Client({ connectionString: adminUrl });
   await client.connect();
   try {
+    // FR-38, B-11, Story 7.1: rollen prövas FÖRST. En vägran tar inget lås, skapar och läser inte
+    // ledgern och laddar inga filer, så den rör ingenting före första migrationen. Både rollen och
+    // inloggningsrollen prövas: current_user kan sessionen sätta själv (`-c role=…` i adressen), så en
+    // inloggning som app med en annan roll vägras också.
+    const { rows: rollrader } = await client.query<{ roll: string; inloggning: string }>(
+      'SELECT current_user AS roll, session_user AS inloggning',
+    );
+    const rollrad = rollrader[0];
+    if (!rollrad) throw new Error('kunde inte fastställa migrationsrollen');
+    const { roll, inloggning } = rollrad;
+    if (roll === APP_ROLL || inloggning === APP_ROLL) {
+      throw new Error(
+        `migrationer körs som ägarroll via DATABASE_ADMIN_URL, aldrig som rollen "${APP_ROLL}" (FR-38) — ` +
+          `anslutningen är rollen "${roll}", inloggad som "${inloggning}"`,
+      );
+    }
+
     await client.query('SELECT pg_advisory_lock($1)', [ADVISORY_LOCK_KEY]);
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -145,7 +171,7 @@ export async function migrate(
       applied.push(migration.filename);
     }
 
-    return { applied, alreadyApplied: appliedRows.rowCount ?? 0 };
+    return { applied, alreadyApplied: appliedRows.rowCount ?? 0, roll };
   } finally {
     await client.end(); // släpper advisory-låset
   }
@@ -164,6 +190,7 @@ if (isCli) {
   try {
     const result = await migrate(adminUrl, { log: (msg) => console.log(msg) });
     console.log(`OK: ${result.applied.length} migration(er) kördes, ${result.alreadyApplied} var redan körda`);
+    console.log(`Migrationerna kördes som rollen "${result.roll}"`);
   } catch (err) {
     console.error(`FATAL: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
