@@ -142,12 +142,18 @@ export interface RegistreraIn {
 }
 
 /**
- * Registrerar en insats. IDEMPOTENT PÅ TVÅ SÄTT, och båda behövs:
+ * Registrerar en insats. IDEMPOTENT PÅ TVÅ SÄTT OCH ATOMÄR, och alla tre behövs:
  *
  *   1. Samma stopp_id ger samma insats tillbaka — en omkörning skapar inget nytt.
  *   2. En källa som redan hör till EN ANNAN insats kopplas inte om i tysthet;
  *      anropet får veta det. Att tyst flytta en källa hade gjort en tappad
  *      koppling osynlig, och tappade kopplingar är hela problemet.
+ *   3. Registreringen är ATOMÄR (FR-27, B-09, Story 6.2): raden skapas med
+ *      INSERT … ON CONFLICT (tenant_id, stopp_id) DO NOTHING RETURNING, och kommer
+ *      ingen rad tillbaka läses den befintliga om. En SELECT före INSERT räcker
+ *      inte: en rad som en annan transaktion lagt in men inte committat syns inte
+ *      och går inte att låsa, så två samtidiga registreringar av samma nya stopp
+ *      gick båda till INSERT, den andra fick 23505 och svaret blev 409.
  */
 export async function registreraInsats(
   client: PoolClient,
@@ -172,31 +178,41 @@ export async function registreraInsats(
     issueId = rows[0].id;
   }
 
-  const { rows: befintlig } = await client.query<{ id: string }>(
-    'SELECT id FROM insatser WHERE tenant_id = $1 AND stopp_id = $2 FOR UPDATE',
-    [tenantId, input.stopp_id],
+  // Ingen läsning före INSERT avgör om stoppet finns. Möter ON CONFLICT en rad som en
+  // pågående transaktion lagt in väntar satsen ut den; committar den kommer ingen rad
+  // tillbaka, och nästa sats (READ COMMITTED) ser den committade raden.
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO insatser
+       (tenant_id, stopp_id, issue_id, typ, tillhor, utfall, begard_handling,
+        blockeringsgrund, belagg, frist, handlingskontrakt)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb)
+     ON CONFLICT (tenant_id, stopp_id) DO NOTHING
+     RETURNING id`,
+    [
+      tenantId, input.stopp_id, issueId, input.typ, input.tillhor,
+      input.utfall, input.begard_handling, input.blockeringsgrund,
+      JSON.stringify(input.belagg ?? []), input.frist ?? null,
+      JSON.stringify(input.handlingskontrakt),
+    ],
   );
 
   let id: string;
   let nyskapad = false;
-  if (befintlig[0]) {
-    id = befintlig[0].id;
-  } else {
-    const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO insatser
-         (tenant_id, stopp_id, issue_id, typ, tillhor, utfall, begard_handling,
-          blockeringsgrund, belagg, frist, handlingskontrakt)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb)
-       RETURNING id`,
-      [
-        tenantId, input.stopp_id, issueId, input.typ, input.tillhor,
-        input.utfall, input.begard_handling, input.blockeringsgrund,
-        JSON.stringify(input.belagg ?? []), input.frist ?? null,
-        JSON.stringify(input.handlingskontrakt),
-      ],
-    );
-    id = rows[0]!.id;
+  const ny = rows[0];
+  if (ny) {
+    id = ny.id;
     nyskapad = true;
+  } else {
+    // Stoppet fanns redan: den befintliga raden returneras oförändrad. FOR UPDATE som
+    // förut, så att registreringen väntar ut ett pågående svar, en uppskjutning eller
+    // en återkallelse (de låser med las(…, true)).
+    const { rows: befintlig } = await client.query<{ id: string }>(
+      'SELECT id FROM insatser WHERE tenant_id = $1 AND stopp_id = $2 FOR UPDATE',
+      [tenantId, input.stopp_id],
+    );
+    const rad = befintlig[0];
+    if (!rad) throw new NotFoundError('insats');
+    id = rad.id;
   }
 
   // Källorna kopplas en och en. En källa som redan tillhör en ANNAN insats

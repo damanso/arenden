@@ -495,6 +495,19 @@ Regeln står ordagrant som i regelkällan:
 | FR-37 (bilagor och markdownlänkar) | `bilageRad()` och `ersatt()` frågar `linearAdress()` före sitt `href`; med nummer en intern länk genom `esc()` och metan «tidigare Linear-länk», utan nummer ren text med metan «Linear-länk — Linear är avvecklat» | `src/http/routes/vy.ts` (`bilageRad`), `src/http/vy/markdown.ts` (`ersatt`, `linearlank`) | `test/linear-lankar.test.ts` (AK 1, AK 2, AK 4) |
 | FR-37 (ingen sida under `/vy`, datat orört) | vylagret bygger ett `href` ur en adress i data på två ställen, och båda frågar klassningen; omskrivningen sker vid visning i rena funktioner | `src/http/routes/vy.ts`, `src/http/vy/markdown.ts` | `test/linear-lankar.test.ts` (AK 4, AK 5) |
 
+### FR-27 — samma stopp blir samma insats, också samtidigt (Story 6.2)
+
+Insatslagret samlar de stopp som kräver en människa till en identitet (FR-27, B-09). `registreraInsats` i `src/services/insats.ts` skapar insatsen med `INSERT … ON CONFLICT (tenant_id, stopp_id) DO NOTHING RETURNING id`, och kommer ingen rad tillbaka läses den befintliga raden om med `FOR UPDATE`. Ingen SELECT före INSERT avgör om raden finns: en rad som en annan transaktion ännu inte har committat syns inte för en sådan SELECT, och då fick den andra registreringen unikhetsfelet och svaret 409. Nu ger samtidiga registreringar av samma stopp samma insats och svaret 200, den första med `registrerade_insats` och resten med `insatsen_fanns_redan`. Källorna kopplas med `ON CONFLICT … DO NOTHING` mot primärnyckeln `insats_kallor_unik`, och en källa som hör till en annan insats flyttas aldrig utan rapporteras som krock. Ett svar och en uppskjutning kräver en människonyckel (`kraver_manniska`), och CHECK-villkoret `insatser_svar_har_aktor` fäller ett svar utan aktör, också för ägarrollen. En registrering utan källor, med tom eller utelämnad lista, får `kalla_saknas` ur tjänstens enda grind. Provet `test/insats.test.ts` prövar allt genom hela stacken mot testdatabasen, med en konkurrent som ägarrollen håller okommitterad och med sex samtidiga anrop.
+
+- Skapa-om-inte-finns (FR-27, B-09, Story 6.2): en rad med en unik nyckel skapas med `INSERT … ON CONFLICT (<nyckeln>) DO NOTHING RETURNING` och läses om när ingen rad kom tillbaka; ingen SELECT före INSERT avgör om raden finns. `registreraInsats` i `src/services/insats.ts` gör så för `(tenant_id, stopp_id)`, så att samtidiga registreringar av samma stopp ger samma insats och aldrig 409.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-27, ett stopp = en insats | `INSERT … ON CONFLICT (tenant_id, stopp_id) DO NOTHING RETURNING id` och återläsning med `FOR UPDATE`; ingen SELECT före INSERT | `src/services/insats.ts` (`registreraInsats`) | `test/insats.test.ts` (Story 6.2 AK 1, AK 2) |
+| FR-27, ett källobjekt hör till en insats | primärnyckeln `insats_kallor_unik`; källornas `ON CONFLICT … DO NOTHING`, och en krock rapporteras i stället för att källan flyttas | `migrations/0015_insats.sql`, `src/services/insats.ts` (`registreraInsats`) | `test/insats.test.ts` (Story 6.2 AK 3) |
+| FR-27, svaret kräver människa | `kraver_manniska` först i `besvaraInsats` och `skjutUppInsats`; CHECK `insatser_svar_har_aktor` | `src/services/insats.ts`, `migrations/0015_insats.sql` | `test/insats.test.ts` (Story 6.2 AK 4) |
+| FR-27, tillhörighet och källa | `tillhor` bara `agare` eller `anvandare`; en tom eller utelämnad källista når tjänstens enda grind `kalla_saknas` | `src/actions/registry.ts` (`registrera_insats`), `src/services/insats.ts` | `test/insats.test.ts` (Story 6.2 AK 5) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

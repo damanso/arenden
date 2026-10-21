@@ -1219,6 +1219,8 @@ export const ACTIONS: RegistreradAction[] = [
             underlag: safeText(600).optional(),
           })
           .strict(),
+        // Källistan prövas på ETT ställe, grinden kalla_saknas i registreraInsats (FR-27,
+        // Story 6.2 AK 5): en tom och en utelämnad lista når den båda som en tom lista.
         kallor: z
           .array(
             z
@@ -1231,7 +1233,7 @@ export const ACTIONS: RegistreradAction[] = [
               })
               .strict(),
           )
-          .min(1),
+          .default([]),
       })
       .strict(),
     handler: async (ctx, input) => {
