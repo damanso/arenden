@@ -19,6 +19,13 @@
 // varje skrivning går genom skrivOchJamfor och lämnar sin ändring till
 // händelseraden (andring, över hela åtagandets fältlista),
 // och återöppningen lämnar dessutom det den tar bort i tidigare.
+//
+// Och ett oavslutat åtagande har alltid nasta och foljs_upp (FR-16 delkrav 2 och 6,
+// B-07; Story 5.1). kravOppetSteg är invariantens enda definition. Den står först i
+// skriv, den enda funktion som skriver ett åtagande, och i andraAtagande före skälet,
+// så att skal_saknas fortfarande prövas sist. Invarianten är ingen CHECK: rader som
+// skrivits förbi API:t mäts av matAtagandebrott, som bara läser, och rättas bara med
+// andra_atagande.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
@@ -198,6 +205,29 @@ function kravRevision(rad: Rad, forvantad: number | undefined): void {
   }
 }
 
+/**
+ * FR-16 delkrav 2 och 6, B-07 (Story 5.1): ett oavslutat åtagande har alltid ett nästa steg och
+ * en uppföljningstid. Invariantens ENDA definition, och de två felkoderna står bara här. Den står
+ * först i skriv(), så att ingen åtgärd kan skriva ett öppet åtagande utan båda. De stängda lägena
+ * nollställer båda med flit och släpps igenom. nasta_saknas prövas först: båda saknade ger den.
+ */
+export function kravOppetSteg(
+  lage: Lage,
+  nasta: Nasta | null | undefined,
+  foljsUpp: Date | string | null | undefined,
+): void {
+  if (lage === 'genomfort' || lage === 'avslutat') return;
+  if (!nasta) {
+    throw new BadRequestError('nasta_saknas', 'ett oavslutat åtagande måste ha ett nästa steg');
+  }
+  if (!foljsUpp) {
+    throw new BadRequestError(
+      'uppfoljning_saknas',
+      'ett åtagande utan uppföljningstid blir liggande utan att någon märker det',
+    );
+  }
+}
+
 function tillAtagande(rad: Rad): Atagande {
   return {
     identifier: rad.identifier,
@@ -255,6 +285,10 @@ async function skriv(
     hojRevision?: boolean;
   },
 ): Promise<void> {
+  // FR-16 delkrav 2 och 6, B-07 (Story 5.1): vakten står före varje fråga och prövar exakt den
+  // uppföljningstid som skrivs ($5). Ett avvisat anrop har alltså inte skrivit något.
+  const foljsUpp = falt.foljsUpp === undefined ? rad.atagande_foljs_upp : falt.foljsUpp;
+  kravOppetSteg(falt.lage, falt.data.nasta, foljsUpp);
   const tillhor = tillhorAv(falt.data.nasta ?? null);
   const satsUtforare =
     falt.utforare === undefined
@@ -267,7 +301,7 @@ async function skriv(
     falt.lage,
     tillhor,
     JSON.stringify(falt.data),
-    falt.foljsUpp === undefined ? rad.atagande_foljs_upp : falt.foljsUpp,
+    foljsUpp,
   ];
   if (falt.utforare) params.push(falt.utforare.typ, falt.utforare.namn);
   await client.query(
@@ -316,15 +350,7 @@ export async function registreraAtagande(
   if (!input.grund.length) {
     throw new BadRequestError('grund_saknas', 'ett åtagande utan grund är en gissning');
   }
-  if (input.nasta === null && input.foljs_upp !== null) {
-    throw new BadRequestError('nasta_saknas', 'ett oavslutat åtagande måste ha ett nästa steg');
-  }
-  if (input.nasta !== null && !input.foljs_upp) {
-    throw new BadRequestError(
-      'uppfoljning_saknas',
-      'ett åtagande utan uppföljningstid blir liggande utan att någon märker det',
-    );
-  }
+  // Nästa steg och uppföljningstid prövas av vakten i skriv() (Story 5.1), inte här.
   const data: AtagandeJson = {
     grund: input.grund,
     nasta: input.nasta,
@@ -480,7 +506,15 @@ export async function andraAtagande(
       'ett stängt åtagande ändras genom att återöppnas med nytt belägg, inte genom att skrivas om',
     );
   }
-  // Story 5.1:s uppfoljning_saknas står, när den byggs, HÄR, före skälet.
+  // FR-16 delkrav 2 och 6, B-07 (Story 5.1): värdena som ändringen skulle skriva prövas här,
+  // före skälet. Vakten i skriv() fäller samma anrop, men först efter skal_saknas, och 5.2 AK 3
+  // kräver att skal_saknas prövas efter uppfoljning_saknas. Radens värden gäller för det som
+  // inte ändras, så en rad som redan bryter kan bara ändras när det saknade fältet förs in.
+  kravOppetSteg(
+    lage,
+    input.nasta ?? rad.atagande?.nasta ?? null,
+    input.foljs_upp !== undefined ? input.foljs_upp : rad.atagande_foljs_upp,
+  );
   // FR-16 delkrav 6, B-07 (Story 5.2 AK 3): en ändring utan ny grund och utan nytt
   // nästa steg bär inget eget skäl och kräver `skal`. Prövas SIST bland reglerna,
   // så att varje annan regel ger sin egen felkod. utathandling_kringgas kan bara
@@ -897,4 +931,47 @@ export async function listaAtaganden(
     params,
   );
   return rows.map((r) => ({ ...tillAtagande(r), forfallen_uppfoljning: r.forfallen }));
+}
+
+// ------------------------------------------------------------------ mätningen
+
+/** Ett öppet åtagande som bryter mot kravOppetSteg, med de fält som saknas (nasta före foljs_upp). */
+export interface Atagandebrott {
+  identifier: string;
+  lage: Lage;
+  saknas: ('nasta' | 'foljs_upp')[];
+}
+
+/**
+ * B-07 (Story 5.1 AK 7): läsande mätning av öppna åtaganden som saknar nästa steg eller
+ * uppföljningstid, alltså rader som skrivits förbi API:t. Invarianten är ingen CHECK, så de kan
+ * finnas, och de rättas bara med andra_atagande, aldrig här. Inget radlås och ingen skrivning.
+ * jsonb_typeof ger 'null' för JSON-null och SQL-NULL för en saknad nyckel, så IS DISTINCT FROM
+ * 'object' fångar båda; IS NULL hade missat JSON-null.
+ */
+export async function matAtagandebrott(client: PoolClient, tenantId: string): Promise<Atagandebrott[]> {
+  const { rows } = await client.query<{
+    identifier: string;
+    lage: Lage;
+    saknar_nasta: boolean;
+    saknar_foljs_upp: boolean;
+  }>(
+    `SELECT t.key || '-' || i.sequence_number AS identifier,
+            i.atagande_lage AS lage,
+            jsonb_typeof(i.atagande->'nasta') IS DISTINCT FROM 'object' AS saknar_nasta,
+            i.atagande_foljs_upp IS NULL AS saknar_foljs_upp
+       FROM issues i JOIN teams t ON t.id = i.team_id
+      WHERE i.tenant_id = $1
+        AND i.atagande_lage IN ('registrerat','overtaget','hindrat')
+        AND (jsonb_typeof(i.atagande->'nasta') IS DISTINCT FROM 'object'
+             OR i.atagande_foljs_upp IS NULL)
+      ORDER BY t.key, i.sequence_number`,
+    [tenantId],
+  );
+  return rows.map((r) => {
+    const saknas: Atagandebrott['saknas'] = [];
+    if (r.saknar_nasta) saknas.push('nasta');
+    if (r.saknar_foljs_upp) saknas.push('foljs_upp');
+    return { identifier: r.identifier, lage: r.lage, saknas };
+  });
 }
