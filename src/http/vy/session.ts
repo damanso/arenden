@@ -15,8 +15,8 @@
 //       KRAV-10 finns för att omöjliggöra.
 //   (c) Den här: LÄSNING kräver fortfarande ingen nyckel (KRAV-8 orört).
 //       SKRIVNING kräver en session, och en session kan bara födas ur en
-//       giltig API-nyckel via `POST /vy/logga-in`. Aktören härleds alltså ur
-//       en nyckel även i webbläsaren — samma invariant som på /api, samma
+//       giltig människonyckel via `POST /vy/logga-in` (B-03, Story 3.1).
+//       Aktören härleds alltså ur en nyckel även i webbläsaren — samma invariant som på /api, samma
 //       uppslagning (`slaUppAktor`), bara en annan bärare av beviset.
 //
 // Sessionen lever i processens minne. En omstart loggar ut — det är avsiktligt:
@@ -24,6 +24,7 @@
 // än den ger för en yta som en människa öppnar på sin egen maskin.
 import { randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
+import { config } from '../../config.js';
 import type { Aktor } from '../../lib/aktor.js';
 import { ForbiddenError, UnauthenticatedError } from '../../lib/errors.js';
 
@@ -93,9 +94,9 @@ export function lasKaka(req: Request, namn: string): string | undefined {
  * Fel har ar ALDRIG "inloggad". Svarar redovisningen inte far David
  * inloggningssidan - inte tyst atkomst, och inte heller ett pastaende om att
  * han saknar behorighet.
+ * Basadressen läses ur config som all annan konfiguration (B-03).
  */
-export const REDOVISNINGEN =
-  process.env['REDOVISNING_URL'] ?? 'http://127.0.0.1:3001';
+export const REDOVISNINGEN = config.REDOVISNING_URL;
 
 export async function redovisningsAktor(req: Request): Promise<Aktor | null> {
   const kakor = req.headers.cookie;
@@ -163,6 +164,13 @@ export function kravSessionsAktor(req: Request): Aktor {
   const aktor = sessionsAktor(req);
   if (!aktor) throw new UnauthenticatedError();
   return aktor;
+}
+
+/** B-03: andra linjen efter inloggningen, samma felkod som tjänstelagrets insatsspärr. */
+export function kravManniska(aktor: Aktor): void {
+  if (aktor.typ !== 'manniska') {
+    throw new ForbiddenError('kraver_manniska', 'vyns skrivvägar kräver en människa');
+  }
 }
 
 export function sattSessionskaka(res: Response, token: string): void {

@@ -642,18 +642,18 @@ describe('K-1: rättningsvägar, aktörsidentitet och skrivvägen i vyn', () => 
 
   it('aktören tas ur SESSIONENS nyckel — ett aktörsfält i formuläret ignoreras', async () => {
     const { identifier } = await skapaArendeMedKommentar('Stämpelförsök', 'Grundtext.');
-    const agent = await inloggad(agentnyckel);
+    const agent = await inloggad(manniskonyckel);
 
     await agent
       .post(`/vy/arende/${identifier}/kommentar`)
       .type('form')
-      .send({ body: 'En agent skrev detta.', aktor_typ: 'manniska', aktor_namn: 'david mancilla' });
+      .send({ body: 'En människa skrev detta.', aktor_typ: 'agent', aktor_namn: 'hermes' });
 
     const { rows } = await pool.query<{ aktor_typ: string; aktor_namn: string }>(
-      "SELECT aktor_typ, aktor_namn FROM comments WHERE body = 'En agent skrev detta.'",
+      "SELECT aktor_typ, aktor_namn FROM comments WHERE body = 'En människa skrev detta.'",
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ aktor_typ: 'agent', aktor_namn: 'hermes' });
+    expect(rows[0]).toMatchObject({ aktor_typ: 'manniska', aktor_namn: 'david mancilla' });
   });
 
   it('CSRF: främmande Origin nekas med 403 och skriver ingenting', async () => {

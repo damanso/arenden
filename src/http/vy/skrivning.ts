@@ -9,6 +9,7 @@
 //   * Ingen SQL i vylagret. Varje skrivning går via executeAction → actions →
 //     tjänstelager, exakt som /api — samma transaktion, samma proveniens-tvång,
 //     samma valideringsscheman.
+//   * B-03, Story 3.1: bara en människonyckel föder en session i vyn.
 //   * JS-fritt. Formulär + POST + redirect (post/redirect/get). CSP:n sätter
 //     `script-src 'none'` (src/http/app.ts), så ett skript hade ändå inte kört.
 //   * All dynamisk text genom esc() (KRAV-6) och varje aktör genom proveniens()
@@ -31,6 +32,7 @@ import { listaNycklar, slaUppAktor, type NyckelIVy } from '../../services/nyckla
 import { datumtid, esc, proveniens, sida } from './mall.js';
 import {
   avslutaSession,
+  kravManniska,
   kravSammaUrsprung,
   kravSessionsAktor,
   lasKaka,
@@ -85,10 +87,6 @@ export function sakerRetur(varde: unknown): string {
 // URL:en — aldrig fri text. En fri notistext i query-strängen är en sträng som
 // någon annan kan välja, renderad på Davids sida; koderna nedan är en sluten
 // mängd och kan inte bära något annat.
-
-// Redovisningen ager identiteten. Adressen byts har nar ingangen flyttar
-// modulerna till vagar bakom en gemensam /.
-const REDOVISNINGENS_LOGIN = 'https://david-brain.tail743706.ts.net:8444/app/login';
 
 const NOTISER: Record<string, string> = {
   inloggad: 'Du är inloggad. Dina ändringar bär din aktörsidentitet i händelseloggen.',
@@ -256,11 +254,12 @@ function svaraMedFelbesked(req: Request, res: Response, err: AppError): void {
 }
 
 /**
- * Skrivrutternas ram. Tre saker i EXAKT den här ordningen, före varje skrivning:
+ * Skrivrutternas ram. Fyra saker i EXAKT den här ordningen, före varje skrivning:
  *
  *   1. Samma ursprung (CSRF).
  *   2. En session — alltså en aktör som härletts ur en API-nyckel.
- *   3. Först därefter körs actionen.
+ *   3. En människa (B-03, Story 3.1).
+ *   4. Först därefter körs actionen.
  *
  * Fel blir HTML-sidor, inte API:ts JSON: det här är en yta en människa tittar på.
  *
@@ -274,6 +273,7 @@ export function skrivrutt(
     try {
       kravSammaUrsprung(req);
       const aktor = kravSessionsAktor(req);
+      kravManniska(aktor);
       await hanterare(req, res, aktor);
     } catch (err) {
       if (res.headersSent) throw err;
@@ -336,13 +336,18 @@ export function arendeUrlFor(identifier: string): string {
   return `/vy/arende/${encodeURIComponent(identifier)}`;
 }
 
+/** B-03: alla skrivformulär använder samma människokrav som skrivramen. */
+export function kanSkriva(aktor: Aktor | null): aktor is Aktor {
+  return aktor?.typ === 'manniska';
+}
+
 /**
  * Skrivläget, synligt på ärendesidan. Utan session visas INGA formulär — bara
  * varför, och vägen dit. Att visa knappar som säkert misslyckas är att ljuga
  * med gränssnittet.
  */
 export function skrivlage(aktor: Aktor | null, retur: string): string {
-  if (aktor) return '';
+  if (kanSkriva(aktor)) return '';
   return (
     '<p class=notis>Läsläge. ' +
     `<a href="/vy/logga-in?fran=${esc(encodeURIComponent(sakerRetur(retur)))}">Logga in</a>` +
@@ -351,7 +356,7 @@ export function skrivlage(aktor: Aktor | null, retur: string): string {
 }
 
 export function nyKommentarForm(aktor: Aktor | null, identifier: string): string {
-  if (!aktor) return '';
+  if (!kanSkriva(aktor)) return '';
   const typtext = aktor.typ === 'manniska' ? 'människa' : aktor.typ;
   return (
     `<form class=skrivform method=post action="${esc(arendeUrlFor(identifier))}/kommentar">` +
@@ -386,7 +391,7 @@ export function rattaArendeForm(
   titel: string,
   beskrivning: string,
 ): string {
-  if (!aktor) return '';
+  if (!kanSkriva(aktor)) return '';
   const vag = `${arendeUrlFor(identifier)}/ratta`;
   return (
     '<details class=rattelse><summary>Rätta titel eller beskrivning</summary>' +
@@ -404,7 +409,7 @@ export function rattaArendeForm(
 }
 
 export function kommentarsverktyg(aktor: Aktor | null, kommentar: Kommentar, retur: string): string {
-  if (!aktor) return '';
+  if (!kanSkriva(aktor)) return '';
   const id = esc(kommentar.id);
   const returFalt = `<input type=hidden name=fran value="${esc(retur)}">`;
   return (
@@ -437,7 +442,7 @@ export function borttagnaAvsnitt(
   if (borttagna.length === 0) return '';
   const rader = borttagna
     .map((b) => {
-      const knapp = aktor
+      const knapp = kanSkriva(aktor)
         ? `<form class=skrivform method=post action="/vy/kommentar/${esc(b.id)}/aterstall">` +
           `<input type=hidden name=fran value="${esc(retur)}">` +
           '<button class=mild type=submit>Återställ</button></form>'
@@ -458,7 +463,7 @@ export function borttagnaAvsnitt(
 /** Etiketterna, med en borttagningsknapp var när någon är inloggad. */
 export function etikettrad(aktor: Aktor | null, identifier: string, labels: string[]): string {
   if (labels.length === 0) return '';
-  if (!aktor) return `<p>${labels.map((l) => `<span class=tagg>${esc(l)}</span>`).join('')}</p>`;
+  if (!kanSkriva(aktor)) return `<p>${labels.map((l) => `<span class=tagg>${esc(l)}</span>`).join('')}</p>`;
   const rader = labels
     .map(
       (l) =>
@@ -484,7 +489,7 @@ export function monteraSkrivrutter(router: Router): void {
   router.get('/logga-in', (req, res) => {
     const aktor = sessionsAktor(req);
     const fran = sakerRetur(req.query['fran']);
-    const fel = falt(req.query['fel']) !== undefined;
+    const felkod = falt(req.query['fel']);
 
     const kropp = aktor
       ? '<h1>Inloggad</h1>' +
@@ -496,20 +501,14 @@ export function monteraSkrivrutter(router: Router): void {
         '<p class=summering>Att läsa vyn kräver ingen inloggning. Att ändra gör det: ' +
         'aktören i händelseloggen härleds alltid ur ett bevis — aldrig ur ett ' +
         'formulärfält — så att en agents skrivning aldrig kan bära en människas namn.</p>' +
-        // Davids vag star forst, som det den ar. Sidan visade tidigare BARA
-        // API-nyckeln, aven efter att den gemensamma sessionen byggts - en vag
-        // som inte star pa skylten finns inte for den som laser skylten.
-        '<h2>Logga in med ditt Locollabs-konto</h2>' +
-        '<p class=summering>Samma användarnamn och lösenord som i redovisningen. ' +
-        'Loggar du in där är du inloggad här också — det är samma system.</p>' +
-        '<p><a class=btn href="' + esc(REDOVISNINGENS_LOGIN) + '">Till inloggningen</a></p>' +
-        '<p class=notis>Har du redan loggat in i redovisningen och ändå ser den här ' +
-        'sidan: logga <b>ut</b> där och in igen. Sessioner som skapades före ' +
-        '2026-09-07 18:46 gällde bara redovisningen och når inte hit.</p>' +
-        '<details class=rattelse><summary>API-nyckel — för agenter</summary>' +
-        '<p class=summering>Agenterna bär nyckel, aldrig session. Som människa ' +
-        'behöver du ingen.</p>' +
-        (fel ? '<p class=notis>Nyckeln gick inte att känna igen, eller är återkallad.</p>' : '') +
+        '<details class=rattelse open><summary>Logga in med människonyckel</summary>' +
+        '<p class=summering>För dig som har en egen människonyckel. Agenterna bär nyckel ' +
+        'mot API:t och loggar aldrig in här.</p>' +
+        (felkod === 'agent'
+          ? '<p class=notis>Nyckeln tillhör en agent eller ett system. Vyn tar bara emot människonycklar.</p>'
+          : felkod !== undefined
+            ? '<p class=notis>Nyckeln gick inte att känna igen, eller är återkallad.</p>'
+            : '') +
         '<form class=skrivform method=post action="/vy/logga-in">' +
         `<input type=hidden name=fran value="${esc(fran)}">` +
         '<label for=nyckel>API-nyckel</label>' +
@@ -524,7 +523,7 @@ export function monteraSkrivrutter(router: Router): void {
 
   // Ingen session krävs här — det är den här rutten som SKAPAR en. CSRF-kravet
   // gäller ändå: en främmande sajt ska inte kunna logga in Davids webbläsare
-  // som någon annan.
+  // som någon annan. B-03, Story 3.1: bara en människonyckel föder en session.
   router.post('/logga-in', async (req, res) => {
     if (!ursprungOk(req, res)) return;
     const kropp = kroppen(req);
@@ -534,6 +533,10 @@ export function monteraSkrivrutter(router: Router): void {
     if (!aktor) {
       // Ingen upprepning av det inskrivna värdet, varken i sidan eller i URL:en.
       res.redirect(303, `/vy/logga-in?fel=1&fran=${encodeURIComponent(fran)}`);
+      return;
+    }
+    if (aktor.typ !== 'manniska') {
+      res.redirect(303, '/vy/logga-in?fel=agent&fran=' + encodeURIComponent(fran));
       return;
     }
     sattSessionskaka(res, startaSession(aktor));
@@ -650,7 +653,7 @@ export function monteraSkrivrutter(router: Router): void {
       `<input type=text id="${esc(sort)}-${esc(nr)}" name=till value="${esc(namn)}" required>` +
       '<button type=submit>Rätta</button></form></li>';
 
-    const lasnotis = aktor
+    const lasnotis = kanSkriva(aktor)
       ? ''
       : '<p class=notis>Läsläge — namnen visas men går inte att ändra. ' +
         '<a href="/vy/logga-in?fran=%2Fvy%2Frattelser">Logga in</a> för att rätta.</p>';
@@ -660,7 +663,7 @@ export function monteraSkrivrutter(router: Router): void {
       proveniens(n.aktor_typ, n.aktor_namn) +
       `<span>${n.aktiv ? 'aktiv' : 'återkallad'}</span>` +
       `<span>skapad ${esc(datumtid(n.skapad))}</span>` +
-      (aktor && n.aktiv
+      (kanSkriva(aktor) && n.aktiv
         ? `<form class=skrivform method=post action="/vy/nyckel/${esc(n.id)}/aterkalla">` +
           '<button class=mild type=submit>Återkalla</button></form>'
         : '') +
@@ -669,7 +672,7 @@ export function monteraSkrivrutter(router: Router): void {
     const namnlista = (vag: string, sort: string, namn: string[]): string =>
       namn.length === 0
         ? '<p class=notis>Inga poster.</p>'
-        : aktor
+        : kanSkriva(aktor)
           ? `<ul class=lista role=list>${namn.map((n, i) => namnform(vag, sort, n, i)).join('')}</ul>`
           : `<p>${namn.map((n) => `<span class=tagg>${esc(n)}</span>`).join('')}</p>`;
 
