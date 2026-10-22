@@ -545,6 +545,14 @@ Säkerhetskopior med ändelsen `.fore-<något>` hör till konventionen i `~/.her
 | --- | --- | --- | --- |
 | NFR-12, inga `*.fore-*` i repot | mönstret `*.fore-*` i `.gitignore`; provet går igenom `src/`, `test/` och `dist/` utan att fråga git och fäller varje namn som innehåller `.fore-` | `.gitignore` | `test/fore-filer.test.ts` (Story 7.8 AK 1, AK 2) |
 
+### FR-1 — kärnan bär Linears historik och numrering (Story 7.5)
+
+Plattformen ersatte Linear och bär dess historik (FR-1). Importen (`npm run import`) läser arkivet med en fil per ärende, behåller numret ur filnamnet och för in titel, beskrivning, tillstånd, projekt, etiketter, tidpunkter och kommentarer med deras författare, med händelseraden `importerade_arende` för varje ärende och `importerade_kommentar` för varje kommentar, båda med aktören `system · linear-import`. Ärenden och kommentarer skrivs med `ON CONFLICT (source_ref) DO NOTHING`, och en händelserad skrivs bara för en ny rad, så att en omkörd import ger noll nya rader. Efter importen höjs teamets sekvens till det högsta importerade numret och aldrig nedåt, och ett nytt ärende får sitt nummer ur `nextval` på teamets egen sekvens i samma transaktion som raden; villkoret `issues_nummer_unik` på team och nummer är den andra linjen. Ett team skapas bara av `hamtaEllerSkapaTeam`, med en egen sekvens och de fem standardtillstånden i samma transaktion. Provet `test/karnan.test.ts` visar alltihop mot importfixturen genom hela stacken.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-1 | numret ur filnamnet och `sattSekvens` efteråt, som aldrig sänker sekvensen; `ON CONFLICT (source_ref) DO NOTHING` för ärenden och kommentarer och händelserader bara för nya rader; `nextval` på teamets egen sekvens och `issues_nummer_unik`; teamet skapas med sekvens och fem tillstånd i en transaktion | `src/import/parsaArkiv.ts`, `src/import/importeraArkiv.ts`, `src/services/arenden.ts` (`importeraArende`, `sattSekvens`, `skapaArende`), `src/services/team.ts` (`hamtaEllerSkapaTeam`, `STANDARD_STATES`), `migrations/0001_grund.sql`–`0003_arenden.sql` | `test/karnan.test.ts` (Story 7.5 AK 1–5), `test/import.test.ts`, `test/sekvens-race.test.ts` |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
