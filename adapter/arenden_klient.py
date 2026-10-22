@@ -9,7 +9,9 @@ GraphQL med Linear — inga befintliga skript ror vi nu.
 Nyckeln lases i tur och ordning ur:
   1. argumentet `nyckel` till respektive funktion
   2. miljovariabeln ARENDEN_API_KEY
-  3. filen ~/.hermes/arenden_nyckel  (eller ARENDEN_API_KEY_FIL)
+  3. filen ~/.hermes/arenden-nyckel  (eller ARENDEN_API_KEY_FIL) -- samma vag som drift-klienten (NFR-10)
+
+Saknas nyckeln kastas ArendeFel med koden ingen_nyckel och sokvagen i texten, innan nagot anrop gors.
 
 Bas-URL:en tas ur ARENDEN_API_URL (default http://127.0.0.1:3002).
 
@@ -25,16 +27,20 @@ import urllib.request
 from pathlib import Path
 
 BAS_URL = os.environ.get("ARENDEN_API_URL", "http://127.0.0.1:3002")
-NYCKELFIL = Path(os.environ.get("ARENDEN_API_KEY_FIL", str(Path.home() / ".hermes/arenden_nyckel")))
+NYCKELFIL = Path(os.environ.get("ARENDEN_API_KEY_FIL", str(Path.home() / ".hermes/arenden-nyckel")))
 
 STATE_TYPER = ("backlog", "unstarted", "started", "completed", "canceled")
 
 
 class ArendeFel(RuntimeError):
-    """API:t svarade med en felkod (t.ex. 401 utan giltig nyckel)."""
+    """API:t svarade med en felkod (t.ex. 401 utan giltig nyckel).
 
-    def __init__(self, status, kod):
-        super().__init__("arende-API svarade %s: %s" % (status, kod))
+    Felet kastas ocksa utan att nagot anrop gjorts, nar nyckeln saknas: koden ar
+    da ingen_nyckel och texten namnger sokvagen (Story 7.7 AK 3).
+    """
+
+    def __init__(self, status, kod, text=None):
+        super().__init__(text if text is not None else "arende-API svarade %s: %s" % (status, kod))
         self.status = status
         self.kod = kod
 
@@ -48,18 +54,25 @@ def _nyckel(nyckel=None):
     try:
         return NYCKELFIL.read_text().strip()
     except OSError:
-        raise ArendeFel(401, "ingen_nyckel")
+        raise ArendeFel(
+            401,
+            "ingen_nyckel",
+            "ingen nyckel: %s finns inte eller gar inte att lasa, och ARENDEN_API_KEY ar inte satt" % NYCKELFIL,
+        )
 
 
 def anropa(action, indata, nyckel=None, bas_url=None):
     """Kor en action. Aktoren tas ur nyckeln — aldrig ur indatat."""
+    # Nyckeln loses forst, fore Request och urlopen: ingen nyckel betyder inget anrop
+    # (Story 7.7 AK 3). Alla sex funktionerna gar genom den har vagen.
+    bearer = _nyckel(nyckel)
     data = json.dumps(indata).encode("utf-8")
     begaran = urllib.request.Request(
         (bas_url or BAS_URL) + "/api/actions/" + action,
         data=data,
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer " + _nyckel(nyckel),
+            "Authorization": "Bearer " + bearer,
         },
     )
     try:
