@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,47 +10,82 @@ import pg from 'pg';
 import { createApp } from '../src/http/app.js';
 import { loadMigrations, migrate } from '../src/db/migrate.js';
 import { assertAppRollArBegransad, pool } from '../src/db/pool.js';
-import { kor, nyNyckel, seedaTeam } from './helpers.js';
+import { kor, nyNyckel, seedaTeam, TENANT_ID } from './helpers.js';
 import { TEST_DB_NAME } from './env.js';
 
 // KRAV-4: RLS-beredskap från dag 1. Policyerna byggs i Etapp 3, men KOLUMNEN och
 // indexet måste finnas på varje tabell nu — annars blir Etapp 3 en datamigrering
 // i stället för en policyändring.
-const UNDANTAG = ['tenants', 'schema_migrations'];
+// Tom sedan Story 7.4; enda platsen för undantag, så ett nytt syns i diffen och fälls av F19.
+const UNDANTAG: string[] = [];
+
+// Samma frågor i schemaproven och motkontrollen: kontrollen måste kunna fälla själva provet.
+type Schemaanslutning = {
+  query<R extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>>;
+};
+
+async function kolumnfel(klient: Schemaanslutning): Promise<string[]> {
+  const { rows } = await klient.query<{ tabell: string; not_null: boolean | null }>(
+    `SELECT t.relname::text AS tabell, a.attnotnull AS not_null
+       FROM pg_class t
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       LEFT JOIN pg_attribute a
+         ON a.attrelid = t.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+      WHERE n.nspname = 'public' AND t.relkind IN ('r', 'p')
+        AND t.relname <> ALL($1::text[])
+      ORDER BY t.relname`,
+    [UNDANTAG],
+  );
+  const fynd: string[] = [];
+  if (rows.length === 0) fynd.push('inga tabeller');
+  for (const rad of rows) {
+    if (rad.not_null === null) fynd.push(`${rad.tabell} saknar tenant_id`);
+    else if (!rad.not_null) fynd.push(`${rad.tabell}.tenant_id är nullbar`);
+  }
+  return fynd;
+}
+
+async function indexfel(klient: Schemaanslutning): Promise<string[]> {
+  const { rows } = await klient.query<{ tabell: string }>(
+    `SELECT t.relname::text AS tabell
+       FROM pg_class t
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND t.relkind IN ('r', 'p')
+        AND t.relname <> ALL($1::text[])
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+           WHERE i.indrelid = t.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped)
+      ORDER BY t.relname`,
+    [UNDANTAG],
+  );
+  return rows.map((rad) => `${rad.tabell} saknar index som börjar på tenant_id`);
+}
+
+// FR-3: skilj en vanlig standard från uttrycket på en genererad kolumn.
+async function kolumnform(klient: Schemaanslutning, tabell: string) {
+  const { rows } = await klient.query<{
+    typ: string; notNull: boolean; harStandard: boolean; genererad: string;
+  }>(
+    `SELECT format_type(a.atttypid, a.atttypmod) AS typ, a.attnotnull AS "notNull",
+            (a.atthasdef AND a.attgenerated = '') AS "harStandard", a.attgenerated::text AS genererad
+       FROM pg_attribute a
+       JOIN pg_class t ON t.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND t.relname = $1
+        AND a.attname = 'tenant_id' AND NOT a.attisdropped`,
+    [tabell],
+  );
+  return rows[0] ?? null;
+}
 
 describe('KRAV-4/9: schemat är RLS-berett och sökbart', () => {
   it('varje tabell har tenant_id NOT NULL', async () => {
-    const { rows } = await pool.query<{ tabell: string; nullable: string | null }>(
-      `SELECT t.tablename AS tabell, c.is_nullable AS nullable
-         FROM pg_tables t
-         LEFT JOIN information_schema.columns c
-           ON c.table_name = t.tablename AND c.column_name = 'tenant_id' AND c.table_schema = 'public'
-        WHERE t.schemaname = 'public' AND t.tablename <> ALL($1::text[])
-        ORDER BY t.tablename`,
-      [UNDANTAG],
-    );
-
-    expect(rows.length).toBeGreaterThan(0);
-    for (const rad of rows) {
-      expect(rad.nullable, `${rad.tabell} saknar tenant_id`).not.toBeNull();
-      expect(rad.nullable, `${rad.tabell}.tenant_id är nullbar`).toBe('NO');
-    }
+    expect(await kolumnfel(pool)).toEqual([]);
   });
 
   it('varje tabell har ett index som börjar på tenant_id', async () => {
-    const { rows } = await pool.query<{ tabell: string }>(
-      `SELECT t.tablename AS tabell
-         FROM pg_tables t
-        WHERE t.schemaname = 'public'
-          AND t.tablename <> ALL($1::text[])
-          AND NOT EXISTS (
-            SELECT 1 FROM pg_index i
-              JOIN pg_class c ON c.oid = i.indrelid
-              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
-             WHERE c.relname = t.tablename AND a.attname = 'tenant_id')`,
-      [UNDANTAG],
-    );
-    expect(rows.map((r) => r.tabell)).toEqual([]);
+    expect(await indexfel(pool)).toEqual([]);
   });
 
   it('events är append-only och app-rollen saknar UPDATE/DELETE', async () => {
@@ -868,5 +903,275 @@ describe('FR-38/Story 7.1: README bär regeln', () => {
 
     // Kontrollen: samma kontroll på texten utan avsnittet fälls.
     expect(readmefel(utanAvsnittet(readme))).toEqual(['rubriken saknas']);
+  });
+});
+
+// ---- FR-3/Story 7.4 AK 2 -------------------------------------------------------------------------
+
+describe('FR-3/Story 7.4 AK 2: schemaproven fäller en tabell utan tenant_id, med nullbar tenant_id eller utan index', () => {
+  it('F16 (AK 2): fem tabeller visar kolumnfel och indexfel, och rätt schema ger inga fynd', async () => {
+    const admin = await adminKlient();
+    try {
+      await admin.query(`
+        CREATE TABLE f16_utan_kolumn (id integer);
+        CREATE TABLE f16_nullbar (tenant_id uuid);
+        CREATE INDEX f16_nullbar_tenant_idx ON f16_nullbar (tenant_id);
+        CREATE TABLE f16_utan_index (tenant_id uuid NOT NULL);
+        CREATE TABLE f16_index_bakom (x integer, tenant_id uuid NOT NULL);
+        CREATE INDEX f16_index_bakom_idx ON f16_index_bakom (x, tenant_id);
+        CREATE TABLE f16_korrekt (tenant_id uuid NOT NULL);
+        CREATE INDEX f16_korrekt_tenant_idx ON f16_korrekt (tenant_id);
+      `);
+      expect(await kolumnfel(pool)).toEqual([
+        'f16_nullbar.tenant_id är nullbar',
+        'f16_utan_kolumn saknar tenant_id',
+      ]);
+      expect(await indexfel(pool)).toEqual([
+        'f16_index_bakom saknar index som börjar på tenant_id',
+        'f16_utan_index saknar index som börjar på tenant_id',
+        'f16_utan_kolumn saknar index som börjar på tenant_id',
+      ]);
+    } finally {
+      try {
+        await admin.query(`
+          DROP TABLE IF EXISTS f16_utan_kolumn, f16_nullbar, f16_utan_index,
+            f16_index_bakom, f16_korrekt;
+        `);
+      } finally {
+        await admin.end();
+      }
+    }
+    expect(await kolumnfel(pool)).toEqual([]);
+    expect(await indexfel(pool)).toEqual([]);
+  });
+});
+
+// ---- FR-3/Story 7.4 AK 1 -------------------------------------------------------------------------
+
+describe('FR-3/Story 7.4 AK 1: migrationsverktyget skriver tenant_id på varje ledgerrad', () => {
+  it('F17 (AK 1): en färsk ledger bär tenant_id utan standard på varje rad', async () => {
+    const admin = await adminKlient();
+    try {
+      expect(await kolumnform(admin, 'schema_migrations')).toEqual({
+        typ: 'uuid', notNull: true, harStandard: false, genererad: '',
+      });
+      const { rows } = await admin.query<{ antal: number; med_tenant: number }>(
+        `SELECT count(*)::int AS antal,
+                count(*) FILTER (WHERE tenant_id = $1)::int AS med_tenant FROM schema_migrations`,
+        [TENANT_ID],
+      );
+      const antal = (await loadMigrations()).length;
+      expect(rows).toEqual([{ antal, med_tenant: antal }]);
+    } finally {
+      await admin.end();
+    }
+  });
+
+  it('F18 (AK 1): ledgern avvisar en rad utan tenant_id och godtar samma rad med värdet', async () => {
+    const fore = await ledgern();
+    const admin = await adminKlient();
+    try {
+      await admin.query('BEGIN');
+      try {
+        await expect(admin.query(
+          `INSERT INTO schema_migrations (version, name, checksum) VALUES (9018, 'f18_utan_tenant', 'f18')`,
+        )).rejects.toMatchObject({ code: '23502', column: 'tenant_id' });
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+      await admin.query('BEGIN');
+      try {
+        await expect(admin.query(
+          'INSERT INTO schema_migrations (version, name, checksum, tenant_id) VALUES ($1, $2, $3, $4)',
+          [9018, 'f18_utan_tenant', 'f18', TENANT_ID],
+        )).resolves.toMatchObject({ rowCount: 1 });
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    } finally {
+      await admin.end();
+    }
+    expect(await ledgern()).toEqual(fore);
+  });
+});
+
+// ---- FR-3/Story 7.4 AK 1 och AK 2 ----------------------------------------------------------------
+
+const NY_MIGRATION = '0017_tenant_id_overallt.sql';
+
+/** Ägaranslutning till en tom engångsdatabas i testklustret, utan en öppen transaktion vid CLI-körning. */
+async function tomDatabas(
+  namn: string,
+  korning: (adress: string, klient: pg.Client) => Promise<void>,
+): Promise<void> {
+  const underhall = new pg.Client({ connectionString: process.env.MAINTENANCE_DATABASE_URL });
+  await underhall.connect();
+  try {
+    await underhall.query(`DROP DATABASE IF EXISTS ${namn} WITH (FORCE)`);
+    await underhall.query(`CREATE DATABASE ${namn}`);
+    const url = new URL(process.env.DATABASE_ADMIN_URL!);
+    url.pathname = `/${namn}`;
+    const klient = new pg.Client({ connectionString: url.toString() });
+    try {
+      await klient.connect();
+      await korning(url.toString(), klient);
+    } finally {
+      await klient.end();
+    }
+  } finally {
+    try {
+      await underhall.query(`DROP DATABASE IF EXISTS ${namn} WITH (FORCE)`);
+    } finally {
+      await underhall.end();
+    }
+  }
+}
+
+/** Kolumnnummer ingår inte: en uppgraderad ledger har haft en borttagen kolumn före den nya. */
+async function schemaform(klient: Schemaanslutning) {
+  const { rows: index } = await klient.query<{ indexname: string; indexdef: string }>(
+    `SELECT indexname, indexdef FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname = ANY($1::text[]) ORDER BY indexname`,
+    [['tenants_tenant_idx', 'schema_migrations_tenant_idx']],
+  );
+  return {
+    tenants: await kolumnform(klient, 'tenants'),
+    ledgern: await kolumnform(klient, 'schema_migrations'),
+    index,
+  };
+}
+
+/** FR-3: katalogen läses även som app, som saknar rättigheter på ledgern. */
+async function rlsfel(klient: Schemaanslutning): Promise<string[]> {
+  const { rows } = await klient.query<{ fynd: string }>(
+    `SELECT 'policy: ' || tablename || '.' || policyname AS fynd
+       FROM pg_policies WHERE schemaname = 'public'
+     UNION ALL
+     SELECT 'rls: ' || t.relname AS fynd FROM pg_class t
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' AND t.relkind IN ('r', 'p') AND t.relrowsecurity
+     ORDER BY fynd`,
+  );
+  return rows.map((rad) => rad.fynd);
+}
+
+describe('FR-3/Story 7.4 AK 1 och AK 2: tenants och ledgern bär tenant_id, och inga policyer skapas', () => {
+  it('F19 (AK 1): inga undantag finns och varje tenant hör alltid till sitt eget id', async () => {
+    expect(UNDANTAG).toEqual([]);
+    expect(await kolumnfel(pool)).toEqual([]);
+    expect(await indexfel(pool)).toEqual([]);
+    const admin = await adminKlient();
+    try {
+      const { rows } = await admin.query<{ id: string; tenant_id: string }>(
+        'SELECT id::text, tenant_id::text FROM tenants ORDER BY id',
+      );
+      expect(rows.some((rad) => rad.id === TENANT_ID)).toBe(true);
+      for (const rad of rows) expect(rad.tenant_id).toBe(rad.id);
+      expect(await kolumnform(admin, 'tenants')).toEqual({
+        typ: 'uuid', notNull: true, harStandard: false, genererad: 's',
+      });
+      const fore = (await admin.query('SELECT count(*)::int AS antal FROM tenants')).rows;
+      await admin.query('BEGIN');
+      try {
+        const ny = await admin.query<{ tenant_id: string }>(
+          `INSERT INTO tenants (id, namn)
+           VALUES ('00000000-0000-0000-0000-000000000019', 'F19 provtenant') RETURNING tenant_id`,
+        );
+        expect(ny.rows).toEqual([{ tenant_id: '00000000-0000-0000-0000-000000000019' }]);
+        expect(ny.rows[0]?.tenant_id).not.toBe(TENANT_ID);
+        await expect(admin.query(
+          `INSERT INTO tenants (id, namn, tenant_id)
+           VALUES ('00000000-0000-0000-0000-000000000020', 'F19 skrivet', $1)`,
+          [TENANT_ID],
+        )).rejects.toMatchObject({ code: '428C9' });
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+      expect((await admin.query('SELECT count(*)::int AS antal FROM tenants')).rows).toEqual(fore);
+    } finally {
+      await admin.end();
+    }
+  });
+
+  it('F20 (AK 1): en äldre ledger uppgraderas av CLI och andra körningen är en no-op', async () => {
+    await tomDatabas(`${TEST_DB_NAME}_f20_uppgradering`, async (adress, klient) => {
+      const filer = await loadMigrations();
+      const ny = filer.find((m) => m.filename === NY_MIGRATION);
+      expect(ny, NY_MIGRATION).toBeDefined();
+      if (!ny) throw new Error(`${NY_MIGRATION} saknas`);
+      const tidigare = filer.filter((m) => m.version < ny.version);
+      const dir = mkdtempSync(path.join(tmpdir(), 'schema-f20-migrationer-'));
+      try {
+        for (const fil of tidigare) {
+          copyFileSync(path.join(ROT, 'migrations', fil.filename), path.join(dir, fil.filename));
+        }
+        const resultat = await migrate(adress, { dir });
+        expect(resultat.applied).toHaveLength(tidigare.length);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+
+      // Driftens utgångsläge: äldre ledger och en andra tenant före 0017.
+      await klient.query('ALTER TABLE schema_migrations DROP COLUMN tenant_id');
+      await klient.query(
+        `INSERT INTO tenants (id, namn) VALUES ('00000000-0000-0000-0000-000000000002', 'F20 provtenant')`,
+      );
+      expect(await kolumnform(klient, 'schema_migrations')).toBeNull();
+      expect((await klient.query('SELECT version FROM schema_migrations')).rowCount).toBe(tidigare.length);
+
+      const miljo = barnmiljo({ DATABASE_ADMIN_URL: adress });
+      const forsta = await korBarnprocess('src/db/migrate.ts', miljo);
+      expect(forsta.kod, forsta.stderr).toBe(0);
+      expect(forsta.stdout).toContain(`applied  ${NY_MIGRATION}`);
+      expect(forsta.stdout).toContain(
+        `OK: ${filer.length - tidigare.length} migration(er) kördes, ${tidigare.length} var redan körda`,
+      );
+      const tenants = await klient.query<{ id: string; tenant_id: string }>(
+        'SELECT id::text, tenant_id::text FROM tenants ORDER BY id',
+      );
+      expect(tenants.rows).toEqual([
+        { id: TENANT_ID, tenant_id: TENANT_ID },
+        { id: '00000000-0000-0000-0000-000000000002', tenant_id: '00000000-0000-0000-0000-000000000002' },
+      ]);
+      const ledgerSql = 'SELECT version, name, checksum, applied_at, tenant_id FROM schema_migrations ORDER BY version';
+      const fore = await klient.query<{ version: number; tenant_id: string }>(ledgerSql);
+      expect(fore.rows).toHaveLength(filer.length);
+      for (const rad of fore.rows) expect(rad.tenant_id).toBe(TENANT_ID);
+      expect(fore.rows.find((rad) => rad.version === ny.version)?.tenant_id).toBe(TENANT_ID);
+      expect(await kolumnfel(klient)).toEqual([]);
+      expect(await indexfel(klient)).toEqual([]);
+      const admin = await adminKlient();
+      try {
+        expect(await schemaform(klient)).toEqual(await schemaform(admin));
+      } finally {
+        await admin.end();
+      }
+
+      const andra = await korBarnprocess('src/db/migrate.ts', miljo);
+      expect(andra.kod, andra.stderr).toBe(0);
+      expect(andra.stdout).toContain(`OK: 0 migration(er) kördes, ${filer.length} var redan körda`);
+      expect((await klient.query(ledgerSql)).rows).toEqual(fore.rows);
+    });
+  }, 60_000);
+
+  it('F21 (AK 2): inga policyer eller radsäkerhet införs, och kontrollen fäller båda', async () => {
+    expect(await rlsfel(pool)).toEqual([]);
+    const sql = readFileSync(path.join(ROT, 'migrations', NY_MIGRATION), 'utf8');
+    expect(sql).not.toMatch(/\bPOLICY\b/i);
+    expect(sql).not.toMatch(/ROW\s+LEVEL\s+SECURITY/i);
+    const admin = await adminKlient();
+    try {
+      await admin.query('BEGIN');
+      try {
+        await admin.query('ALTER TABLE labels ENABLE ROW LEVEL SECURITY');
+        await admin.query('CREATE POLICY f21_prov ON labels USING (true)');
+        expect(await rlsfel(admin)).toEqual(['policy: labels.f21_prov', 'rls: labels']);
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    } finally {
+      await admin.end();
+    }
+    expect(await rlsfel(pool)).toEqual([]);
   });
 });

@@ -7,6 +7,9 @@
 //    för tyst drift.
 //  - Advisory lock — två samtidiga körningar kan inte kapplöpa.
 //  - Varje migration körs i en egen transaktion.
+//  - Varje ledgerrad bär tenant_id (FR-3, Story 7.4). Verktyget skriver TENANT_ID utan
+//    kolumnstandard, så en rad utan värdet avvisas. En ny ledger har kolumnen från början,
+//    eftersom 0001–0016 skrivs före 0017; 0017 ger en äldre ledger samma form.
 //  - VÄGRAR köra som rollen "app" (APP_ROLL), som roll eller som inloggningsroll, före allt annat, och
 //    returnerar rollen som körde, som CLI-läget skriver ut (FR-38, B-11, Story 7.1).
 //
@@ -20,6 +23,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import pg from 'pg';
+import { TENANT_ID } from '../lib/tenant.js';
 
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations/', import.meta.url));
 // Konstant nyckel för pg_advisory_lock, unik för det här systemet.
@@ -113,7 +117,8 @@ export async function migrate(
         version integer PRIMARY KEY,
         name text NOT NULL,
         checksum text NOT NULL,
-        applied_at timestamptz NOT NULL DEFAULT now()
+        applied_at timestamptz NOT NULL DEFAULT now(),
+        tenant_id uuid NOT NULL
       )
     `);
 
@@ -152,10 +157,11 @@ export async function migrate(
       await client.query('BEGIN');
       try {
         await client.query(migration.sql);
-        await client.query('INSERT INTO schema_migrations (version, name, checksum) VALUES ($1, $2, $3)', [
+        await client.query('INSERT INTO schema_migrations (version, name, checksum, tenant_id) VALUES ($1, $2, $3, $4)', [
           migration.version,
           migration.name,
           migration.checksum,
+          TENANT_ID,
         ]);
         await client.query('COMMIT');
       } catch (err) {
