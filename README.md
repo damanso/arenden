@@ -51,12 +51,10 @@ behöver ändras för lokal drift.
 ### 3. Installera beroenden
 
 ```bash
-npm install     # första gången i det här repot: skapar package-lock.json
+npm ci          # installerar exakt det som package-lock.json anger
 ```
 
-Lockfilen är inte incheckad ännu (den skapas av kommandot ovan). **När den är
-incheckad är `npm ci` kommandot** på en ren klon — det är den formen acceptansen
-avser.
+Lockfilen `package-lock.json` är incheckad, och `npm ci` är kommandot på en ren klon (FR-22, Story 7.6).
 
 ### 4. Migrera, bygg, testa
 
@@ -520,6 +518,22 @@ Rollseparationen bär FR-8:s två skyddslinjer: `app` får 42501 av kolumn-GRANT
 | FR-38, appen äger ingen tabell | en fråga över `pg_tables` i `public` utan tabellista, med ägarskap också genom medlemskap (`pg_has_role`); inget medlemskap i någon annan roll godtas; superuser och BYPASSRLS fälls som förut | `src/db/pool.ts` (`assertAppRollArBegransad`) | `test/schema.test.ts` (Story 7.1 AK 2) |
 | FR-38, migrationerna aldrig som `app` | `SELECT current_user, session_user` först i `migrate()`, före låset, ledgern och filerna, och ingen av dem får vara `app`; rollen returneras och skrivs ut | `src/db/migrate.ts` (`migrate`, CLI-läget) | `test/schema.test.ts` (Story 7.1 AK 3, AK 5) |
 | FR-38, ägarskapet efter migrering och FR-8:s skiljelinje | varje tabell i `public` ägs av migrationsrollen; `app` får 42501 och ägarrollen P0001 på proveniensen i `comments` | `migrations/`, `migrations/0011_rattelser.sql` | `test/schema.test.ts` (Story 7.1 AK 4, AK 5) |
+
+### FR-22 — koden ligger privat under Davids GitHub-konto (Story 7.6)
+
+Koden versionshanteras i git, och remoten är `git@github.com:damanso/arenden.git`, ett privat repo under Davids eget GitHub-konto (FR-22, Davids svar #60). Repot bär en del av kravet självt. `.gitignore` i roten är repots enda ignorefil och en sluten lista med det som maskinen själv skapar eller som aldrig får lämna den: `node_modules/` från `npm ci`, `dist/` från `npm run build`, `.env` med driftens hemligheter, loggar och säkerhetskopior. Varje mönster i filen står i tillåtelselistan i provet `test/versionshantering.test.ts`, som håller listan sluten och läser det här avsnittet. Allt annat syns därför för git, och en ospårad `.env` kommer inte med när arbetsträdet committas. Mönstret `.env` gäller bara filer som heter exakt så. `.env.example` versionshanteras alltså, och en kopia av `.env` under ett annat namn syns som ospårad fil och committas aldrig (regeln nedan). Resten av kravet mäts i driftkopian `/opt/arenden` och på GitHub, och utfall och datum antecknas i berättelsefilen för Story 7.6:
+
+1. Remoten: `git -C /opt/arenden remote get-url origin` svarar `git@github.com:damanso/arenden.git`.
+2. Hela historiken är pushad: efter `git -C /opt/arenden fetch --prune` har varje rad ur `git -C /opt/arenden for-each-ref --format='%(refname:short) %(upstream:short) %(upstream:track)' refs/heads` en fjärrgren som börjar med `origin/`, och ingen rad har `ahead` eller `gone`. Det gäller varje gren utom byggkedjans arbetsgrenar, vars namn börjar med `bmad/arendena-`. De hör till arbetsträden under `/opt/arenden-bygge`, och det som godkänns i dem når `main` genom driftsättningen och mäts på raden för `main`. Deras antal antecknas. Utan `--prune` står spårningsgrenen för en borttagen fjärrgren kvar, och då syns aldrig `gone`. En gren som inte klarar mätningen är ett fynd och hanteras enligt regeln nedan.
+3. Repot är privat: `gh api repos/damanso/arenden --jq .private` svarar `true` med kontoägarens inloggning i `gh`. Ett anrop utan inloggning svarar 404 och kan inte visa det.
+4. Inget står utanför versionshanteringen: `git -C /opt/arenden status --porcelain` är tomt, och `git -C /opt/arenden log -1 --format=%H -- migrations/0016_svarsversion_lopnummer.sql` ger en commit som `git -C /opt/arenden branch -r --contains <commit>` visar på `origin/main`. Varje rad ur `git -C /opt/arenden ls-files --others --ignored --exclude-standard --directory` täcks av ett mönster i tillåtelselistan, så att ingen fil döljs av `.git/info/exclude` eller en global ignorefil. En ospårad, okommittad eller dold fil är ett fynd och hanteras enligt regeln nedan.
+
+- Versionshanteringen (FR-22, Story 7.6): koden ligger i git med remoten `git@github.com:damanso/arenden.git`, ett privat repo under Davids eget GitHub-konto. Repot har en enda `.gitignore`, i roten, och den bär bara mönster ur tillåtelselistan i `test/versionshantering.test.ts`; ett nytt mönster läggs till i båda i samma ändring. En lokal gren i driftkopian `/opt/arenden` utan fjärrgren under `origin/`, före sin fjärrgren eller med sin fjärrgren borttagen är ett fynd och pushas med `git -C /opt/arenden push -u origin <gren>`, aldrig med `--force`; avvisas pushen för att grenen och fjärrgrenen har gått isär, går fyndet till David. Byggkedjans arbetsgrenar, vars namn börjar med `bmad/arendena-`, är inga fynd, eftersom det som godkänns i dem når `main` genom driftsättningen. En ospårad eller okommittad fil i driftkopian, och en fil som git döljer där utan ett mönster ur tillåtelselistan, är ett fynd: dess ägare committar och pushar den bara om den är kod, prov, migration, kontrakt eller dokumentation, och allt annat committas inte utan tas bort ur driftkopian eller får ett mönster i `.gitignore` och i tillåtelselistan. Till kod räknas också konfigurationen utan hemligheter och appens tillgångar, som `package-lock.json`, `tsconfig.json`, compose-filerna och typsnitten under `assets/`. En fil med hemligheter, också en kopia av `.env`, och en säkerhetskopia `*.fore-*` committas aldrig.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-22, `.gitignore` är en sluten lista | varje mönster står i provets tillåtelselista, och `node_modules/`, `dist/` och `.env` finns; en ospårad `.env` ignoreras av git | `.gitignore` | `test/versionshantering.test.ts` (Story 7.6 AK 1) |
+| FR-22, remote, historik, privat och ren driftkopia | mätningarna 1–4 ovan i `/opt/arenden` och på GitHub, med utfall och datum i berättelsefilen; provet läser att avsnittet bär dem | `/opt/arenden` (git-konfigurationen och historiken, i drift), GitHub-repot `damanso/arenden` | `test/versionshantering.test.ts` (Story 7.6 AK 2) och mätningarna i drift |
 
 ## Gränser för Etapp 2a
 
