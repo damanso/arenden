@@ -535,6 +535,16 @@ Koden versionshanteras i git, och remoten är `git@github.com:damanso/arenden.gi
 | FR-22, `.gitignore` är en sluten lista | varje mönster står i provets tillåtelselista, och `node_modules/`, `dist/` och `.env` finns; en ospårad `.env` ignoreras av git | `.gitignore` | `test/versionshantering.test.ts` (Story 7.6 AK 1) |
 | FR-22, remote, historik, privat och ren driftkopia | mätningarna 1–4 ovan i `/opt/arenden` och på GitHub, med utfall och datum i berättelsefilen; provet läser att avsnittet bär dem | `/opt/arenden` (git-konfigurationen och historiken, i drift), GitHub-repot `damanso/arenden` | `test/versionshantering.test.ts` (Story 7.6 AK 2) och mätningarna i drift |
 
+### NFR-12 — inga säkerhetskopior `*.fore-*` i repot (Story 7.8)
+
+Säkerhetskopior med ändelsen `.fore-<något>` hör till konventionen i `~/.hermes`, som inte är ett git-repo (ADR-0004, känd avvikelse i PRD §5). I repot bär git historiken, så en säkerhetskopia behövs aldrig här. Mönstret i `.gitignore` gör att git varken visar eller checkar in en sådan fil, och provet går igenom katalogträdet direkt, så att också en fil som git döljer syns. Driftkopian `/opt/arenden` mäts efter driftsättningen med `find /opt/arenden -name '*.fore-*' -not -path '*/node_modules/*'`, som ska ge ett tomt svar, och utfall och datum antecknas i berättelsefilen för Story 7.8.
+
+- Säkerhetskopiorna (NFR-12, Story 7.8): lämna inga säkerhetskopior `*.fore-*` i repot. `.gitignore` täcker mönstret, så att git varken visar eller checkar in en sådan fil, och provet `test/fore-filer.test.ts` fäller varje fil eller katalog under `src/`, `test/` och `dist/` vars namn innehåller `.fore-`, med dess sökväg. Behövs det gamla innehållet finns det i git-historiken.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| NFR-12, inga `*.fore-*` i repot | mönstret `*.fore-*` i `.gitignore`; provet går igenom `src/`, `test/` och `dist/` utan att fråga git och fäller varje namn som innehåller `.fore-` | `.gitignore` | `test/fore-filer.test.ts` (Story 7.8 AK 1, AK 2) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
