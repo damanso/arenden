@@ -413,8 +413,12 @@ describe('B-01/FR-29/FR-19: update_issue läser det värde som faktiskt ersätts
     }
   });
 
-  it('F12 (AK 6): två samtidiga bara_om_osatt ger exakt en prioritet och ett oförändrat, tio varv', async () => {
-    for (let n = 0; n < 10; n++) {
+  // Ett prov per varv: i en slinga delade de tio varven ett enda testTimeout (30 s),
+  // och baslinjen 22/10 föll på tidsgränsen, inte på ett påstående.
+  // Varje varv skapar och prövar sitt eget ärende, så inget varv läser ett annat varvs rader.
+  it.each(Array.from({ length: 10 }, (_, n) => n))(
+    'F12 (AK 6): två samtidiga bara_om_osatt ger exakt en prioritet och ett oförändrat, tio varv: varv %i',
+    async (n) => {
       const { identifier, id } = await nyttArende('F12 utan prioritet');
       const svar = await Promise.all([
         kor(app, manniskonyckel, 'update_issue', { identifier, priority: 2, bara_om_osatt: true }),
@@ -427,8 +431,8 @@ describe('B-01/FR-29/FR-19: update_issue läser det värde som faktiskt ersätts
       expect(rader[0]!.payload['fran'], `varv ${n}`).toBeNull();
       expect(rader[0]!.payload['till'], `varv ${n}`).toBe(lagrad);
       expect(await handelserForArende(identifier, 'arendet_oforandrat'), `varv ${n}`).toHaveLength(1);
-    }
-  });
+    },
+  );
 
   // ---- Regression ------------------------------------------------------------
 
