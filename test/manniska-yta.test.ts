@@ -1,5 +1,5 @@
 // FR-14/Story 3.1, AK 1–10: bara människor loggar in och skriver i vyn.
-// F1–F3: konfigurationens schema, hela källträdet och testmiljön.
+// F2–F3: hela källträdet och testmiljön. F1 togs bort med redovisningens adress i Story 3.4.
 // F4–F8: nyckeltyper, feltexter, nio skrivrutter och alla formulärbyggare.
 // F9–F13: tjänstespärr, fem CSRF-varianter, tailnet, utan session och /api.
 // Varje mätning har en kontroll som visar att den kan slå ut. Databasen är riktig.
@@ -11,16 +11,14 @@ import type { AddressInfo } from 'node:net';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { EnvSchema, config } from '../src/config.js';
+import { EnvSchema } from '../src/config.js';
 import { createApp } from '../src/http/app.js';
 import { pool } from '../src/db/pool.js';
-import { REDOVISNINGEN, glomAllaSessioner, startaSession, SESSIONSKAKA } from '../src/http/vy/session.js';
+import { glomAllaSessioner, startaSession, SESSIONSKAKA } from '../src/http/vy/session.js';
 import type { Aktor } from '../src/lib/aktor.js';
-import { TEST_REDOVISNING_URL } from './env.js';
 import { kor, nyNyckel, raknaRader, seedaTeam, TENANT_ID } from './helpers.js';
 
 const ROT = fileURLToPath(new URL('../', import.meta.url));
-const STANDARD_REDOVISNING = ['http://' + '127.0.0.1', '3001'].join(':');
 const AGENTFEL = 'Nyckeln tillhör en agent eller ett system. Vyn tar bara emot människonycklar.';
 const NYCKELFEL = 'Nyckeln gick inte att känna igen, eller är återkallad.';
 let app: Express;
@@ -196,20 +194,11 @@ function testmiljonsFel(text: string, nycklar: string[]): string[] {
 }
 
 describe('FR-14/Story 3.1 AK 9: konfigurationen läses på ett ställe', () => {
-  it('F1 (AK 9): schema, testmiljö och session använder samma adress', () => {
-    expect(EnvSchema.parse({ DATABASE_URL: 'postgres://f31@prov/prov' }).REDOVISNING_URL)
-      .toBe(STANDARD_REDOVISNING);
-    expect(config.REDOVISNING_URL).toBe(TEST_REDOVISNING_URL);
-    expect(REDOVISNINGEN).toBe(TEST_REDOVISNING_URL);
-    expect(EnvSchema.safeParse({ DATABASE_URL: 'x', REDOVISNING_URL: 'inte en adress' }).success)
-      .toBe(false);
-  });
-
   it('F2 (AK 9): bara config och de två CLI-undantagen läser miljön', () => {
     const former = [
       'process.env.X', "process['env']", 'process["env"]', 'process[`env`]',
       "import p from 'node:process';", "import p from 'process';",
-      "export const REDOVISNINGEN =\n  process.env['REDOVISNING_URL'] ?? 'x';",
+      "export const BAS =\n  process.env['BAS_URL'] ?? 'x';",
     ];
     for (const text of former) expect(miljofynd([{ fil: 'kontroll.ts', text }])).toEqual(['kontroll.ts']);
     expect(miljofynd([{ fil: 'ren.ts', text: 'export const x = config.PORT;' }])).toEqual([]);
@@ -226,9 +215,9 @@ describe('FR-14/Story 3.1 AK 9: konfigurationen läses på ett ställe', () => {
   it('F3 (AK 9): varje schemanyckel sätts exakt en gång med = i testmiljön', () => {
     const text = readFileSync(path.join(ROT, 'test/env.ts'), 'utf8');
     const nycklar = Object.keys(EnvSchema.shape);
-    expect(nycklar).toContain('REDOVISNING_URL');
+    expect(nycklar).toContain('CRM_KONF_PATH');
     expect(testmiljonsFel(text, nycklar)).toEqual([]);
-    expect(testmiljonsFel(text.replace('process.env.REDOVISNING_URL = ', 'process.env.REDOVISNING_URL ??= '), nycklar))
+    expect(testmiljonsFel(text.replace('process.env.CRM_KONF_PATH = ', 'process.env.CRM_KONF_PATH ??= '), nycklar))
       .toHaveLength(2);
     expect(testmiljonsFel(text.replace(/^\s*process\.env\.HOST = .*$/m, ''), nycklar)).toHaveLength(1);
   });

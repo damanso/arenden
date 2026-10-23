@@ -253,8 +253,8 @@ nedan i `test/dokumentlankar.test.ts`, genom hela stacken mot en testvault
 Etapp 2a:s avgränsning *"ingen skrivfunktion från vyn (inga POST-rutter under
 `/vy`)"* är **medvetet upphävd**, och bara den. Läsning kräver fortfarande ingen
 nyckel; skrivning kräver en session, och en session kan bara födas ur en giltig
-API-nyckel. Aktören härleds alltså ur en nyckel även i webbläsaren — precis som
-på `/api` (KRAV-10).
+människonyckel (B-03, Story 3.1 och 3.4). Aktören härleds alltså ur en nyckel även i
+webbläsaren — precis som på `/api` (KRAV-10).
 
 Principen i rättigheterna: **rätta får man, radera historik får man inte.**
 `events` är oförändrad — ingen ny rättighet, ingen ny trigger, ingen ny väg in.
@@ -268,7 +268,7 @@ Principen i rättigheterna: **rätta får man, radera historik får man inte.**
 | Nyckel | `aktiv = false` — aldrig DELETE | `aterkallaNyckel`, `revoke_api_key` | "en nyckel går att återkalla …" |
 | Samtidiga rättelser | Radlås före läsningen av det gamla värdet; den som kommer tvåa läser det den första committade (B-01) | `hamtaArendeForAndring` (`uppdateraArendeFalt`), `hamtaKommentarForAndring` (`rattaKommentar`, `taBortKommentar`, `aterstallKommentar`, `update_comment`, `delete_comment`) | `test/samtidighet.test.ts` |
 | Proveniens (`aktor_typ`/`aktor_namn`) | **Går inte att ändra.** Kolumn-GRANT (42501) för app-rollen OCH trigger (P0001) för ägaren — två oberoende linjer, som för `events` | `migrations/0011_rattelser.sql` | "app-rollen får 42501 …", "ÄGARROLLEN får P0001 …" |
-| Aktör för vyskrivningar | Session ur API-nyckel, kaka HttpOnly + SameSite=Strict + Path=/vy | `src/http/vy/session.ts` | "utan session skrivs ingenting …", "sessionskakan är HttpOnly …" |
+| Aktör för vyskrivningar | Session ur människonyckel, kaka HttpOnly + SameSite=Strict + Path=/vy | `src/http/vy/session.ts` | "utan session skrivs ingenting …", "sessionskakan är HttpOnly …" |
 | CSRF | `Sec-Fetch-Site` måste vara `same-origin` om satt + `Origin`-jämförelse (samma som `/opt/redovisning`) + SameSite=Strict | `kravSammaUrsprung` | "CSRF: främmande Origin …", "CSRF: Sec-Fetch-Site …" |
 | JS-fritt | Formulär + POST + 303-redirect. CSP `script-src 'none'` (var helmets default `'self'` före K-1) | `src/http/vy/skrivning.ts`, `src/http/app.ts` | "vyn är JS-fri och CSP:n förbjuder skript" |
 | Nyckelutfärdning | Ansluter som `app` (inte ägaren) och skriver `skapade_aktorsidentitet` i samma transaktion. Nyckeln går till en 0600-fil, aldrig till stdout | `src/scripts/skapaNyckel.ts` | "npm run nyckel: skapar som app-rollen …" |
@@ -346,12 +346,10 @@ det har någon backfyllt händelser som aldrig hände.
 ### FR-4 — varje mutation via actions, aktören ur nyckeln (Story 1.3 och 1.4)
 
 En mutation från `/api` eller vyn går bara genom `executeAction`. Aktören kommer ur en nyckel —
-bearer, eller en vysession som fötts ur en nyckel — och aldrig ur indata. Ett undantag finns i dag:
-redovisningssessionen. `sessionsAktor` (`src/http/vy/session.ts`) tar först `req.redovisningsaktor`,
-en människoaktör ur redovisningens inloggning som inte kommer ur någon nyckel och inte behöver finnas
-i `api_keys`. Undantaget ägs av Story 3.4 (B-03) och står utanför provet. En write-action som inte
-skriver någon händelserad rullas tillbaka. Transportlagret (`src/http/`) innehåller ingen
-SQL-skrivsats. `events` och `comments` skrivs bara av `skrivHandelse` och `laggTillKommentar`, och
+bearer, eller en vysession som fötts ur en människonyckel (FR-14-avsnittet nedan) — och aldrig ur
+indata. En write-action som inte skriver någon händelserad rullas tillbaka. Transportlagret
+(`src/http/`) innehåller ingen SQL-skrivsats. `events` och `comments` skrivs bara av
+`skrivHandelse` och `laggTillKommentar`, och
 provet håller listan över de filer som når dem sluten för de former det läser i källtexten: statiska
 importer och återexporter (namngivna, med alias, hela modulen), dynamiska importer med fast sökväg,
 och i en fil som binder namnet varje alias och varje förekomst som inte är ett direkt anrop. I vyn
@@ -360,8 +358,7 @@ byggs först vid körning ser provet inte; där gäller lagerregeln och granskni
 
 **Skrivvägarna förbi nyckelhärledningen är en sluten lista** (Davids beslut 2026-10-16 11:00, svar på
 kodgranskningens fråga 1; Story 1.4): migrationerna, nyckelskriptet `src/scripts/skapaNyckel.ts`,
-importen och återläsningen. Redovisningssessionen ovan hör inte till listan: den är en känd avvikelse
-som Story 3.4 tar bort (B-03). Ett tomt system kan inte autentisera sitt första nyckelutfärdande med en
+importen och återläsningen. Ett tomt system kan inte autentisera sitt första nyckelutfärdande med en
 nyckel som ännu inte finns, och importen och återläsningen är operatörsverktyg på värden. De tre som
 skriver data bär var sin fasta systemaktör och skriver händelseraden i samma transaktion som raden den
 gäller; migrationerna skriver aldrig rader i `events` eller `comments`. Inget nytt skrivande verktyg
@@ -552,6 +549,26 @@ Plattformen ersatte Linear och bär dess historik (FR-1). Importen (`npm run imp
 | Krav | Mekanism | Kod | Test |
 | --- | --- | --- | --- |
 | FR-1 | numret ur filnamnet och `sattSekvens` efteråt, som aldrig sänker sekvensen; `ON CONFLICT (source_ref) DO NOTHING` för ärenden och kommentarer och händelserader bara för nya rader; `nextval` på teamets egen sekvens och `issues_nummer_unik`; teamet skapas med sekvens och fem tillstånd i en transaktion | `src/import/parsaArkiv.ts`, `src/import/importeraArkiv.ts`, `src/services/arenden.ts` (`importeraArende`, `sattSekvens`, `skapaArende`), `src/services/team.ts` (`hamtaEllerSkapaTeam`, `STANDARD_STATES`), `migrations/0001_grund.sql`–`0003_arenden.sql` | `test/karnan.test.ts` (Story 7.5 AK 1–5), `test/import.test.ts`, `test/sekvens-race.test.ts` |
+
+### FR-14 — Davids vysession föds bara ur en människonyckel (Story 3.1 och 3.4)
+
+Läsning kräver ingen nyckel. Skrivning kräver en session som bara föds ur en människonyckel.
+`POST /vy/logga-in` avvisar agent- och systemnycklar och är det enda ställe som startar en session.
+Vyn slår inte upp någon session i en annan tjänst, och inget mellanlager står före vyns rutter.
+Skrivramen kräver människa som andra linje, och formulären visas bara för en människosession.
+Agenterna skriver genom `/api` med sin nyckel som förut. Davids människonyckel ligger på värden
+i `~/.hermes/david-nyckel` med rättigheterna 0600; att inloggningen med den ger hans session
+mäts i drift (Story 3.4 AK 4).
+
+Regeln står ordagrant som i regelkällan:
+
+- Vyns session (FR-14, B-03, Story 3.1 och 3.4): en session i vyn föds bara ur en människonyckel. `POST /vy/logga-in` är den enda vägen in: rutten slår upp nyckeln med `slaUppAktor()`, avvisar en agent- eller systemnyckel med `303` till `/vy/logga-in?fel=agent` utan session och utan att värdet upprepas, och är det enda ställe som anropar `startaSession()`. `sessionsAktor()` i `src/http/vy/session.ts` läser bara kakan `arenden_vy` och processens sessioner; vyn slår aldrig upp en session i en annan tjänst, och inget mellanlager före vyns rutter sätter en aktör. `skrivrutt()` kräver dessutom `aktor.typ === 'manniska'` genom `kravManniska()` (403 `kraver_manniska`) som andra linje, och skrivformulären renderas bara när `kanSkriva(aktor)` är sant. `test/manniska-yta.test.ts` och `test/vysession.test.ts` prövar vägen.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-14 (inloggningen) | `POST /vy/logga-in` är den enda vägen till en session: nyckeln slås upp med `slaUppAktor()`, en agent- eller systemnyckel ger `?fel=agent` utan session, och bara rutten anropar `startaSession()` | `src/http/vy/skrivning.ts` (POST /vy/logga-in), `src/http/vy/session.ts` (startaSession) | `test/manniska-yta.test.ts` (Story 3.1 AK 1, AK 2, AK 4), `test/vysession.test.ts` (Story 3.4 AK 3) |
+| FR-14 (sessionens enda källa) | `sessionsAktor()` läser bara kakan `arenden_vy` och processens sessioner; inget mellanlager före /vy och inget uppslag i en annan tjänst | `src/http/vy/session.ts` (sessionsAktor), `src/http/app.ts` | `test/vysession.test.ts` (Story 3.4 AK 1, AK 3) |
+| FR-14 (skrivramen, formulären och konfigurationen) | `skrivrutt()` kräver människa genom `kravManniska()`; formulären renderas bara när `kanSkriva()` är sant; miljön läses bara i `src/config.ts` | `src/http/vy/skrivning.ts` (skrivrutt, kanSkriva), `src/http/vy/session.ts` (kravManniska), `src/config.ts` | `test/manniska-yta.test.ts` (Story 3.1 AK 3, AK 9), `test/vysession.test.ts` (Story 3.4 AK 2) |
 
 ## Gränser för Etapp 2a
 

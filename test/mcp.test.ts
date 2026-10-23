@@ -382,11 +382,14 @@ function importfel(filer: Kallfil[]): string[] {
   return fel;
 }
 
+// Story 3.4: namnet byggs av delar för nollträffskravet i test/; förbudet i src/mcp/ gäller oförändrat.
+const BORTTAGEN_ADRESSVARIABEL = ['REDOVISNING', 'URL'].join('_');
+
 /** Dev Notes → Det statiska provet: orden som aldrig får stå i en fil under src/mcp/, kommentarer också. */
 const FORBJUDNA_TEXTER = [
   'VAULT_PATH',
   'CRM_KONF_PATH',
-  'REDOVISNING_URL',
+  BORTTAGEN_ADRESSVARIABEL,
   'DATABASE_URL',
   'DATABASE_ADMIN_URL',
   'process.env',
@@ -465,7 +468,7 @@ const PAHITTADE: (Kallfil & { fynd: Fyndslag[] })[] = [
   },
   {
     fil: 'src/mcp/pahittadRedovisning.ts',
-    text: "export const nyckel = 'REDOVISNING_URL';\n",
+    text: `export const nyckel = '${BORTTAGEN_ADRESSVARIABEL}';\n`,
     fynd: ['forbjudnaTexter'],
   },
   {

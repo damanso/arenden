@@ -8,7 +8,6 @@ import { autentisera } from './middleware/autentisera.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { actionsRouter } from './routes/actions.js';
 import { vyRouter } from './routes/vy.js';
-import { medRedovisningssession } from './vy/session.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -63,16 +62,12 @@ export function createApp(): express.Express {
   // nedan.
   //
   // K-1 (beslut #64): vyn är inte längre ren läsyta. SKRIVNING från vyn kräver
-  // en session, och en session kan bara födas ur en giltig API-nyckel
+  // en session, och en session kan bara födas ur en giltig människonyckel (B-03, Story 3.1 och 3.4)
   // (src/http/vy/session.ts) — aktören härleds alltså ur en nyckel även i
   // webbläsaren, precis som på /api. Nyckelkravet på GET är oförändrat borta.
-  // Davids EGEN inloggning, gjord i redovisningen, galler har ocksa.
-  // Mellanlagret slar upp den EN gang per foragan och lagger svaret pa
-  // req, sa att den synkrona sessionsAktor() slipper vanta pa ett
-  // natverksanrop tjugo ganger per renderad sida.
+  // Vyn slår aldrig upp någon session i en annan tjänst.
   //
   // Bara framfor /vy. /api ar orort: agenterna bar nyckel, aldrig kaka.
-  app.use('/vy', medRedovisningssession);
   app.use('/vy', vyRouter);
 
   app.use(

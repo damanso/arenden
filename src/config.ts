@@ -32,9 +32,6 @@ export const EnvSchema = z.object({
   // VAULT_PATH — så att testmiljön kan peka på en egen fil. Värdena i filen
   // stannar i processen och når aldrig klienten.
   CRM_KONF_PATH: z.string().min(1).default(path.join(homedir(), '.hermes', 'redovisning-mcp.json')),
-  // B-03: basen för /api/session/vem, bara läst av vy/session.ts.
-  // Tas bort med redovisningssessionen i Story 3.4.
-  REDOVISNING_URL: z.string().url().default('http://127.0.0.1:3001'),
   // Adaptern (src/adapter/) ringer actions-API:t över HTTP — aldrig databasen.
   ARENDEN_API_URL: z.string().url().default('http://127.0.0.1:3002'),
   ARENDEN_API_KEY: z.string().min(1).optional(),

@@ -5,8 +5,8 @@
 //   AK 2  aktören tas ur nyckeln, aldrig ur indata: .strict() i hela registret, på /api och i vyn (F5–F7, F12);
 //   AK 3  en write-action utan händelserad rullas tillbaka, körd genom executeAction (F8, F9);
 //   AK 4  events går inte att ändra, varken som app (42501) eller som ägare (P0001) (F3, F4);
-//   AK 5  varje rad via /api och vyn bär en aktör ur api_keys (F12–F14); sessionsAktor tar först
-//         req.redovisningsaktor: redovisningsundantaget ägs av Story 3.4 och står utanför provet;
+//   AK 5  varje rad via /api och vyn bär en aktör ur api_keys (F12–F14); vyns session föds bara
+//         ur en människonyckel (Story 3.4);
 //   AK 6  ingen SQL-skrivsats i src/http/, och README:s FR-4-rad pekar hit (F10, F11, F15).
 //
 // F14 är den SLUTNA listan över de filer som når executeAction, startaSession, skrivHandelse och
