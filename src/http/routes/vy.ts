@@ -91,6 +91,7 @@ import {
   nyKommentarForm,
   rattaArendeForm,
   skrivlage,
+  tillstandForm,
 } from '../vy/skrivning.js';
 
 export const vyRouter = Router();
@@ -948,6 +949,9 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         .join(' · '),
     )}</p>` +
     foralderrad +
+    // B-04, FR-32 (Story 3.3): efter summeringen och föräldern, före etiketterna
+    // (UX-specifikationen, Tillståndsformuläret).
+    tillstandForm(aktor, a) +
     etiketter +
     notisrad(req) +
     skrivlage(aktor, retur) +

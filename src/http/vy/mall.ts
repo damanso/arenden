@@ -584,6 +584,13 @@ border:var(--p-linje-1) solid var(--linje-2);font-weight:var(--p-vikt-1)}
 details.rattelse{margin:var(--p-rym-3) 0 0}
 details.rattelse summary{display:flex;align-items:center;min-height:var(--p-traff);
 cursor:pointer;color:var(--accent);font-size:var(--meta)}
+/* FR-32, Story 3.3: tillståndsformuläret. Hela etiketten är träffytan, 44 px
+   (UX-specifikationen, Tillgänglighet); reglerna under 640 px hör till Story 4.1. */
+fieldset.tillstand{border:0;margin:0 0 var(--p-rym-2);padding:0;min-width:0}
+fieldset.tillstand legend{padding:0;margin-bottom:var(--p-rym-1);font-size:var(--meta);
+color:var(--text-svag)}
+fieldset.tillstand label{display:flex;align-items:center;gap:var(--p-rym-2);
+min-height:var(--p-traff);cursor:pointer}
 .taggar{display:flex;flex-wrap:wrap;gap:var(--p-rym-1);margin:0 0 var(--p-rym-4)}
 form.taggform{margin:0}
 button.tagg{cursor:pointer;font-family:inherit;font-weight:var(--p-vikt-1)}

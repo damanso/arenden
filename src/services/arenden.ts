@@ -28,6 +28,11 @@ export interface Arende {
   foralder_titel: string | null;
   /** Antal direkta delärenden. 0 för de flesta; 21 för sändkön LOC-69. */
   antal_barn: number;
+  /**
+   * FR-32, B-04 (Story 3.3): åtagandets läge, null utan åtagande. Ytan läser det för att visa
+   * tillståndsformulärets val i förväg; regeln upprätthålls av uppdateraArendeState.
+   */
+  atagande_lage: Lage | null;
   skapad: Date;
   uppdaterad: Date;
 }
@@ -54,6 +59,7 @@ const KOLUMNER = `
   CASE WHEN f.id IS NULL THEN NULL ELSE ft.key || '-' || f.sequence_number END AS foralder_identifier,
   f.title AS foralder_titel,
   (SELECT count(*)::int FROM issues b WHERE b.foralder_id = i.id) AS antal_barn,
+  i.atagande_lage,
   i.skapad,
   i.uppdaterad,
   COALESCE((

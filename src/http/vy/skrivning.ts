@@ -23,13 +23,15 @@ import { executeAction } from '../../actions/execute.js';
 import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
 import type { Aktor } from '../../lib/aktor.js';
-import { AppError, UnauthenticatedError } from '../../lib/errors.js';
+import { AppError, BadRequestError, UnauthenticatedError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
-import { IdentifierSchema } from '../../lib/validation.js';
-import { listaEtikettnamn, listaProjektnamn } from '../../services/arenden.js';
+import { IdentifierSchema, StateTypSchema, type StateTyp } from '../../lib/validation.js';
+import { listaEtikettnamn, listaProjektnamn, type Arende } from '../../services/arenden.js';
+// Åtagande- och ärendemodulen importerar varandra: tabellen läses bara inne i tillatnaMal().
+import { STATE_FOR_LAGE, type Lage } from '../../services/atagande.js';
 import type { Kommentar } from '../../services/kommentarer.js';
 import { listaNycklar, slaUppAktor, type NyckelIVy } from '../../services/nycklar.js';
-import { datumtid, esc, proveniens, sida } from './mall.js';
+import { datumtid, esc, proveniens, sida, statuschip, statusordForTyp } from './mall.js';
 import {
   avslutaSession,
   kravManniska,
@@ -99,6 +101,7 @@ const NOTISER: Record<string, string> = {
   etikett_borttagen: 'Etiketten är borttagen från ärendet.',
   namn_andrat: 'Namnet är rättat.',
   arendet_rattat: 'Ärendet är rättat. Den gamla texten finns kvar i historiken.',
+  tillstand_bytt: 'Tillståndet är bytt. Det gamla står kvar i historiken.',
   nyckel_aterkallad: 'Nyckeln är återkallad och fungerar inte längre.',
 };
 
@@ -174,6 +177,12 @@ const FELBESKED: Record<string, Felbeskrivning> = {
     mening: () => 'Begäran kom inte från vyns egna sidor och avvisades. Ingenting sparades.',
     tillArendet: false,
   },
+  // B-04 (Story 3.3): ytans egna formulär ger aldrig koden, men en handskriven adress kan.
+  okant_handgrepp: {
+    rubrik: 'Okänt handgrepp',
+    mening: () => 'Adressen anger ett handgrepp som ärendesidan inte har. Ingenting sparades.',
+    tillArendet: true,
+  },
 };
 
 /**
@@ -213,6 +222,7 @@ const FALTNAMN: Record<string, string> = {
   fran: 'Nuvarande namn',
   label: 'Etikett',
   identifier: 'Ärendenummer',
+  state_typ: 'Nytt tillstånd',
   kommentar_id: 'Kommentarens id',
   nyckel_id: 'Nyckelns id',
 };
@@ -408,6 +418,90 @@ export function rattaArendeForm(
   );
 }
 
+/**
+ * FR-32 (Story 3.3): lägesorden i tillståndsformulärets spärrmening. Sluten: Record över Lage gör
+ * att tsc kräver alla fem, och ordet skrivs bara ur tabellen.
+ */
+const LAGESORD: Record<Lage, string> = {
+  registrerat: 'registrerat',
+  overtaget: 'övertaget',
+  hindrat: 'hindrat',
+  genomfort: 'genomfört',
+  avslutat: 'avslutat',
+};
+
+/**
+ * FR-32, B-02 och B-04 (Story 3.3): ytans ENDA källa till de mål tillståndsformuläret erbjuder.
+ * Den läser samma tabell som tjänstens regel (STATE_FOR_LAGE, Story 3.2), så att ytan aldrig
+ * erbjuder något som update_issue_state avvisar. Servern upprätthåller regeln ändå, oavsett vad
+ * ytan visar (architecture.md, Cross-Component Dependencies).
+ *
+ * Utan åtagande: varje typ utom den nuvarande. Med åtagande: bara stängningsmålet — Klart när
+ * åtagandet är genomfört och Avbrutet när det är avslutat — och bara när ärendet inte redan står
+ * där. Lägets öppna mål erbjuds aldrig (AK 5). Exporterad för provet (T5).
+ *
+ * Tabellen läses här inne och aldrig på modulnivå, eftersom åtagande- och ärendemodulen
+ * importerar varandra (samma regel som i src/services/arenden.ts).
+ */
+export function tillatnaMal(typ: StateTyp, lage: Lage | null): StateTyp[] {
+  if (lage === null) return StateTypSchema.options.filter((t) => t !== typ);
+  const mal = STATE_FOR_LAGE[lage];
+  return (mal === 'completed' || mal === 'canceled') && mal !== typ ? [mal] : [];
+}
+
+/**
+ * FR-32, B-04 (Story 3.3): byt tillstånd eller stäng ärendet från ärendesidan. Hopfällt som
+ * rättelsen och placerat efter summeringen och föräldern (UX-specifikationen, Tillståndsformuläret).
+ * Utan människosession visas inget — en knapp som säkert misslyckas ljuger med gränssnittet
+ * (samma regel som skrivlage()).
+ *
+ * Valen kommer bara ur tillatnaMal() och läget ur läsmodellen, aldrig ur SQL i vyn. Det som inte
+ * går förklaras i text: formuläret har inga inaktiverade kontroller och inget förval, så att ett
+ * oavsiktligt tryck på knappen inte byter något. Adressen är tillståndsgrenen i rättelserutten
+ * (?handgrepp=tillstand), och eftersom den inte slutar på /ratta förblir rättelseformuläret det
+ * första formuläret med den adressen på sidan.
+ */
+export function tillstandForm(aktor: Aktor | null, a: Arende): string {
+  if (!kanSkriva(aktor)) return '';
+  const lage = a.atagande_lage;
+  const nu = `<p class=summering>Nu: ${statuschip(a.state_typ, a.state_namn)}</p>`;
+  const mal = tillatnaMal(a.state_typ, lage);
+  const start = '<details class=rattelse><summary>Byt tillstånd</summary>';
+  if (mal.length === 0 && lage !== null) {
+    const sparr =
+      `Tillståndet följer åtagandet, som står i läget ${LAGESORD[lage]}. ` +
+      'Klart går när åtagandet är genomfört och Avbrutet när det är avslutat. ' +
+      'Åtagandet redovisas med belägg av den som utför det — inte härifrån.';
+    return `${start}${nu}<p class=notis>${esc(sparr)}</p></details>`;
+  }
+  const vag = `${arendeUrlFor(a.identifier)}/ratta?handgrepp=tillstand`;
+  const mening =
+    lage === 'genomfort'
+      ? '<p class=notis>Åtagandet är genomfört — ärendet kan stängas som Klart.</p>'
+      : lage === 'avslutat'
+        ? '<p class=notis>Åtagandet är avslutat — ärendet kan stängas som Avbrutet.</p>'
+        : '';
+  const val = mal
+    .map(
+      (typ) =>
+        `<label><input type=radio name=state_typ value="${esc(typ)}" required>` +
+        `<span>${esc(statusordForTyp(typ))}</span></label>`,
+    )
+    .join('');
+  return (
+    start +
+    `<form class=skrivform method=post action="${esc(vag)}">` +
+    nu +
+    mening +
+    '<fieldset class=tillstand><legend>Nytt tillstånd</legend>' +
+    val +
+    '</fieldset>' +
+    '<div class=skrivrad><button type=submit>Byt tillstånd</button>' +
+    '<span class=meta>Det gamla tillståndet står kvar i historiken. ' +
+    'Ändringen bär din aktörsidentitet.</span></div></form></details>'
+  );
+}
+
 export function kommentarsverktyg(aktor: Aktor | null, kommentar: Kommentar, retur: string): string {
   if (!kanSkriva(aktor)) return '';
   const id = esc(kommentar.id);
@@ -593,12 +687,37 @@ export function monteraSkrivrutter(router: Router): void {
   );
 
   // ---- Rätta ärendets titel och beskrivning (beslut #145) -----------------
+  //
+  // FR-32, B-04 (Story 3.3): rutten bär också tillståndsbytet, som en gren vald i
+  // adressen. Ingen ny rutt: adresskontraktet bär redan den här, och dess kopia
+  // skrivs bara av generatorn.
 
   router.post(
     '/arende/:identifier/ratta',
     skrivrutt(async (req, res, aktor) => {
       const identifier = ruttfalt(req.params['identifier']);
       const kropp = kroppen(req);
+      // B-04: adressen väljer handgrepp ur en sluten mängd. Utan värde rättas titel och
+      // beskrivning som förut (beslut #145, FR-29), med exakt `tillstand` byts tillståndet
+      // (FR-32), och allt annat avvisas innan något körs. Valet står i adressen och inte i
+      // ett dolt fält, så att rättelseformuläret förblir det första på sidan med adressen
+      // till den här rutten. Värdet läses rått och inte med falt(): ett tomt eller upprepat
+      // värde ska ge 400, inte rättelsen, som tömmer en beskrivning som inte skickas.
+      const handgrepp = req.query['handgrepp'];
+      if (handgrepp !== undefined) {
+        if (handgrepp !== 'tillstand') throw new BadRequestError('okant_handgrepp');
+        // Sluten fältmängd: state_id skickas aldrig från ytan. state_typ är alltid en
+        // sträng, så att zods första fel står på fältet och felsidan nämner Nytt tillstånd.
+        const resultat = await kor(aktor, 'update_issue_state', {
+          identifier,
+          state_typ: falt(kropp['state_typ']) ?? '',
+        });
+        res.redirect(
+          303,
+          medNotis(arendeUrlFor(identifier), andrad(resultat) ? 'tillstand_bytt' : 'oforandrad'),
+        );
+        return;
+      }
       // falt() ger undefined för tom sträng. För titeln är det rätt (ett
       // ärende utan rubrik finns inte, och schemat fäller det). För
       // beskrivningen är tomt ett giltigt värde — därför null, som töms.
