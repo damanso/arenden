@@ -596,6 +596,17 @@ form.taggform{margin:0}
 button.tagg{cursor:pointer;font-family:inherit;font-weight:var(--p-vikt-1)}
 form.namnform{display:flex;gap:var(--p-rym-2);flex-wrap:wrap;align-items:center;
 margin:0}
+/* B-16 (FR-15, Story 4.1): formularen under telefonbrytpunkten */
+@media(max-width:640px){
+label{display:block}
+input[type=text],input[type=password],input[type=date],input[type=search],textarea,select{
+width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+fieldset{border:0;padding:0;min-width:0}
+legend{padding:0;max-width:100%}
+fieldset label{display:flex;align-items:center;min-height:var(--falt-hojd)}
+form{max-width:100%;min-width:0}
+button{max-width:100%}
+.skrivrad>button{flex:1 1 auto}}
 
 /* ---- Komponentgrammatiken ur kanon: chip, badge, factcard, tabell ----
    Namnen ar kanons, inte vyns egna. Det ar hela poangen: en chip ska heta
