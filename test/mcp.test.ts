@@ -16,9 +16,10 @@
 // testdatabasen, på loopback med en port som systemet väljer. Den stängda porten är den enda felvägen för
 // nätet, och API:ts 429 prövas på funktionsnivå med tolkaSvar() (docs/project-context.md, Testregler).
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -28,7 +29,8 @@ import { actionManifest } from '../src/actions/registry.js';
 import { pool } from '../src/db/pool.js';
 import { createApp } from '../src/http/app.js';
 import { proveniens } from '../src/http/vy/mall.js';
-import { GATEWAYKONFIG, INGA_SESSIONER, skapaMcpApp, startaGateway } from '../src/mcp/server.js';
+import { skapaOAuth } from '../src/mcp/oauth.js';
+import { GATEWAYKONFIG, skapaMcpApp, startaGateway } from '../src/mcp/server.js';
 import { VERKTYG, VERKTYGSNAMN, byggVerktyg, hittaVerktyg, tolkaSvar } from '../src/mcp/verktyg.js';
 import { kor, nyNyckel, raknaRader, seedaTeam } from './helpers.js';
 
@@ -133,17 +135,37 @@ const anrop: { metod: string; vag: string; auth: string | null }[] = [];
 const rakna = (): number => anrop.length;
 
 /**
- * Provets nyckellager, AK 1:s hjälpare: en token kopplas till en nyckel. OAuth-flödet som fyller lagret i
- * drift är Story 4.3; lagret finns bara här.
+ * Provets nyckellager, AK 1:s hjälpare: en token kopplas till en nyckel, och token är själv sessionens id.
+ * I drift fyller OAuth-flödet lagret (src/mcp/oauth.ts), och det prövas i test/mcp-oauth.test.ts.
  */
 const sessioner = new Map<string, string>();
-const nyckellager = { nyckelFor: (token: string): string | undefined => sessioner.get(token) };
+const nyckellager = {
+  nyckelFor: (token: string): { nyckel: string; session: string } | undefined => {
+    const nyckel = sessioner.get(token);
+    return nyckel === undefined ? undefined : { nyckel, session: token };
+  },
+  // Story 4.3: gatewayen glömmer sessionen som uppslaget gav när API:t avvisar dess nyckel.
+  glom: (session: string): void => {
+    sessioner.delete(session);
+  },
+};
 
 function koppla(nyckel: string): string {
   const token = `mcp-prov-${randomUUID()}`;
   sessioner.set(token, nyckel);
   return token;
 }
+
+/**
+ * Story 4.3: skapaMcpApp() tar OAuth-delen, som ger metadata-adressen i 401-svaret och OAuth-vägarna. Provets
+ * eget lager står kvar; OAuth-flödet prövas i test/mcp-oauth.test.ts. Samma form som klientfilen.
+ */
+const PROVKLIENT = Object.freeze({
+  client_id: 'claude-prov',
+  client_secret: `prov-hemlighet-${'x'.repeat(25)}`,
+  utgivare: 'https://prov.example',
+});
+let oauth: ReturnType<typeof skapaOAuth>;
 
 let api: express.Express;
 let server: Server;
@@ -179,7 +201,8 @@ beforeAll(async () => {
   await new Promise<void>((klar) => server.once('listening', klar));
   apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  gateway = skapaMcpApp({ apiUrl, nyckellager, grans: 100_000 });
+  oauth = skapaOAuth({ klient: PROVKLIENT, apiUrl, grans: 100_000 });
+  gateway = skapaMcpApp({ apiUrl, nyckellager, grans: 100_000, oauth });
   tokenDavid = koppla(david);
   tokenAgent = koppla(agent);
 });
@@ -356,6 +379,11 @@ const IMPORTLISTA: Record<string, { varden: readonly string[]; typer: boolean }>
   'node:path': { varden: ['default'], typer: false },
   'node:url': { varden: ['pathToFileURL'], typer: false },
   'src/actions/registry': { varden: ['actionManifest'], typer: false },
+  // Story 4.3 AK 5: OAuth-delen. Ur node:fs bara läsfunktionerna, så att ingen fil under src/mcp/ kan
+  // skriva till disk.
+  'node:crypto': { varden: ['createHash', 'randomBytes', 'randomUUID', 'timingSafeEqual'], typer: false },
+  'node:fs': { varden: ['closeSync', 'fstatSync', 'openSync', 'readFileSync'], typer: false },
+  'node:os': { varden: ['homedir'], typer: false },
 };
 
 /** Avvikelserna från importlistan, var och en med filens namn. Tom = filerna importerar bara det tillåtna. */
@@ -434,7 +462,7 @@ function importgraf(start: Kallfil[]): { filer: string[]; medPg: string[] } {
 
 type Fyndslag = 'importfel' | 'importgraf' | 'forbjudnaTexter';
 
-/** Åtta påhittade filer under src/mcp/ och var de ska fällas. Proven visar att mätningen kan slå ut. */
+/** Tio påhittade filer under src/mcp/ och var de ska fällas. Proven visar att mätningen kan slå ut. */
 const PAHITTADE: (Kallfil & { fynd: Fyndslag[] })[] = [
   {
     fil: 'src/mcp/pahittadPool.ts',
@@ -475,6 +503,17 @@ const PAHITTADE: (Kallfil & { fynd: Fyndslag[] })[] = [
     fil: 'src/mcp/pahittadDok.ts',
     text: "export const dok = () => fetch('/vy/dok/exempel.md');\n",
     fynd: ['forbjudnaTexter'],
+  },
+  // Story 4.3 AK 5: en skrivande fs-funktion och en annan funktion ur node:os än homedir.
+  {
+    fil: 'src/mcp/pahittadSkrivning.ts',
+    text: "import { writeFileSync } from 'node:fs';\n",
+    fynd: ['importfel'],
+  },
+  {
+    fil: 'src/mcp/pahittadOs.ts',
+    text: "import { networkInterfaces } from 'node:os';\n",
+    fynd: ['importfel'],
   },
 ];
 
@@ -627,6 +666,7 @@ describe('FR-24 (d)/Story 4.2 AK 1, AK 3 och AK 5: verktygslistan, sessionen och
         },
       },
       grans: 100_000,
+      oauth,
     });
     const fel = await post(kastande, `mcp-prov-${randomUUID()}`, initiera);
     expect(fel.status).toBe(500);
@@ -654,11 +694,11 @@ describe('FR-24 (d)/Story 4.2 AK 2 och AK 6: gatewayens konfiguration', () => {
 });
 
 describe('FR-24 (d)/Story 4.2 AK 4, AK 2 och AK 6: inget utanför listan i src/mcp/', () => {
-  it('F6 (AK 4, AK 2 och AK 6): importlistan, de förbjudna texterna och importgrafen, med åtta påhittade', () => {
+  it('F6 (AK 4, AK 2 och AK 6; Story 4.3 AK 5): importlistan, de förbjudna texterna och importgrafen, med tio påhittade', () => {
     const katalogen = readdirSync(path.join(ROT, 'src/mcp'), { recursive: true }).map(String).sort();
-    expect(katalogen).toEqual(['server.ts', 'verktyg.ts']);
+    expect(katalogen).toEqual(['oauth.ts', 'server.ts', 'verktyg.ts']);
     const mcp = kallfiler('src/mcp');
-    expect(mcp.map((f) => f.fil)).toEqual(['src/mcp/server.ts', 'src/mcp/verktyg.ts']);
+    expect(mcp.map((f) => f.fil)).toEqual(['src/mcp/oauth.ts', 'src/mcp/server.ts', 'src/mcp/verktyg.ts']);
 
     expect(importfel(mcp)).toEqual([]);
     expect(forbjudnaTexter(mcp)).toEqual([]);
@@ -859,7 +899,7 @@ describe('FR-24 (d)/Story 4.2 AK 5: fel ur API:t', () => {
     texter.push(text(saknas));
 
     // En gateway mot en stängd port (som test/crm.test.ts), samma lager.
-    const stangd = skapaMcpApp({ apiUrl: 'http://127.0.0.1:1', nyckellager, grans: 100_000 });
+    const stangd = skapaMcpApp({ apiUrl: 'http://127.0.0.1:1', nyckellager, grans: 100_000, oauth });
     const ingetApi = await post(stangd, tokenDavid, {
       jsonrpc: '2.0',
       id: 1,
@@ -960,7 +1000,7 @@ describe('FR-24 (d)/Story 4.2 AK 1: alla sju verktygen', () => {
 describe('FR-24 (d)/Story 4.2 AK 5: gränsen', () => {
   it('F13 (AK 5): över gatewayens egen gräns svarar /mcp 429 med Retry-After, före sessionen', async () => {
     const fore = rakna();
-    const smal = skapaMcpApp({ apiUrl, nyckellager, grans: 3 });
+    const smal = skapaMcpApp({ apiUrl, nyckellager, grans: 3, oauth });
     const lista = { jsonrpc: '2.0', id: 1, method: 'tools/list' };
     for (let i = 0; i < 3; i += 1) expect((await post(smal, tokenDavid, lista)).status, `anrop ${i + 1}`).toBe(200);
 
@@ -1002,7 +1042,7 @@ function stang(s: Server): Promise<void> {
 }
 
 describe('FR-24 (d)/Story 4.2 AK 6: gatewayen binder bara loopback', () => {
-  it('F15 (AK 6): processens server lyssnar bara på 127.0.0.1, vad miljön och anroparen än säger', async () => {
+  it('F15 (AK 6; Story 4.3 AK 5): processens server lyssnar bara på 127.0.0.1 och startar bara med klientfilen', async () => {
     const initiera = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -1010,46 +1050,59 @@ describe('FR-24 (d)/Story 4.2 AK 6: gatewayen binder bara loopback', () => {
       params: { protocolVersion: '2025-06-18' },
     });
 
-    for (const varde of ['0.0.0.0', 'localhost', '::']) {
-      const fore = { HOST: process.env.HOST, MCP_HOST: process.env.MCP_HOST };
-      let s: Server;
-      try {
-        process.env.HOST = varde;
-        process.env.MCP_HOST = varde;
-        s = await startaGateway(0);
-      } finally {
-        for (const [namn, gammalt] of Object.entries(fore)) {
-          if (gammalt === undefined) delete process.env[namn];
-          else process.env[namn] = gammalt;
+    // Klientfilen i en tillfällig katalog, aldrig i hemkatalogen; rättigheterna sätts efter skrivningen.
+    const katalog = mkdtempSync(path.join(tmpdir(), 'arenden-mcp-f15-'));
+    try {
+      const klientfil = path.join(katalog, 'arenden-mcp-klient.json');
+      writeFileSync(klientfil, JSON.stringify(PROVKLIENT));
+      chmodSync(klientfil, 0o600);
+
+      for (const varde of ['0.0.0.0', 'localhost', '::']) {
+        const fore = { HOST: process.env.HOST, MCP_HOST: process.env.MCP_HOST };
+        let s: Server;
+        try {
+          process.env.HOST = varde;
+          process.env.MCP_HOST = varde;
+          s = await startaGateway(0, klientfil);
+        } finally {
+          for (const [namn, gammalt] of Object.entries(fore)) {
+            if (gammalt === undefined) delete process.env[namn];
+            else process.env[namn] = gammalt;
+          }
         }
-      }
-      const adress = s.address() as AddressInfo;
-      expect(adress.address, varde).toBe('127.0.0.1');
-      expect(adress.family, varde).toBe('IPv4');
-      expect(adress.port, varde).toBeGreaterThan(0);
+        const adress = s.address() as AddressInfo;
+        expect(adress.address, varde).toBe('127.0.0.1');
+        expect(adress.family, varde).toBe('IPv4');
+        expect(adress.port, varde).toBeGreaterThan(0);
 
-      // Det tomma lagret: 401 utan session och med en nyckel som bearer.
-      for (const auth of [undefined, `Bearer ${david}`]) {
-        const svar = await fetch(`http://127.0.0.1:${adress.port}/mcp`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(auth !== undefined ? { Authorization: auth } : {}) },
-          body: initiera,
-        });
-        expect(svar.status, `${varde} ${auth === undefined ? 'utan' : 'med'} bearer`).toBe(401);
-        expect(await svar.json()).toEqual({ error: 'unauthenticated' });
+        // OAuth-delens lager är tomt vid start: 401 utan session och med en nyckel som bearer, med
+        // WWW-Authenticate mot metadata.
+        for (const auth of [undefined, `Bearer ${david}`]) {
+          const namn = `${varde} ${auth === undefined ? 'utan' : 'med'} bearer`;
+          const svar = await fetch(`http://127.0.0.1:${adress.port}/mcp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(auth !== undefined ? { Authorization: auth } : {}) },
+            body: initiera,
+          });
+          expect(svar.status, namn).toBe(401);
+          expect(svar.headers.get('www-authenticate') ?? '', namn).toMatch(/^Bearer /);
+          expect(await svar.json(), namn).toEqual({ error: 'unauthenticated' });
+        }
+        await expect(stang(s)).resolves.toBeUndefined();
       }
-      await expect(stang(s)).resolves.toBeUndefined();
+
+      // Funktionen tar porten och klientfilens sökväg; ingen parameter bär värden. Ett värdnamn som andra
+      // argument (proven typkontrolleras inte) är ingen klientfil, och en fil med 0644 avvisas.
+      expect(startaGateway.length).toBe(1);
+      await expect((startaGateway as (...args: unknown[]) => Promise<Server>)(0, '0.0.0.0')).rejects.toHaveProperty(
+        'name',
+        'KlientfilFel',
+      );
+      chmodSync(klientfil, 0o644);
+      await expect(startaGateway(0, klientfil)).rejects.toHaveProperty('name', 'KlientfilFel');
+    } finally {
+      rmSync(katalog, { recursive: true, force: true });
     }
-
-    // Funktionen tar bara porten. Ett andra argument (proven typkontrolleras inte) används aldrig.
-    expect(startaGateway.length).toBe(1);
-    const medVard = await (startaGateway as (...args: unknown[]) => Promise<Server>)(0, '0.0.0.0');
-    const adress = medVard.address() as AddressInfo;
-    expect(adress.address).toBe('127.0.0.1');
-    expect(adress.family).toBe('IPv4');
-    await expect(stang(medVard)).resolves.toBeUndefined();
-
-    expect(INGA_SESSIONER.nyckelFor('vad-som-helst')).toBeUndefined();
   });
 });
 

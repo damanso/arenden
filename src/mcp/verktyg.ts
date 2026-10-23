@@ -10,7 +10,8 @@
 //     ett aktörsfält. Aktören tar API:t ur sessionens nyckel, som för varje annan klient (FR-4).
 //     Typer, mönster och gränser prövar API:t med registrets strikta scheman; här står bara det Claude
 //     behöver för att skicka rätt fält.
-//  4. API:t anropas BARA härifrån, av anropaApi(), med den funna postens namn (Uppgift 3).
+//  4. API:t anropas BARA härifrån, av postaAction(), med ett av de sju namnen (genom anropaApi(), den
+//     funna postens namn) eller vem_ar_jag (genom fragaVemArJag(), Story 4.3).
 import { actionManifest } from '../actions/registry.js';
 
 /** B-19:s slutna lista, i B-19:s ordning. */
@@ -215,34 +216,96 @@ export function tolkaSvar(status: number, retryAfter: string | null, kropp: unkn
   return resultat(text, true);
 }
 
+/** Svaret ur API:t: statusen, Retry-After och kroppen (undefined när den inte var JSON). */
+interface Apisvar {
+  status: number;
+  retryAfter: string | null;
+  kropp: unknown;
+}
+
 /**
- * Den ENDA funktionen som anropar plattformen (invariant 4): POST mot /api/actions/ följt av den funna
- * postens namn, med sessionens nyckel som bearer. Adressen byggs aldrig av strängen i begäran, och
- * nyckeln hamnar aldrig i adressen. Ett kastat fel (nätet, tidsgränsen, en oläsbar kropp vid 2xx) ger
- * alltid samma fasta text, och inget ur felet förs vidare (docs/project-context.md rad 93).
+ * Den ENDA funktionen som anropar plattformen (invariant 4): POST mot /api/actions/ följt av namnet,
+ * med nyckeln som bearer. Namnet är ett av de sju eller vem_ar_jag, aldrig strängen i en begäran, och
+ * nyckeln hamnar aldrig i adressen. Ett kastat fel (nätet, tidsgränsen) ger 'svarade_inte', och inget ur
+ * felet förs vidare (docs/project-context.md rad 93).
  */
-export async function anropaApi(anrop: {
-  apiUrl: string;
-  nyckel: string;
-  namn: Verktygsnamn;
-  indata: Record<string, unknown>;
-}): Promise<Verktygsresultat> {
+async function postaAction(
+  apiUrl: string,
+  nyckel: string,
+  namn: Verktygsnamn | 'vem_ar_jag',
+  indata: Record<string, unknown>,
+): Promise<Apisvar | 'svarade_inte'> {
   try {
-    const svar = await fetch(`${anrop.apiUrl}/api/actions/${anrop.namn}`, {
+    const svar = await fetch(`${apiUrl}/api/actions/${namn}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${anrop.nyckel}` },
-      body: JSON.stringify(anrop.indata),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${nyckel}` },
+      body: JSON.stringify(indata),
       signal: AbortSignal.timeout(TIDSGRANS_MS),
     });
     let kropp: unknown;
     try {
       kropp = await svar.json();
     } catch {
-      if (svar.ok) return resultat(SVARADE_INTE, true);
       kropp = undefined;
     }
-    return tolkaSvar(svar.status, svar.headers.get('retry-after'), kropp);
+    return { status: svar.status, retryAfter: svar.headers.get('retry-after'), kropp };
   } catch {
-    return resultat(SVARADE_INTE, true);
+    return 'svarade_inte';
   }
+}
+
+/**
+ * Utfallet av ett verktygsanrop: ett verktygsresultat, eller 'nyckeln_avvisad' när API:t svarade 401 för
+ * sessionens nyckel (Story 4.3 AK 4). Det senare är inget verktygsfel utan sessionens slut.
+ */
+export type Anropsutfall = Verktygsresultat | 'nyckeln_avvisad';
+
+/**
+ * Verktygsanropet: den funna postens namn med sessionens nyckel, genom postaAction(). Ett API som inte
+ * svarar ger alltid samma fasta text, och en oläsbar kropp vid 2xx likaså (tolkaSvar() utan result).
+ */
+export async function anropaApi(anrop: {
+  apiUrl: string;
+  nyckel: string;
+  namn: Verktygsnamn;
+  indata: Record<string, unknown>;
+}): Promise<Anropsutfall> {
+  const svar = await postaAction(anrop.apiUrl, anrop.nyckel, anrop.namn, anrop.indata);
+  if (svar === 'svarade_inte') return resultat(SVARADE_INTE, true);
+  // Story 4.3 AK 4: API:t svarar 401 bara ur autentiseringen, när nyckeln är okänd eller återkallad. Den
+  // signalen prövas före tolkaSvar(), så att den aldrig blir ett verktygsresultat.
+  if (svar.status === 401) return 'nyckeln_avvisad';
+  return tolkaSvar(svar.status, svar.retryAfter, svar.kropp);
+}
+
+/** Nyckelns aktör, som vem_ar_jag ger den. */
+export interface NyckelnsAktor {
+  aktor_typ: 'manniska' | 'agent' | 'system';
+  aktor_namn: string;
+}
+
+const arAktorstyp = (v: unknown): v is NyckelnsAktor['aktor_typ'] =>
+  v === 'manniska' || v === 'agent' || v === 'system';
+
+/**
+ * Story 4.3, B-19 punkt 2: vem nyckeln är, enligt API:t. 200 med ett `result` som har exakt aktor_typ och
+ * aktor_namn ger aktören; 401 (nyckeln är okänd eller återkallad) ger 'okand'; allt annat, också ett API
+ * som inte svarar, ger 'svarade_inte'. Gatewayen avgör alltså aldrig själv vem en nyckel tillhör.
+ */
+export async function fragaVemArJag(
+  apiUrl: string,
+  nyckel: string,
+): Promise<NyckelnsAktor | 'okand' | 'svarade_inte'> {
+  const svar = await postaAction(apiUrl, nyckel, 'vem_ar_jag', {});
+  if (svar === 'svarade_inte') return 'svarade_inte';
+  if (svar.status === 401) return 'okand';
+  const result = svar.status === 200 && arObjekt(svar.kropp) ? svar.kropp['result'] : undefined;
+  // Exakt de två fälten: ett svar med något mer eller mindre godtas inte.
+  if (!arObjekt(result) || Object.keys(result).sort().join(',') !== 'aktor_namn,aktor_typ') {
+    return 'svarade_inte';
+  }
+  const typ = result['aktor_typ'];
+  const namn = result['aktor_namn'];
+  if (!arAktorstyp(typ) || typeof namn !== 'string') return 'svarade_inte';
+  return { aktor_typ: typ, aktor_namn: namn };
 }

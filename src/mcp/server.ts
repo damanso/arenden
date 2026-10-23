@@ -1,11 +1,19 @@
-// FR-24 (d), B-19, Story 4.2: MCP-gatewayen, en egen process som är klient till ärendenas actions-API.
+// FR-24 (d), B-19, Story 4.2 och 4.3: MCP-gatewayen, en egen process som är klient till ärendenas
+// actions-API.
 //
 // FEM invarianter, som granskaren kan läsa av rakt här:
-//  1. Bara /mcp. Allt annat svarar 404, och /mcp tar bara POST (405 annars).
-//  2. Konfigurationen är konstanter (GATEWAYKONFIG) och läses aldrig ur miljön. Gatewayen laddar inte
-//     appens konfiguration och har ingen databasanslutning (AK 2, AK 6).
-//  3. Sessionen avgörs av nyckellagret: bearer-token → nyckel, annars 401 innan kroppen ens tolkas.
+//  1. Bara /mcp och OAuth-delens vägar: metadata, /authorize och /token (oauth.ts). Allt annat svarar 404,
+//     och /mcp tar bara POST (405 annars) (B-19 punkt 1).
+//  2. Konfigurationen är konstanter (GATEWAYKONFIG, OAUTHKONFIG), och koden läser ingen miljövariabel.
+//     Värden, portarna och API-adressen flyttas aldrig av miljön. Klientfilens sökväg byggs däremot av
+//     os.homedir(), som Node på POSIX tar ur miljövariabeln HOME, så HOME avgör vilken klientfil som läses
+//     (OAUTHKONFIG i oauth.ts). Klientfilen är den enda fil gatewayen läser; den laddar inte appens
+//     konfiguration och har ingen databasanslutning (Story 4.2 AK 2 och AK 6, Story 4.3 AK 5).
+//  3. Sessionen avgörs av OAuth-delens lager: bearer-token → nyckeln och sessionens id, annars 401 innan
+//     kroppen ens tolkas, med WWW-Authenticate som pekar på skyddsresursens metadata (Story 4.3 AK 1).
 //     Nyckeln förs som argument till besvara() och sparas aldrig på begäran, i en logg eller i ett svar.
+//     När API:t svarar 401 för sessionens nyckel glöms sessionen ur uppslaget, och svaret är 401 (Story 4.3
+//     AK 4).
 //  4. Varje verktyg går till /api med sessionens nyckel (anropaApi() i verktyg.ts), så att API:ts regler
 //     (gränsen, B-02, människospärrarna, aktören ur nyckeln) gäller här utan att upprepas.
 //  5. Startdelen körs bara när filen är processens ingång, så att proven kan importera appen utan att
@@ -21,14 +29,16 @@ import type { Server } from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
+import { OAUTHKONFIG, lasKlientfil, legitimation, skapaOAuth } from './oauth.js';
+import type { OAuth } from './oauth.js';
 import { VERKTYG, anropaApi, hittaVerktyg, otillatnaFalt } from './verktyg.js';
 
 /**
  * Gatewayens hela konfiguration, som konstanter. Gatewayen ska bara binda loopback och bara skicka Davids
  * nyckel till appen på samma värd (B-19, FR-39), och portarna är fasta (docs/project-context.md rad 33).
- * Därför läser den ingen miljö och laddar inte appens konfiguration: den kan aldrig bära en databasadress,
- * ett valv eller en CRM-konfiguration, och ingen variabel kan flytta bindningen (FR-24 (d), Story 4.2
- * AK 2 och AK 6; correct-course 2026-10-21).
+ * Därför läses ingen av dem ur miljön, och gatewayen laddar inte appens konfiguration: den kan aldrig bära
+ * en databasadress, ett valv eller en CRM-konfiguration, och ingen variabel kan flytta bindningen (FR-24
+ * (d), Story 4.2 AK 2 och AK 6; correct-course 2026-10-21).
  */
 export const GATEWAYKONFIG = Object.freeze({
   HOST: '127.0.0.1',
@@ -37,12 +47,21 @@ export const GATEWAYKONFIG = Object.freeze({
   GRANS_PER_MINUT: 120,
 });
 
+/** Det som en bearer-token gav vid uppslaget: sessionens nyckel och sessionens id. */
+export interface Sessionen {
+  nyckel: string;
+  session: string;
+}
+
 /**
- * Sessionen: bearer-token → nyckel. Story 4.3 bygger lagret ur OAuth-flödet, där bara sha256 av token
- * lagras.
+ * Sessionen: bearer-token → nyckeln och sessionens id, och glom() som tar bort sessionen med det id:t. Id:t
+ * kommer ur uppslaget och sparas med begäran, så att glom() når sessionen också när token hunnit sluta
+ * gälla under API-anropet. I drift är det OAuth-delens lager (skapaOAuth() i oauth.ts), där bara sha256
+ * av koder och tokens lagras.
  */
 export interface Nyckellager {
-  nyckelFor(token: string): string | undefined;
+  nyckelFor(token: string): Sessionen | undefined;
+  glom(session: string): void;
 }
 
 /** Revisionerna med initialize, nyaste först. */
@@ -74,6 +93,8 @@ type JsonRpcId = string | number | null;
 interface Utfall {
   status: number;
   kropp?: Record<string, unknown>; // saknas: 202 utan kropp
+  /** Story 4.3 AK 4: API:t avvisade sessionens nyckel; sessionen glöms, och svaret är 401. */
+  sessionSlut?: true;
 }
 
 const arObjekt = (v: unknown): v is Record<string, unknown> =>
@@ -159,6 +180,8 @@ async function besvara(
         namn: verktyg.name,
         indata,
       });
+      // Story 4.3 AK 4: en återkallad nyckel är sessionens slut, inget verktygsresultat.
+      if (utfall === 'nyckeln_avvisad') return { status: 401, sessionSlut: true };
       return rpcResultat(id, utfall);
     }
     default:
@@ -178,19 +201,33 @@ function tolkensFel(fel: unknown): 'json' | number | null {
   return status >= 400 && status < 500 ? status : null;
 }
 
-/** Gatewayens Express-app. `apiUrl` är plattformens adress; i drift alltid GATEWAYKONFIG.API_URL. */
+/**
+ * Gatewayens Express-app. `apiUrl` är plattformens adress; i drift alltid GATEWAYKONFIG.API_URL. `oauth` ger
+ * utgivaren, som 401-svaret pekar på, och OAuth-vägarna (Story 4.3).
+ */
 export function skapaMcpApp(alternativ: {
   apiUrl: string;
   nyckellager: Nyckellager;
   grans: number;
+  oauth: Pick<OAuth, 'utgivare' | 'vagar'>;
 }): express.Express {
   const app = express();
   app.disable('x-powered-by');
-  // Gatewayen binder 127.0.0.1 och litar inte på någon proxy: req.ip är klientens egen adress.
+  // Gatewayen binder 127.0.0.1 och litar inte på någon proxy: req.ip är den anslutande adressen, som bakom
+  // funneln (Story 4.4) kan vara densamma för all trafik.
   app.set('trust proxy', false);
 
-  // Sessionens nyckel per begäran, bara i den här appens minne (invariant 3).
-  const nycklar = new WeakMap<Request, string>();
+  // Sessionens nyckel och id ur uppslaget, per begäran, bara i den här appens minne (invariant 3).
+  const sessionerna = new WeakMap<Request, Sessionen>();
+
+  // Story 4.3 AK 1: 401-svaret pekar på skyddsresursens metadata (RFC 9728), med felkoden invalid_token när
+  // en bearer-token fanns men inte gav någon nyckel (okänd, utgången eller glömd).
+  const metadata = `${alternativ.oauth.utgivare}/.well-known/oauth-protected-resource`;
+  const utanToken = `Bearer resource_metadata="${metadata}"`;
+  const ogiltigToken = `Bearer error="invalid_token", resource_metadata="${metadata}"`;
+  const nekad = (res: Response, huvud: string): void => {
+    res.status(401).set('WWW-Authenticate', huvud).json({ error: 'unauthenticated' });
+  };
 
   app.all(
     '/mcp',
@@ -212,30 +249,42 @@ export function skapaMcpApp(alternativ: {
       next();
     },
     (req: Request, res: Response, next: NextFunction) => {
-      const huvud = req.headers.authorization;
-      const nyckel = huvud?.startsWith('Bearer ')
-        ? alternativ.nyckellager.nyckelFor(huvud.slice('Bearer '.length).trim())
-        : undefined;
-      if (nyckel === undefined) {
-        res.status(401).json({ error: 'unauthenticated' });
+      // Schemanamnet jämförs utan skiftläge (RFC 7235 avsnitt 2.1), som på /token.
+      const token = legitimation(req.headers.authorization, 'Bearer');
+      if (token === undefined) {
+        nekad(res, utanToken);
         return;
       }
-      nycklar.set(req, nyckel);
+      const sessionen = alternativ.nyckellager.nyckelFor(token);
+      if (sessionen === undefined) {
+        nekad(res, ogiltigToken);
+        return;
+      }
+      sessionerna.set(req, sessionen);
       next();
     },
     express.json({ limit: '1mb' }),
     async (req: Request, res: Response) => {
-      const nyckel = nycklar.get(req);
-      if (nyckel === undefined) throw new Error('sessionen saknas');
+      const sessionen = sessionerna.get(req);
+      if (sessionen === undefined) throw new Error('sessionen saknas');
       const utfall = await besvara(req.body, {
         apiUrl: alternativ.apiUrl,
-        nyckel,
+        nyckel: sessionen.nyckel,
         version: req.get('MCP-Protocol-Version'),
       });
+      // Story 4.3 AK 4: API:ts 401 dödar sessionen ur uppslaget, med dess access- och refresh-token.
+      if (utfall.sessionSlut === true) {
+        alternativ.nyckellager.glom(sessionen.session);
+        nekad(res, ogiltigToken);
+        return;
+      }
       if (utfall.kropp === undefined) res.status(utfall.status).end();
       else res.status(utfall.status).json(utfall.kropp);
     },
   );
+
+  // Story 4.3: OAuth-delens vägar efter /mcp och före 404. Varje väg har sin egen gräns i routern.
+  app.use(alternativ.oauth.vagar);
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });
@@ -267,22 +316,22 @@ export function skapaMcpApp(alternativ: {
 // ---- Processen (Uppgift 5) ------------------------------------------------------------------------------
 
 /**
- * Processens nyckellager: inga sessioner. Story 4.3 ersätter det med OAuth-flödets lager; tills dess svarar
- * processen 401 på varje anrop.
+ * Story 4.2 AK 6 och Story 4.3 AK 5: startar gatewayen på `port` och värden GATEWAYKONFIG.HOST, med klienten
+ * ur klientfilen på `klientfil`. Funktionen tar porten och klientfilens sökväg; ingen parameter bär värden,
+ * så att varken en parameter eller en miljövariabel kan flytta bindningen. OAuth-delens lager är tomt vid
+ * varje start, så en omstart kräver ny auktorisering. Löftet uppfylls när servern lyssnar och avvisas med
+ * felet ur lasKlientfil() när klientfilen inte går att använda.
  */
-export const INGA_SESSIONER: Nyckellager = Object.freeze({ nyckelFor: () => undefined });
-
-/**
- * AK 6: startar gatewayen på `port` och värden GATEWAYKONFIG.HOST. Funktionen tar bara porten, så att varken
- * en parameter eller en miljövariabel kan bära en annan värd. Löftet uppfylls när servern lyssnar.
- */
-export function startaGateway(port: number): Promise<Server> {
-  const app = skapaMcpApp({
-    apiUrl: GATEWAYKONFIG.API_URL,
-    nyckellager: INGA_SESSIONER,
-    grans: GATEWAYKONFIG.GRANS_PER_MINUT,
-  });
+export function startaGateway(port: number, klientfil: string = OAUTHKONFIG.KLIENTFIL): Promise<Server> {
   return new Promise<Server>((klar, avvisa) => {
+    const klient = lasKlientfil(klientfil);
+    const oauth = skapaOAuth({ klient, apiUrl: GATEWAYKONFIG.API_URL });
+    const app = skapaMcpApp({
+      apiUrl: GATEWAYKONFIG.API_URL,
+      nyckellager: oauth.nyckellager,
+      grans: GATEWAYKONFIG.GRANS_PER_MINUT,
+      oauth,
+    });
     const server = app.listen(port, GATEWAYKONFIG.HOST);
     server.once('listening', () => klar(server));
     server.once('error', avvisa);
@@ -295,7 +344,14 @@ const arIngang =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
 if (arIngang) {
-  const server = await startaGateway(GATEWAYKONFIG.PORT);
+  // Utan en användbar klientfil startar gatewayen inte. Raden bär bara felets namn, aldrig dess text.
+  let server: Server;
+  try {
+    server = await startaGateway(GATEWAYKONFIG.PORT);
+  } catch (fel) {
+    console.error(`MCP-gatewayen startar inte (${fel instanceof Error ? fel.name : typeof fel})`);
+    process.exit(1);
+  }
   const adress = server.address();
   const plats =
     adress !== null && typeof adress === 'object' ? `${adress.address}:${adress.port}` : String(adress);

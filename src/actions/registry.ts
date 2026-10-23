@@ -809,6 +809,18 @@ export const ACTIONS: RegistreradAction[] = [
     },
   }),
 
+  // FR-24 (d), B-19 punkt 2, Story 4.3: MCP-gatewayen har ingen databas och styrker Davids
+  // människonyckel genom att fråga API:t vem nyckeln är. Svaret är bara aktörens typ och namn ur
+  // ctx.aktor (alltså ur nyckeln, FR-4), aldrig id, hash, tenant eller annat ur nyckelns rad. Read:
+  // ingen händelserad. Actionen är inget verktyg i Claude-sessionen (VERKTYGSNAMN i src/mcp/verktyg.ts).
+  def({
+    name: 'vem_ar_jag',
+    title: 'Visa nyckelns aktör (typ och namn)',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: async (ctx) => ({ aktor_typ: ctx.aktor.typ, aktor_namn: ctx.aktor.namn }),
+  }),
+
   def({
     name: 'revoke_api_key',
     title: 'Återkalla en API-nyckel',
