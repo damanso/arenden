@@ -126,8 +126,15 @@ async function iLage(lage: Lage, titel: string): Promise<string> {
   return id;
 }
 
+// Baslinjen 23/10: S3 föll på tidsgränsen (30 s) när varje avtryck slog upp samma id över API:t igen.
+// Ett ärendes id ändras aldrig och inget fall här byter team, så id:t slås upp en gång per ärende.
+const ARENDE_ID = new Map<string, string>();
 async function arendeId(identifier: string): Promise<string> {
-  return (await steg(hermes, 'get_issue', { identifier })).arende.id;
+  const sparat = ARENDE_ID.get(identifier);
+  if (sparat !== undefined) return sparat;
+  const id: string = (await steg(hermes, 'get_issue', { identifier })).arende.id;
+  ARENDE_ID.set(identifier, id);
+  return id;
 }
 
 async function rakningar() {
