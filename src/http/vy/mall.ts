@@ -1156,6 +1156,8 @@ export const VERB: Readonly<Record<string, string>> = {
   svarsversionen_var_behandlad: 'svarsversionen var redan behandlad',
   insatsen_fanns_redan: 'insatsen fanns redan',
   importerade_kommentar: 'importerade en kommentar',
+  // B-05 (Story 3.2): också försöket att lämna samma status ska synas i historiken.
+  status_oforandrad: 'lämnade statusen oförändrad',
 };
 
 /**

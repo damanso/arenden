@@ -374,16 +374,18 @@ export const ACTIONS: RegistreradAction[] = [
         message: 'ange antingen state_typ eller state_id — inte båda och inte ingen',
       }),
     handler: async (ctx, input) => {
-      const { arende, fran, till } = await uppdateraArendeState(ctx.client, ctx.tenantId, input.identifier, {
+      const { arende, fran, till, andrad } = await uppdateraArendeState(ctx.client, ctx.tenantId, input.identifier, {
         ...(input.state_typ ? { state_typ: input.state_typ } : {}),
         ...(input.state_id ? { state_id: input.state_id } : {}),
       });
       await ctx.skrivHandelse({
         issueId: arende.id,
-        verb: 'andrade_status',
-        payload: { identifier: arende.identifier, fran, till: till.namn, typ: till.typ },
+        verb: andrad ? 'andrade_status' : 'status_oforandrad',
+        payload: andrad
+          ? { identifier: arende.identifier, fran, till: till.namn, typ: till.typ }
+          : { identifier: arende.identifier },
       });
-      return arende;
+      return { ...arende, andrad };
     },
   }),
 

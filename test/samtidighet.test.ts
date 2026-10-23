@@ -875,7 +875,7 @@ describe('B-01/FR-8: kommentarsvägarna läser det värde som faktiskt ersätts'
 });
 
 describe('B-01: låsningen bor i två namngivna funktioner och anropas bara från skrivvägen', () => {
-  it('F33 (AK 7): de låsande läsningarna anropas från exakt sex ställen, inget i src/http/', () => {
+  it('F33 (AK 7): de låsande läsningarna anropas från exakt sju ställen, inget i src/http/', () => {
     const rot = fileURLToPath(new URL('../src', import.meta.url));
     const filer = readdirSync(rot, { recursive: true })
       .map(String)
@@ -915,6 +915,7 @@ describe('B-01: låsningen bor i två namngivna funktioner och anropas bara frå
       'src/actions/registry.ts · delete_comment · hamtaKommentarForAndring',
       'src/actions/registry.ts · update_comment · hamtaKommentarForAndring',
       'src/services/arenden.ts · uppdateraArendeFalt · hamtaArendeForAndring',
+      'src/services/arenden.ts · uppdateraArendeState · hamtaArendeForAndring',
       'src/services/kommentarer.ts · aterstallKommentar · hamtaKommentarForAndring',
       'src/services/kommentarer.ts · rattaKommentar · hamtaKommentarForAndring',
       'src/services/kommentarer.ts · taBortKommentar · hamtaKommentarForAndring',

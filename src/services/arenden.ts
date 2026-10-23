@@ -2,6 +2,8 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import { delaIdentifier, MAX_ARENDENUMMER, type StateTyp } from '../lib/validation.js';
 import { kravTeam, stateAvTyp, type WorkflowState } from './team.js';
+// Cirkulär ESM-import: tabellen läses bara inne i funktioner, efter modulernas utvärdering.
+import { STATE_FOR_LAGE, type Lage } from './atagande.js';
 
 export interface Arende {
   id: string;
@@ -465,14 +467,16 @@ export async function sattSekvens(
  * KRAV-11: uppdatera status via state-TYP eller state-ID. Typvägen är
  * done_state-mönstret ur skillsen (slå upp teamets completed-state); ID-vägen
  * finns för den som redan listat states.
+ * B-01 (Story 3.2): ärendet, state_id och läget läses under radlåset. En samtidig
+ * återöppning väntas in, eller väntar själv tills statusbytet är committat.
  */
 export async function uppdateraArendeState(
   client: PoolClient,
   tenantId: string,
   identifier: string,
   mal: { state_typ?: StateTyp; state_id?: string },
-): Promise<{ arende: Arende; fran: string; till: WorkflowState }> {
-  const arende = await hamtaArende(client, tenantId, identifier);
+): Promise<{ arende: Arende; fran: string; till: WorkflowState; andrad: boolean }> {
+  const arende = await hamtaArendeForAndring(client, tenantId, identifier);
   const team = await kravTeam(client, tenantId, arende.team_key);
 
   let state: WorkflowState;
@@ -490,26 +494,26 @@ export async function uppdateraArendeState(
     state = traff;
   }
 
-  // Bar arendet ett atagande ar workflow-statusen HARLEDD ur atagandets lage
-  // (spec 2026-09-09 avsnitt 3.5). Da far den inte sattas separat: ett Done
-  // som skrivs vid sidan av atagandet ar exakt den lognen provet ska fanga --
-  // ett resultat som pastas utan att nagot resultat finns.
-  const { rows: lagerader } = await client.query<{ atagande_lage: string | null }>(
-    'SELECT atagande_lage FROM issues WHERE id = $1',
-    [arende.id],
+  // FR-16 delkrav 6, B-02 (Story 3.2): alla fem typer prövas mot härledningen,
+  // också öppna typer. Hindrat får aldrig se avslutat ut. Regeln står före
+  // no-op så att en redan avvikande rad bara kan rättas till sitt härledda mål.
+  const { rows: lagerader } = await client.query<{ state_id: string; atagande_lage: string | null }>(
+    'SELECT state_id, atagande_lage FROM issues WHERE tenant_id = $1 AND id = $2',
+    [tenantId, arende.id],
   );
-  const lage = lagerader[0]?.atagande_lage ?? null;
-  if (lage !== null && (state.typ === 'completed' || state.typ === 'canceled')) {
-    const tillatet =
-      (state.typ === 'completed' && lage === 'genomfort') ||
-      (state.typ === 'canceled' && lage === 'avslutat');
-    if (!tillatet) {
-      throw new BadRequestError(
-        'atagandet_styr_statusen',
-        `${identifier} bar ett atagande i laget "${lage}" — statusen foljer atagandet. ` +
-          'Anvand redovisa_resultat (kraver belagg) eller avsluta_atagande (kraver grund).',
-      );
-    }
+  const rad = lagerader[0]!;
+  const lage = rad.atagande_lage;
+  if (lage !== null && state.typ !== STATE_FOR_LAGE[lage as Lage]) {
+    throw new BadRequestError(
+      'atagandet_styr_statusen',
+      `${identifier} bar ett atagande i laget "${lage}" — statusen foljer atagandet. ` +
+        'Anvand redovisa_resultat (kraver belagg) eller avsluta_atagande (kraver grund).',
+    );
+  }
+
+  // B-05, FR-32 (Story 3.2): samma state-id är inget byte och lämnar tidsstämpeln orörd.
+  if (state.id === rad.state_id) {
+    return { arende, fran: arende.state_namn, till: state, andrad: false };
   }
 
   await client.query('UPDATE issues SET state_id = $1, uppdaterad = now() WHERE id = $2', [
@@ -517,7 +521,10 @@ export async function uppdateraArendeState(
     arende.id,
   ]);
 
-  return { arende: await hamtaArendeViaId(client, tenantId, arende.id), fran: arende.state_namn, till: state };
+  return {
+    arende: await hamtaArendeViaId(client, tenantId, arende.id),
+    fran: arende.state_namn, till: state, andrad: true,
+  };
 }
 
 // ---- K-2/K-3: fältuppdateringar -------------------------------------------
@@ -729,6 +736,8 @@ export async function rorArende(
  * KRAV-12: agentkön. FOR UPDATE SKIP LOCKED gör att två samtidiga anrop plockar
  * OLIKA ärenden — den som kommer tvåa hoppar över den låsta raden i stället för
  * att vänta in den och sedan se ett redan claimat ärende. Tom kö = null.
+ * FR-16 delkrav 6, B-02 (Story 3.2): åtaganden får statusen ur läget och
+ * utföraren ur ta_over_atagande. Kön får därför bara välja ärenden utan åtagande.
  */
 export async function claimaNastaArende(
   client: PoolClient,
@@ -741,6 +750,7 @@ export async function claimaNastaArende(
        JOIN workflow_states s ON s.id = i.state_id
       WHERE i.tenant_id = $1
         AND i.claimad_av IS NULL
+        AND i.atagande_lage IS NULL
         AND s.typ IN ('backlog', 'unstarted')
       ORDER BY i.priority ASC NULLS LAST, i.skapad ASC
       FOR UPDATE OF i SKIP LOCKED

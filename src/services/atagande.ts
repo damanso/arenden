@@ -26,10 +26,15 @@
 // så att skal_saknas fortfarande prövas sist. Invarianten är ingen CHECK: rader som
 // skrivits förbi API:t mäts av matAtagandebrott, som bara läser, och rättas bara med
 // andra_atagande.
+//
+// Ärendets state-typ härleds ur läget på alla vägar (FR-16 delkrav 4 och 6,
+// B-02; Story 3.2). STATE_FOR_LAGE är tabellen, synkaState sätter den, och
+// uppdateraArendeState godtar för ett ärende med åtagande bara den, under radlås.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import type { Aktor } from '../lib/aktor.js';
+import type { StateTyp } from '../lib/validation.js';
 import { hamtaArende } from './arenden.js';
 
 export type Lage = 'registrerat' | 'overtaget' | 'hindrat' | 'genomfort' | 'avslutat';
@@ -247,8 +252,10 @@ function tillAtagande(rad: Rad): Atagande {
 /**
  * Ärendets vanliga workflow-status HÄRLEDS ur läget (spec §3.5). `hindrat`
  * får aldrig se avslutat ut: det stannar i started och syns som hinder.
+ * Härledningens enda definition (B-02, Story 3.2): används av synkaState,
+ * uppdateraArendeState och matStatusavvikelser.
  */
-const STATE_FOR_LAGE: Record<Lage, string> = {
+export const STATE_FOR_LAGE: Record<Lage, StateTyp> = {
   registrerat: 'unstarted',
   overtaget: 'started',
   hindrat: 'started',
@@ -974,4 +981,29 @@ export async function matAtagandebrott(client: PoolClient, tenantId: string): Pr
     if (r.saknar_foljs_upp) saknas.push('foljs_upp');
     return { identifier: r.identifier, lage: r.lage, saknas };
   });
+}
+
+export type Statusavvikelse = { identifier: string; lage: Lage; state_typ: StateTyp; mal: StateTyp };
+
+/**
+ * B-02, Story 3.2 AK 7 och AK 9: läsande mätning av rader skrivna förbi API:t.
+ * Inget radlås och ingen skrivning. Rättningen sker bara med update_issue_state till mal.
+ * Tabellen skickas som jsonb-värde så att härledningen har en enda definition.
+ */
+export async function matStatusavvikelser(client: PoolClient, tenantId: string): Promise<Statusavvikelse[]> {
+  const { rows } = await client.query<Statusavvikelse>(
+    `SELECT t.key || '-' || i.sequence_number AS identifier,
+            i.atagande_lage AS lage,
+            s.typ AS state_typ,
+            $2::jsonb ->> i.atagande_lage AS mal
+       FROM issues i
+       JOIN teams t ON t.id = i.team_id
+       JOIN workflow_states s ON s.id = i.state_id
+      WHERE i.tenant_id = $1
+        AND i.atagande_lage IS NOT NULL
+        AND s.typ IS DISTINCT FROM ($2::jsonb ->> i.atagande_lage)
+      ORDER BY t.key, i.sequence_number`,
+    [tenantId, JSON.stringify(STATE_FOR_LAGE)],
+  );
+  return rows;
 }
