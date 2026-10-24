@@ -678,7 +678,7 @@ const SENARE = '2026-10-30T08:00:00Z';
 // Ett år fram, räknat när provet körs (som SEN i test/insats.test.ts). Heter inte SEN: det är
 // åtagandets fasta tid ovan.
 const UPPSKJUTEN_TILL = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-const KONTRAKT = { system: 'hermes', kommando: 'besvara_beslut', objekt: '#153' };
+const KONTRAKT = { system: 'hermes', kommando: 'beslutskoe --besvara', objekt: '#153' };
 
 /** Insatsens fält ur grund() i test/insats.test.ts, med källan och ärendet. Utan identifier räknas raden inte i historiken. */
 function insatsen(stopp: string, identifier: string) {

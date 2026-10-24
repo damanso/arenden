@@ -570,6 +570,18 @@ Regeln står ordagrant som i regelkällan:
 | FR-14 (sessionens enda källa) | `sessionsAktor()` läser bara kakan `arenden_vy` och processens sessioner; inget mellanlager före /vy och inget uppslag i en annan tjänst | `src/http/vy/session.ts` (sessionsAktor), `src/http/app.ts` | `test/vysession.test.ts` (Story 3.4 AK 1, AK 3) |
 | FR-14 (skrivramen, formulären och konfigurationen) | `skrivrutt()` kräver människa genom `kravManniska()`; formulären renderas bara när `kanSkriva()` är sant; miljön läses bara i `src/config.ts` | `src/http/vy/skrivning.ts` (skrivrutt, kanSkriva), `src/http/vy/session.ts` (kravManniska), `src/config.ts` | `test/manniska-yta.test.ts` (Story 3.1 AK 3, AK 9), `test/vysession.test.ts` (Story 3.4 AK 2) |
 
+### FR-27 — insatstypen styr vilka kommandon som får utföras (Story 6.3)
+
+Typen avgör vilket kommando en insats får bära (FR-27, B-09). Tabellen är en sluten konstant, `KOMMANDOTABELL` i `src/services/insats.ts`, med en rad per typ och en citerad grund ur Astras enprodukt-analys §4, så som korten som David svarade Ja på 2026-10-16 och 2026-10-23 återger den. Tabellen, varje rad och varje lista är frysta. `registreraInsats` prövar varje registrering mot tabellen med `kommandotTillats()`, direkt efter grinden `kalla_saknas` och före varje skrivning. En kombination som tabellen avvisar får 400 `otillatet_kommando` och skriver ingenting, också när stoppet redan finns. `agarbeslut` tillåter bara Beslutsköns svarskommando `beslutskoe --besvara`. `utathandling` tillåter bara registreringen av ett faktiskt utfört utskick, `redovisa_resultat`, och att godkänna ett utkast är ett annat kommando. `kundkontakt` tillåter bara CRM:ets kommandon för kundlöften, `set_crm_commitment_status`, `snooze_crm_commitment` och `log_contact`. Ett kommando godtas bara om det är lika, tecken för tecken, med ett i raden. `godkannande` och `intygande` har ingen rad med kommandon ännu och godtar varje kommando, som före tabellen, tills raden förs in. Den läsande mätningen `npx tsx src/scripts/matInsatskombinationer.ts` listar befintliga insatser vars kombination tabellen avvisar. Den körs i en READ ONLY-transaktion och skriver ingenting. Provet `test/insats.test.ts` prövar tabellen, grinden och mätningen genom hela stacken mot testdatabasen.
+
+- Kommandotabellen (FR-27, B-09, Story 6.3): vilka kommandon en insatstyp får bära står i en enda sluten konstant, `KOMMANDOTABELL` i `src/services/insats.ts`, och prövas bara genom `kommandotTillats()`. `registreraInsats` anropar predikatet före varje skrivning och avvisar en otillåten kombination med 400 `otillatet_kommando`; en typ vars rad väntar godtar varje kommando tills raden förs in.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-27, typen styr kommandot: tabellen | en sluten konstant med en rad per typ och en citerad grund ur §4; härledda rader för `agarbeslut`, `utathandling` och `kundkontakt`; varje rad och lista fryst | `src/services/insats.ts` (`KOMMANDOTABELL`) | `test/insats.test.ts` (Story 6.3 AK 1, AK 2) |
+| FR-27, typen styr kommandot: grinden | `kommandotTillats()` före varje skrivning i `registreraInsats`; 400 `otillatet_kommando` och noll rader | `src/services/insats.ts` (`registreraInsats`, `kommandotTillats`) | `test/insats.test.ts` (Story 6.3 AK 3) |
+| FR-27, typen styr kommandot: mätningen | `matInsatskombinationer()` med samma predikat, i en READ ONLY-transaktion | `src/services/insats.ts`, `src/scripts/matInsatskombinationer.ts` | `test/insats.test.ts` (Story 6.3 AK 4) |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga

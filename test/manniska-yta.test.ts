@@ -348,7 +348,7 @@ describe('FR-14/Story 3.1 AK 5: tjänstelagrets människospärr', () => {
       stopp_id: 'f31:svar', typ: 'agarbeslut', tillhor: 'agare',
       utfall: 'Riktningen är vald och arbetet kan fortsätta', begard_handling: 'Välj mellan A och B',
       blockeringsgrund: 'Tidigare besked avgör inte valet',
-      handlingskontrakt: { system: 'hermes', kommando: 'besvara_beslut', objekt: '#153' },
+      handlingskontrakt: { system: 'hermes', kommando: 'beslutskoe --besvara', objekt: '#153' },
       kallor: [{ system: 'hermes', objekttyp: 'beslut', objekt_id: 'f31-1' }],
     });
     expect(reg.status, reg.text).toBe(200);

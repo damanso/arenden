@@ -8,6 +8,8 @@
 //     nyckeln i insats_kallor gör dubbletten omöjlig, inte otrolig.
 //   * TYPEN överlever. Ett CRM-löfte och ett ägarbeslut får inte bli identiska
 //     kort: typen avgör vilket kommando som får köras och vad formuläret ber om.
+//     KOMMANDOTABELL binder varje typ till sina kommandon, och registreraInsats
+//     avvisar en otillåten kombination före varje skrivning (FR-27, B-09, Story 6.3).
 //   * SVARET kräver en människa. Aktören tas ur API-nyckeln; en agentnyckel kan
 //     inte bokföras som om David svarat. Det är inte en regel i en kommentar —
 //     besvaraInsats kastar.
@@ -141,8 +143,88 @@ export interface RegistreraIn {
   kallor: Kallreferens[];
 }
 
+/** En rad i KOMMANDOTABELL: härledd med sina kommandon, eller väntande med dagens beteende. */
+export type Kommandorad =
+  | { readonly lage: 'harledd'; readonly kommandon: readonly string[]; readonly grund: string }
+  | { readonly lage: 'vantar'; readonly grund: string };
+
+// Object.freeze är grund. Därför fryser de två hjälparna själva raden och listan med
+// kommandon, och tabellen byggs bara med dem.
+function harledd(kommandon: readonly string[], grund: string): Kommandorad {
+  const rad: Kommandorad = { lage: 'harledd', kommandon: Object.freeze([...kommandon]), grund };
+  return Object.freeze(rad);
+}
+
+function vantar(grund: string): Kommandorad {
+  const rad: Kommandorad = { lage: 'vantar', grund };
+  return Object.freeze(rad);
+}
+
 /**
- * Registrerar en insats. IDEMPOTENT PÅ TVÅ SÄTT OCH ATOMÄR, och alla tre behövs:
+ * Typen styr vilket kommando som får utföras (FR-27, B-09). Den enda tabellen över vilka kommandon i
+ * handlingskontraktet en insatstyp får bära. Raderna är härledda ur Astras enprodukt-analys §4, så som
+ * korten som Davids svar 2026-10-16 och 2026-10-23 godkände återger den, och varje rad bär sin grund
+ * som text. Tabellen ändras bara genom en berättelse eller correct-course, aldrig i förbigående.
+ *
+ * Den är djupfryst: tabellen, varje rad och varje lista. En väntande rad (`vantar`) är dagens
+ * beteende, att typen godtar varje kommando, tills raden förs in. `satisfies` gör att tsc fäller en
+ * saknad och en extra typ. Grinden i registreraInsats och mätningen läser tabellen bara genom
+ * kommandotTillats().
+ */
+export const KOMMANDOTABELL: Readonly<Record<InsatsTyp, Kommandorad>> = Object.freeze({
+  agarbeslut: harledd(
+    ['beslutskoe --besvara'],
+    '§4 enligt kortets rekommendation, som Davids svar 2026-10-16 kl. 13.21 godkände: «ägarbeslut ger ' +
+      'ett svar på beslutet». Kommandot är Beslutsköns svarskommando, som insatssamling.py skickar för ' +
+      'beslut ur beslutskön (avläst 2026-10-17).',
+  ),
+  utathandling: harledd(
+    ['redovisa_resultat'],
+    '§4 enligt kortets rekommendation, som Davids svar 2026-10-16 kl. 13.21 godkände: «att godkänna ett ' +
+      'utkast är ett annat kommando än att registrera att något faktiskt har skickats». Registreringen av ' +
+      'ett faktiskt utfört utskick är redovisa_resultat, som kräver belägg (FR-16, B-07).',
+  ),
+  kundkontakt: harledd(
+    ['set_crm_commitment_status', 'snooze_crm_commitment', 'log_contact'],
+    '§4 enligt kortets rekommendation, som Davids svar 2026-10-23 kl. 22.28 godkände: CRM-löftena i ' +
+      'redovisningen ägs där, och «Typen får därför bara set_crm_commitment_status (klart kräver belägg), ' +
+      'snooze_crm_commitment och log_contact». Kommandona är CRM:ets befintliga kommandon för kundlöften.',
+  ),
+  godkannande: vantar(
+    '§4 enligt kortets rekommendation, som Davids svar 2026-10-23 kl. 22.28 godkände: «Därför får typen ' +
+      'bara redovisningens godkänn och avslå». Saknas: kommandonas namn i redovisningen, som ingen källa ' +
+      'i repot namnger. Raden förs in genom correct-course när namnen är lästa (FR-27, Story 6.3).',
+  ),
+  intygande: vantar(
+    '§4 enligt kortets rekommendation, som Davids svar 2026-10-23 kl. 22.28 godkände: ett eget kommando ' +
+      'i ärendeplattformen, skilt från att registrera ett resultat, byggs i en egen berättelse. Saknas: ' +
+      'kommandot, som inte finns än. «Fram till dess godtar typen varje kommando, som i dag» (FR-27, ' +
+      'Story 6.3).',
+  ),
+} satisfies Record<InsatsTyp, Kommandorad>);
+
+// Object.hasOwn: bara en egen nyckel är en typ, aldrig ett ärvt namn som constructor. Mätningen
+// läser typen ur databasen, där zod och CHECK inte står emellan.
+function arInsatsTyp(typ: string): typ is InsatsTyp {
+  return Object.hasOwn(KOMMANDOTABELL, typ);
+}
+
+/**
+ * Får en insats av typen bära kommandot (FR-27, B-09, Story 6.3)? En härledd rad godtar bara ett
+ * kommando som är en sträng och lika, tecken för tecken, med ett i raden: ingen trimning, inget
+ * skiftläge och inga argument. En väntande rad godtar varje kommando, också ett som saknas, eftersom
+ * det är dagens beteende. En typ som inte är en egen nyckel i tabellen godtas aldrig.
+ */
+export function kommandotTillats(typ: string, kommando: unknown): boolean {
+  if (!arInsatsTyp(typ)) return false;
+  const rad = KOMMANDOTABELL[typ];
+  if (rad.lage === 'vantar') return true;
+  return typeof kommando === 'string' && rad.kommandon.includes(kommando);
+}
+
+/**
+ * Registrerar en insats. IDEMPOTENT PÅ TVÅ SÄTT, ATOMÄR OCH BUNDEN TILL TYPENS KOMMANDON, och alla
+ * fyra behövs:
  *
  *   1. Samma stopp_id ger samma insats tillbaka — en omkörning skapar inget nytt.
  *   2. En källa som redan hör till EN ANNAN insats kopplas inte om i tysthet;
@@ -154,6 +236,11 @@ export interface RegistreraIn {
  *      inte: en rad som en annan transaktion lagt in men inte committat syns inte
  *      och går inte att låsa, så två samtidiga registreringar av samma nya stopp
  *      gick båda till INSERT, den andra fick 23505 och svaret blev 409.
+ *   4. TYPEN STYR KOMMANDOT (FR-27, B-09, Story 6.3): typen och kommandot i handlingskontraktet
+ *      prövas mot KOMMANDOTABELL med kommandotTillats() före varje skrivning, och en otillåten
+ *      kombination avvisas med otillatet_kommando. Transaktionen rullas då tillbaka innan
+ *      händelseraden skrivs. Grinden prövar indatan och inte den lagrade raden, så en avvisad
+ *      omregistrering av ett befintligt stopp lämnar raden orörd.
  */
 export async function registreraInsats(
   client: PoolClient,
@@ -164,6 +251,15 @@ export async function registreraInsats(
     throw new BadRequestError(
       'kalla_saknas',
       'en insats utan källa går inte att följa tillbaka till varför den finns',
+    );
+  }
+
+  // FR-27, B-09, Story 6.3: typen styr kommandot. Prövas före ärendeuppslaget och varje skrivning,
+  // så att en otillåten kombination ger noll rader, också när stoppet redan finns.
+  if (!kommandotTillats(input.typ, input.handlingskontrakt.kommando)) {
+    throw new BadRequestError(
+      'otillatet_kommando',
+      `kommandot får inte utföras för en insats av typen ${input.typ} enligt KOMMANDOTABELL (FR-27)`,
     );
   }
 
@@ -371,4 +467,33 @@ export async function listaInsatser(
     params,
   );
   return medKallor(client, tenantId, rows);
+}
+
+// ------------------------------------------------------------------ mätningen
+
+/** En befintlig insats vars kombination av typ och kommando tabellen avvisar; kommandot null när det saknas. */
+export interface Kombinationsbrott {
+  stopp_id: string;
+  typ: string;
+  lage: string;
+  kommando: string | null;
+}
+
+/**
+ * FR-27, B-09 (Story 6.3 AK 4): läsande mätning av befintliga insatser vars kombination tabellen
+ * avvisar, alltså rader som registrerades före grinden eller skrevs förbi den. Listan är underlaget
+ * för Beslutskön, som ändrar sina anropare. Inget rättas här, och ingen befintlig rad skrivs om.
+ * Mätningen filtrerar med samma kommandotTillats() som grinden och har ingen egen lista över
+ * kommandon. Inget radlås och ingen skrivning. handlingskontrakt->>'kommando' är SQL-NULL när
+ * kommandot saknas, och predikatet avvisar det för en härledd typ. Ordningen är skapad och id.
+ */
+export async function matInsatskombinationer(client: PoolClient, tenantId: string): Promise<Kombinationsbrott[]> {
+  const { rows } = await client.query<Kombinationsbrott>(
+    `SELECT stopp_id, typ, lage, handlingskontrakt->>'kommando' AS kommando
+       FROM insatser
+      WHERE tenant_id = $1
+      ORDER BY skapad, id`,
+    [tenantId],
+  );
+  return rows.filter((r) => !kommandotTillats(r.typ, r.kommando));
 }
