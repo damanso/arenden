@@ -30,10 +30,15 @@ export const TEST_VAULT = path.join(tmpdir(), 'arenden-test-vault');
 // och ett uppenbart attrapptoken som testet letar efter i varje svar.
 export const TEST_CRM_KONF = path.join(tmpdir(), 'arenden-test-crm-mcp.json');
 
+// Läsvyns publika adress för testerna (D-2, Story 11.2) — ALDRIG driftens.
+// .invalid är en reserverad toppdomän, så ingen länk i sviten kan nå något.
+export const TEST_VY_PUBLIK_URL = 'https://arenden-prov.invalid';
+
 export function applyTestEnv(): void {
   process.env.NODE_ENV = 'test';
   process.env.VAULT_PATH = TEST_VAULT;
   process.env.CRM_KONF_PATH = TEST_CRM_KONF;
+  process.env.VY_PUBLIK_URL = TEST_VY_PUBLIK_URL;
   process.env.HOST = '127.0.0.1';
   process.env.PORT = '3002';
   process.env.DATABASE_URL = `postgres://app@${HOST}:${PORT}/${TEST_DB_NAME}`;

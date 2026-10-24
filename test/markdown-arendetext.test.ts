@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Dokumentindex } from '../src/http/vy/dokument.js';
 import { autolanka, renderaArendetext } from '../src/http/vy/markdown.js';
+import type { Befintliga } from '../src/lib/arendelank.js';
 
 const index: Dokumentindex = {
   filnamn: new Map<string, readonly string[]>([
@@ -20,7 +21,11 @@ const index: Dokumentindex = {
   ]),
 };
 
-const rendera = (text: string): string => renderaArendetext(text, index);
+// D-2 (Story 11.2): renderaren länkar bara ärenden som finns. Fixturen bär de två nummer som filens
+// indata länkar till, så att varje förväntat utfall står kvar.
+const BEFINTLIGA: Befintliga = { team: new Set(['LOC']), arenden: new Set(['LOC-316', 'LOC-339']) };
+
+const rendera = (text: string): string => renderaArendetext(text, index, BEFINTLIGA);
 
 // ---- Grinden ---------------------------------------------------------------
 
@@ -396,7 +401,7 @@ describe('KRAV-5: autolänkningen är oförändrad', () => {
 
   it('samma ankare som autolanka() gav före bygget', () => {
     for (const rad of utanMarkdown) {
-      const fore = autolanka(rad, index);
+      const fore = autolanka(rad, index, BEFINTLIGA);
       const efter = rendera(rad);
       const ankare = (h: string): string[] => h.match(/<a [^>]*>[^<]*<\/a>/g) ?? [];
       expect(ankare(efter), rad).toEqual(ankare(fore));

@@ -17,6 +17,7 @@
 //     och dess kommando; svaret registrerar ställningstagandet och lämnar
 //     utförandet till den som äger domänreglerna.
 import type { PoolClient } from 'pg';
+import { arendeLank } from '../lib/arendelank.js';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Aktor } from '../lib/aktor.js';
 
@@ -46,6 +47,11 @@ export interface Insats {
   id: string;
   stopp_id: string;
   issue_id: string | null;
+  /**
+   * D-2, B-21 (Story 11.2): ärendets absoluta adress, eller null för en insats utan ärende.
+   * Härleds vid läsning i medKallor och lagras aldrig.
+   */
+  lank: string | null;
   typ: InsatsTyp;
   tillhor: InsatsTillhor;
   utfall: string;
@@ -72,7 +78,7 @@ const KOL = `id, stopp_id, issue_id, typ, tillhor, utfall, begard_handling,
 async function medKallor(
   client: PoolClient,
   tenantId: string,
-  rader: Omit<Insats, 'kallor'>[],
+  rader: Omit<Insats, 'kallor' | 'lank'>[],
 ): Promise<Insats[]> {
   if (!rader.length) return [];
   const { rows } = await client.query<Kallreferens & { insats_id: string }>(
@@ -92,7 +98,23 @@ async function medKallor(
     });
     per.set(k.insats_id, lista);
   }
-  return rader.map((r) => ({ ...r, kallor: per.get(r.id) ?? [] }));
+  // D-2, B-21 (Story 11.2): ärendets adress, i EN fråga för hela uppsättningen rader som
+  // källfrågan ovan — aldrig en per rad. Bara när någon rad har ett ärende.
+  const arendeIdn = [...new Set(rader.flatMap((r) => (r.issue_id === null ? [] : [r.issue_id])))];
+  const identifierFor = new Map<string, string>();
+  if (arendeIdn.length > 0) {
+    const { rows: arenden } = await client.query<{ id: string; identifier: string }>(
+      `SELECT i.id, t.key || '-' || i.sequence_number AS identifier
+         FROM issues i JOIN teams t ON t.id = i.team_id
+        WHERE i.tenant_id = $1 AND i.id = ANY($2::uuid[])`,
+      [tenantId, arendeIdn],
+    );
+    for (const a of arenden) identifierFor.set(a.id, a.identifier);
+  }
+  return rader.map((r) => {
+    const identifier = r.issue_id === null ? undefined : identifierFor.get(r.issue_id);
+    return { ...r, lank: identifier === undefined ? null : arendeLank(identifier), kallor: per.get(r.id) ?? [] };
+  });
 }
 
 async function las(
@@ -101,7 +123,7 @@ async function las(
   id: string,
   lasa = false,
 ): Promise<Insats> {
-  const { rows } = await client.query<Omit<Insats, 'kallor'>>(
+  const { rows } = await client.query<Omit<Insats, 'kallor' | 'lank'>>(
     `SELECT ${KOL} FROM insatser WHERE tenant_id = $1 AND id = $2${lasa ? ' FOR UPDATE' : ''}`,
     [tenantId, id],
   );
@@ -460,7 +482,7 @@ export async function listaInsatser(
     params.push(filter.tillhor);
     villkor.push(`tillhor = $${params.length}`);
   }
-  const { rows } = await client.query<Omit<Insats, 'kallor'>>(
+  const { rows } = await client.query<Omit<Insats, 'kallor' | 'lank'>>(
     `SELECT ${KOL} FROM insatser WHERE ${villkor.join(' AND ')}
       ORDER BY CASE tillhor WHEN 'agare' THEN 0 ELSE 1 END,
                frist NULLS LAST, skapad`,

@@ -14,10 +14,10 @@ import { fileURLToPath } from 'node:url';
 import { Router } from 'express';
 import { config } from '../../config.js';
 import { withTransaction } from '../../db/tx.js';
+import { arendeSokvag } from '../../lib/arendelank.js';
 import { NotFoundError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
 import {
-  IdentifierSchema,
   StateTypSchema,
   safeText,
   tolkaArendenummer,
@@ -28,6 +28,7 @@ import {
 import {
   aktorerMedSpar,
   barnFor,
+  befintligaArenden,
   byggMittLage,
   hamtaArende,
   hittaArendenMedNummer,
@@ -54,15 +55,18 @@ import {
   listaSenasteHandelser,
   type HandelseIVy,
 } from '../../services/handelser.js';
-import { listaBorttagnaKommentarer, listaKommentarer } from '../../services/kommentarer.js';
+import { listaBorttagnaKommentarer, listaKommentarer, type Kommentar } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm } from '../vy/crm.js';
-import { hamtaIndex, lasDokument, sakerSokvag } from '../vy/dokument.js';
+import { hamtaIndex, lasDokument, sakerSokvag, type Dokumentindex } from '../vy/dokument.js';
 import {
+  arendekandidater,
+  arendereferens,
   AVVECKLAD_LINEAR_LANK,
   linearAdress,
   renderaArendetext,
   renderaMarkdown,
   TIDIGARE_LINEAR_LANK,
+  type Uppslag,
 } from '../vy/markdown.js';
 import {
   brodsmula,
@@ -161,8 +165,9 @@ function sokLank(val: Val, nyckel?: Fasettnyckel, nyttVarde?: string): string {
   return `/vy/sok${fraga ? `?${fraga}` : ''}`;
 }
 
+// D-2, B-21 (Story 11.2): adressen byggs bara i src/lib/arendelank.ts.
 function arendeUrl(identifier: string): string {
-  return `/vy/arende/${encodeURIComponent(identifier)}`;
+  return arendeSokvag(identifier);
 }
 
 // ---- Byggstenar ------------------------------------------------------------
@@ -277,8 +282,12 @@ function handelseDetalj(verb: string, payload: unknown): string {
  * en intern länk till ärendet, och titeln står kvar som text under den: den
  * säger vad dokumentet var och står ingen annanstans på sidan. Utan nummer
  * blir huvudet titeln som ren text. Adressen i databasen rörs inte.
+ *
+ * D-2 (Story 11.2): numret går genom arendereferens. Finns ärendet inte blir
+ * huvudet en länk till nummeruppslaget med «(finns inte)», och i ett team som
+ * inte finns står numret som text.
  */
-function bilageRad(b: Bilaga): string {
+function bilageRad(b: Bilaga, uppslag: Uppslag): string {
   const url = sakerUrl(b.url);
   const titel = esc(b.titel);
   const linear = url ? linearAdress(url) : null;
@@ -288,7 +297,7 @@ function bilageRad(b: Bilaga): string {
     huvud = `${titel}<span>ingen giltig adress</span>`;
   } else if (nummer !== null) {
     huvud =
-      `<a href="${esc(arendeUrl(nummer))}">${esc(nummer)}</a>` +
+      (arendereferens(esc(nummer), nummer, uppslag) ?? esc(nummer)) +
       `<span>${esc(TIDIGARE_LINEAR_LANK)}</span>`;
   } else if (linear !== null) {
     huvud = `${titel}<span>${esc(AVVECKLAD_LINEAR_LANK)}</span>`;
@@ -644,6 +653,22 @@ function fasettgrupp(
   );
 }
 
+/**
+ * Sökformuläret: filens enda formulär. /vy/sok och 404-sidan för ett ärende (D-2,
+ * Story 11.2) visar samma markup, så formulärställena under src/http/ förblir tolv
+ * (M2 i test/mobil-formular.test.ts). `dolda` är de fasetter som följer med.
+ */
+function sokForm(varde: string | undefined, dolda: string): string {
+  return (
+    '<form class=sok method=get action="/vy/sok">' +
+    // Etiketten är osynlig men uppläst — platshållaren är ingen etikett (WCAG 3.3.2).
+    '<label class=dold for=q>Sök i titlar, beskrivningar och kommentarer</label>' +
+    `<input type=search id=q name=q value="${esc(varde)}" ` +
+    'placeholder="Sök i titlar, beskrivningar och kommentarer">' +
+    `${dolda}<button type=submit>Sök</button></form>`
+  );
+}
+
 const AKTIVA_NAMN: { nyckel: Fasettnyckel; namn: string }[] = [
   { nyckel: 'q', namn: 'fritext' },
   { nyckel: 'status', namn: 'status' },
@@ -770,12 +795,7 @@ vyRouter.get('/sok', async (req, res) => {
 
   const kropp =
     '<h1>Sök</h1>' +
-    '<form class=sok method=get action="/vy/sok">' +
-    // Etiketten är osynlig men uppläst — platshållaren är ingen etikett (WCAG 3.3.2).
-    '<label class=dold for=q>Sök i titlar, beskrivningar och kommentarer</label>' +
-    `<input type=search id=q name=q value="${esc(val.q)}" ` +
-    'placeholder="Sök i titlar, beskrivningar och kommentarer">' +
-    `${doldaFalt}<button type=submit>Sök</button></form>` +
+    sokForm(val.q, doldaFalt) +
     nummerHtml +
     (raQ !== undefined && q === undefined
       ? '<p class=notis>Sökordet kunde inte tolkas (för långt eller otillåtna tecken) och ignorerades.</p>'
@@ -835,43 +855,98 @@ vyRouter.get('/sok', async (req, res) => {
 
 // ---- KRAV-4: ärendesidan ---------------------------------------------------
 
-function ickeFunnen(vad: string): string {
+/**
+ * 404-sidan. Med `sokvarde` står sökformuläret mellan notisen och länken till
+ * överblicken (D-2, Story 11.2), så att den som följt en trasig ärendelänk kan
+ * söka vidare därifrån.
+ */
+function ickeFunnen(vad: string, sokvarde?: string): string {
   return sida(
     'Hittades inte',
     '<h1>Hittades inte</h1>' +
       `<p class=notis>${esc(vad)}</p>` +
+      (sokvarde === undefined ? '' : sokForm(sokvarde, '')) +
       '<p><a href="/vy">Till överblicken</a></p>',
   );
 }
 
+/** Ärendesidans text som markup: beskrivningen, varje kommentar och varje bilaga. */
+interface Arendetexter {
+  beskrivning: string;
+  kommentarer: string[];
+  bilagor: string[];
+}
+
+/**
+ * D-2 (Story 11.2): ärendesidans enda väg från text till markup. Den körs två
+ * gånger med samma indata: först genom arendekandidater, så att uppslaget får
+ * varje nummer som sidan renderar, och sedan med de befintliga numren. En text
+ * som sidan visar men som inte går genom den här funktionen hade fått sina
+ * nummer slagna mot en mängd som inte känner dem.
+ */
+function arendetexter(
+  arende: Arende,
+  kommentarer: readonly Kommentar[],
+  bilagor: readonly Bilaga[],
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): Arendetexter {
+  return {
+    beskrivning: renderaArendetext(arende.description, index, uppslag),
+    kommentarer: kommentarer.map((k) => renderaArendetext(k.body, index, uppslag)),
+    bilagor: bilagor.map((b) => bilageRad(b, uppslag)),
+  };
+}
+
+// D-2, D-5, B-21 (Story 11.2): adressen tolkar numret som sökningen gör
+// (tolkaArendenummer, Story 11.1). Varje annat skrivsätt av ett nummer ger 308
+// till den kanoniska adressen med querysträngen kvar, och det som inte kan vara
+// ett ärende ger 404 som HTML-sida — före transaktionen, så att ett nummer över
+// gränsen aldrig når databasen.
 vyRouter.get('/arende/:identifier', async (req, res) => {
   const ra = req.params.identifier ?? '';
-  const parsad = IdentifierSchema.safeParse(ra);
-  if (!parsad.success) {
+  const tolkat = tolkaArendenummer(ra);
+  // Adressen kräver ett team: ett nummer utan teamnyckel är inget ärendenummer här.
+  if (tolkat === null || tolkat.teamKey === null) {
     res
       .status(404)
       .type('html')
-      .send(ickeFunnen(`"${ra}" är inte ett ärendenummer (de ser ut som LOC-316).`));
+      .send(ickeFunnen(`"${ra}" är inte ett ärendenummer (de ser ut som LOC-316).`, ''));
     return;
   }
-  const identifier = parsad.data;
+  if (tolkat.slag === 'kan_inte_finnas') {
+    res.status(404).type('html').send(ickeFunnen(`Ärendet ${tolkat.text} finns inte.`, tolkat.text));
+    return;
+  }
+  // Sökvägen som den kom, okodad: gemener, inledande nollor, ett avslutande
+  // snedstreck och procentkodning skiljer sig alla från den kanoniska formen.
+  const kanonisk = arendeSokvag(tolkat.text);
+  if (req.baseUrl + req.path !== kanonisk) {
+    const fraga = req.originalUrl.indexOf('?');
+    res.redirect(308, kanonisk + (fraga === -1 ? '' : req.originalUrl.slice(fraga)));
+    return;
+  }
+  const identifier = tolkat.text;
 
   // Autolänkningen läser bara cachen (KRAV-5) — inga filsystemssökningar här.
   const index = await hamtaIndex();
   const data = await withTransaction(async (client) => {
     const arende = await hamtaArende(client, TENANT_ID, identifier);
-    return {
-      arende,
-      kommentarer: await listaKommentarer(client, TENANT_ID, arende.id),
-      handelser: await listaHandelser(client, TENANT_ID, arende.id),
-      // K-3: strukturen runt ärendet — delärenden, relationer och de
-      // dokumentlänkar som annars inte finns någon annanstans.
-      barn: await barnFor(client, TENANT_ID, arende.id),
-      relationer: await relationerFor(client, TENANT_ID, arende.id),
-      bilagor: await bilagorFor(client, TENANT_ID, arende.id),
-      // K-1: de mjukt borttagna — endast id och tidpunkt, aldrig text/aktör.
-      borttagna: await listaBorttagnaKommentarer(client, TENANT_ID, arende.id),
-    };
+    const kommentarer = await listaKommentarer(client, TENANT_ID, arende.id);
+    const handelser = await listaHandelser(client, TENANT_ID, arende.id);
+    // K-3: strukturen runt ärendet — delärenden, relationer och de
+    // dokumentlänkar som annars inte finns någon annanstans.
+    const barn = await barnFor(client, TENANT_ID, arende.id);
+    const relationer = await relationerFor(client, TENANT_ID, arende.id);
+    const bilagor = await bilagorFor(client, TENANT_ID, arende.id);
+    // K-1: de mjukt borttagna — endast id och tidpunkt, aldrig text/aktör.
+    const borttagna = await listaBorttagnaKommentarer(client, TENANT_ID, arende.id);
+    // D-2 (Story 11.2): varje ärendenummer på sidan — beskrivningen, kommentarerna
+    // och bilagornas adresser — slås upp i ETT anrop, aldrig ett per referens.
+    // Kandidaterna är de nummer som sidans egen rendering slår upp.
+    const befintliga = await befintligaArenden(client, TENANT_ID, arendekandidater((uppslag) =>
+      arendetexter(arende, kommentarer, bilagor, index, uppslag)));
+    return { arende, kommentarer, handelser, barn, relationer, bilagor, borttagna, befintliga };
   }).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
     if (err instanceof NotFoundError) return null;
@@ -879,7 +954,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   });
 
   if (!data) {
-    res.status(404).type('html').send(ickeFunnen(`Ärendet ${identifier} finns inte.`));
+    res.status(404).type('html').send(ickeFunnen(`Ärendet ${identifier} finns inte.`, identifier));
     return;
   }
 
@@ -896,16 +971,17 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // Ingen namnmatchning och ingen gissning ur titeln: är kopplingen inte
   // gjord visas inget kort alls, och det är ett ärligare svar än fel kund.
   const crm = a.kund_id === null ? '' : crmKort(await hamtaCrm(a.kund_id));
+  const texter = arendetexter(a, data.kommentarer, data.bilagor, index, data.befintliga);
 
   // KRAV-5: varje kommentar bär aktor_typ + aktor_namn ur comments-tabellen.
   const kommentarer = data.kommentarer
     .map(
-      (k) =>
+      (k, i) =>
         '<li class=rad><div class=huvud>' +
         `<span>${esc(datumtid(k.skapad))}</span>` +
         proveniens(k.aktor_typ, k.aktor_namn) +
         '</div>' +
-        `<div class=text>${renderaArendetext(k.body, index)}</div>` +
+        `<div class=text>${texter.kommentarer[i]}</div>` +
         kommentarsverktyg(aktor, k, retur) +
         '</li>',
     )
@@ -958,7 +1034,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     crm +
     '<h2>Beskrivning</h2>' +
     (a.description.trim()
-      ? `<div class=text>${renderaArendetext(a.description, index)}</div>`
+      ? `<div class=text>${texter.beskrivning}</div>`
       : '<p class=notis>Ingen beskrivning.</p>') +
     // Beslut #145: hopfalld under texten den rattar. Menygrammatiken -
     // enkel yta, komplexiteten en klickning ned.
@@ -967,7 +1043,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     // efter 19/8, och trettio av dem finns ingen annanstans i systemet.
     (data.bilagor.length > 0
       ? `<h2>Bilagor (${esc(data.bilagor.length)})</h2>` +
-        `<ul class=lista role=list>${data.bilagor.map(bilageRad).join('')}</ul>`
+        `<ul class=lista role=list>${texter.bilagor.join('')}</ul>`
       : '') +
     (data.barn.length > 0
       ? `<h2>Delärenden (${esc(data.barn.length)})</h2>` + data.barn.map(arendeKort).join('')
@@ -1021,6 +1097,13 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
   }
 
   const index = await hamtaIndex();
+  // D-2 (Story 11.2): dokumentets ärendenummer slås upp i ETT anrop, efter
+  // 404-svaret för allt utanför området. Samma rendering ger kandidaterna och
+  // sidan, så varje nummer som sidan slår upp är en kandidat.
+  const dokumentet = (uppslag: Uppslag): string => renderaMarkdown(innehall, index, uppslag);
+  const befintliga = await withTransaction((client) =>
+    befintligaArenden(client, TENANT_ID, arendekandidater(dokumentet)),
+  );
   const namn = rel.slice(rel.lastIndexOf('/') + 1);
   const obsidian =
     `obsidian://open?vault=${encodeURIComponent(path.basename(config.VAULT_PATH))}` +
@@ -1030,7 +1113,7 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
     `<h1>${esc(namn)}</h1>` +
     `<p class=summering>${esc(rel)} · ` +
     `<a href="${esc(obsidian)}">öppna i Obsidian</a></p>` +
-    `<div class=dok>${renderaMarkdown(innehall, index)}</div>`;
+    `<div class=dok>${dokumentet(befintliga)}</div>`;
 
   res.type('html').send(
     sida(namn, kropp, undefined, sessionsAktor(req), [

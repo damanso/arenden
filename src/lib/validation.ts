@@ -126,3 +126,14 @@ export function tolkaArendenumrenIText(q: string): TolkatArendenummer[] {
   }
   return nummer;
 }
+
+// D-2, B-21 (Story 11.2): ärendeadressens form. Exakt teamnyckel, bindestreck och siffror, i vilket
+// skiftläge som helst; svaret har teamnyckeln i versaler och numret utan inledande nollor. Ingen gräns för
+// numret: funktionen arbetar på text, och gränsen hör till uppslagen (MAX_ARENDENUMMER).
+const IDENTIFIERFORM = /^([A-Za-z][A-Za-z0-9]{0,9})-(\d+)$/;
+
+export function kanoniskIdentifier(s: string): string | null {
+  const delar = IDENTIFIERFORM.exec(s);
+  if (!delar) return null;
+  return `${delar[1]!.toUpperCase()}-${delar[2]!.replace(/^0+(?=\d)/, '')}`;
+}

@@ -48,6 +48,8 @@ cp .env.example .env
 Standardvärdena i `.env.example` pekar redan på 5435 och port 3002 — inget
 behöver ändras för lokal drift.
 
+`VY_PUBLIK_URL` är den publika https-adressen till läsvyn, utan sökväg (D-2, B-21, Story 11.2). Standardvärdet är driftens adress, tailnet-adressen i avsnitt 8 utan `/vy` på slutet, så driften behöver ingen egen rad. En annan installation sätter sitt eget värde i sin miljö. Ett ogiltigt värde (tomt, http, en sökväg, ett avslutande snedstreck, en fråga eller ett fragment) stoppar starten med en felrad som namnger variabeln. Ärendenas absoluta adress, fältet `lank` i API:ts läsmodeller, är den adressen följd av `/vy/arende/<TEAM>-<nummer>`.
+
 ### 3. Installera beroenden
 
 ```bash
@@ -114,7 +116,7 @@ open http://127.0.0.1:3002/vy          # eller i webbläsaren på maskinen
 | `GET /vy` | **Ärenden** — öppna ärenden grupperade per projekt och team, räknare per grupp och totalt, färskast överst |
 | `GET /vy/digest` | **Vad hände** — händelser per dag, inom dagen per källa (agent/människa/system); `?dagar=7\|30\|90\|alla` |
 | `GET /vy/sok?q=...` | **Sök** — fritext över titel, beskrivning och kommentarer + fasetter `?status=&etikett=&projekt=&aktor=`; ett ärendenummer (`LOC-503`, `loc 503`, `503`) öppnar ärendet direkt (D-1) |
-| `GET /vy/arende/LOC-316` | **Ärendesidan** — fälten, beskrivningen, alla kommentarer och hela historiken |
+| `GET /vy/arende/LOC-316` | **Ärendesidan** — fälten, beskrivningen, alla kommentarer och hela historiken; varje skrivsätt av numret (`loc-316`, `LOC-0316`, avslutande snedstreck) ger 308 till den kanoniska adressen, och ett nummer som inte finns ger 404 med sökformuläret (D-2) |
 | `GET /vy/mitt` | **Vad ligger på mig** — fem högar, var och en med sin regel utskriven; `?aktor=` väljer vem det ses från (K-9) |
 
 Läsvyn kräver **ingen nyckel** (gränsen är att servern binder `127.0.0.1`) och är
@@ -418,7 +420,21 @@ API:ts nummeruppslag är `get_issue`.
 | Krav | Mekanism | Kod | Test |
 | --- | --- | --- | --- |
 | D-1 | `tolkaArendenummer()` är ren och tolkar en sluten lista skrivsätt; `MAX_ARENDENUMMER` gäller i tolkningen och i tjänstelagret; ett enda uppslag med `= ANY($2::int[])`; omdirigeringen bara när hela sökningen är ett nummer med exakt en träff | `src/lib/validation.ts`, `src/services/arenden.ts`, `src/http/routes/vy.ts` | `test/sok-nummer.test.ts` (AK 1–7) |
-| FR-2, FR-11 (regression) | en sökning utan nummer går fritextvägen som förut; `sokArenden`, `listaArenden`, fasetterna och `search_issues` är orörda | oförändrade | `test/sok.test.ts`, `test/vy.test.ts` (KRAV-3), `test/sok-nummer.test.ts` (F18) |
+| FR-2, FR-11 (regression) | en sökning utan nummer går fritextvägen som förut; `sokArenden`, `listaArenden`, fasetterna och `search_issues` är orörda utom fältet `lank` (Story 11.2) | oförändrade | `test/sok.test.ts`, `test/vy.test.ts` (KRAV-3), `test/sok-nummer.test.ts` (F18) |
+
+### D-2 — varje ärende har en stabil adress som alltid svarar (Story 11.2)
+
+Varje ärende har en kanonisk adress, `/vy/arende/<TEAM>-<nummer>` med teamnyckeln i versaler och numret utan inledande nollor, och den byggs bara i `src/lib/arendelank.ts` (B-21). `arendeSokvag()` ger sökvägen inom huset, `nummeruppslagSokvag()` sökningen på ett nummer som inte finns och `arendeLank()` den absoluta adressen, som är `VY_PUBLIK_URL` följd av sökvägen. Konfigurationen lämnar värdet till modulen när den laddas, eftersom tjänstelagret aldrig importerar `src/config.ts`. Läsmodellerna `Arende`, sökträffen, `Atagande` och `Insats` bär fältet `lank`, härlett vid läsning och aldrig lagrat; en insats utan ärende har `null`. Rutten tolkar numret som sökningen gör och svarar 308 till den kanoniska adressen för varje annat skrivsätt, med querysträngen kvar. Ett ärende som inte finns, ett nummer över heltalsgränsen och ett okänt team ger 404 som HTML-sida med sökformuläret, och ett nummer över gränsen når aldrig databasen, varken från vyn eller från `get_issue`. Autolänkaren känner igen ärendenummer i alla team och skiftlägen, och `arendereferens()` i `src/http/vy/markdown.ts` gör numret till en länk till ärendet när det finns, till nummeruppslaget med «(finns inte)» när teamet finns men inte numret, och till vanlig text annars. Samma regel gäller Linear-adresser i bilagor och markdownlänkar. Varje sida slår upp alla sina nummer i ett anrop av `befintligaArenden()`, och renderarna har ingen databasåtkomst. `test/arendelankar.test.ts` följer varje ärendelänk på sju sidtyper.
+
+Regeln står ordagrant som i regelkällan:
+
+- Ärendets adress (D-2, B-21, Story 11.2): en ärendelänk byggs bara med `arendeSokvag()` (inom huset) eller `arendeLank()` (absolut) i `src/lib/arendelank.ts`, och ingen annan fil under `src/` skriver ärendeadressens prefix. `src/config.ts` lämnar `VY_PUBLIK_URL` till modulen med `sattVyPublikUrl()`, och tjänstelagret importerar aldrig konfigurationen. En länk till ett ärende renderas bara när ärendet finns: `arendereferens()` länkar ett nummer som inte finns till nummeruppslaget i `/vy/sok` med «(finns inte)», och ett okänt team blir vanlig text. Mängden befintliga nummer hämtas en gång per sida med `befintligaArenden()`, och renderarna får den som parameter.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| D-2 (adressen och konfigurationen) | en modul bygger varje ärendeadress; `VY_PUBLIK_URL` är en https-adress utan sökväg, med driftens adress som standardvärde; 308 till den kanoniska formen | `src/lib/arendelank.ts`, `src/config.ts`, `src/http/routes/vy.ts`, `src/http/vy/skrivning.ts` | `test/djuplank.test.ts` (AK 1, AK 4), `test/config.test.ts` (AK 2) |
+| D-2, FR-12 (läsmodellerna och 404) | `medLank()`, `tillAtagande()` och `medKallor()` är läsmodellernas enda konstruktörer; gränsen för numret står före frågan och före transaktionen | `src/services/arenden.ts`, `src/services/atagande.ts`, `src/services/insats.ts`, `src/http/routes/vy.ts` | `test/djuplank.test.ts` (AK 3, AK 5) |
+| D-2, D-5, FR-13 (länkarna) | `arendereferens()` är den enda byggaren av en ärendelänk i text; `befintligaArenden()` en gång per sida; renderarna utan databas | `src/http/vy/markdown.ts`, `src/http/routes/vy.ts`, `src/services/arenden.ts` | `test/djuplank.test.ts` (AK 6, AK 8), `test/arendelankar.test.ts` (AK 7) |
 
 ### FR-37 — svenska felbesked i vyn (Story 2.2)
 
@@ -464,7 +480,7 @@ Regeln står ordagrant som i regelkällan:
 
 ### FR-37 — statusord och händelseverb på svenska (Story 2.1)
 
-Ytan visar tillstånd och händelser på svenska (B-14). De lagrade tillståndsnamnen är Linears (`STANDARD_STATES` i `src/services/team.ts`) och står kvar i databasen, eftersom händelserna är append-only och importen mappar arkivets namn rakt av. Vyn översätter dem vid visning genom tabellen `STATUSORD` i `src/http/vy/mall.ts`, med en rad per typ: Backlog blir Ej planerat, Todo blir Att göra, In Progress blir Pågår, Done blir Klart och Canceled blir Avbrutet. `statuschip()` översätter det lagrade namnet och tar klassen ur typen, och summeringsraden på `/vy`, statusfasetten och raden Aktiva filter på `/vy/sok` tar ordet för typen ur samma rad. Historikens rad för `andrade_status` översätts på samma sätt, och bara den, eftersom andra verbs värden är titlar och namn. Ett namn som inte står i tabellen visas som det är lagrat. Sökträffarna i vyn läser det lagrade namnet genom `sokArendenIVy()` i `src/services/arenden.ts`, och `search_issues` svarar med samma sex fält som förut. Varje verb som koden skriver har en svensk text i `VERB`. Provet läser verben ur källkoden, i de filer som väljer ett verb åt händelseloggen, och fäller ett verb utan text med verbets namn.
+Ytan visar tillstånd och händelser på svenska (B-14). De lagrade tillståndsnamnen är Linears (`STANDARD_STATES` i `src/services/team.ts`) och står kvar i databasen, eftersom händelserna är append-only och importen mappar arkivets namn rakt av. Vyn översätter dem vid visning genom tabellen `STATUSORD` i `src/http/vy/mall.ts`, med en rad per typ: Backlog blir Ej planerat, Todo blir Att göra, In Progress blir Pågår, Done blir Klart och Canceled blir Avbrutet. `statuschip()` översätter det lagrade namnet och tar klassen ur typen, och summeringsraden på `/vy`, statusfasetten och raden Aktiva filter på `/vy/sok` tar ordet för typen ur samma rad. Historikens rad för `andrade_status` översätts på samma sätt, och bara den, eftersom andra verbs värden är titlar och namn. Ett namn som inte står i tabellen visas som det är lagrat. Sökträffarna i vyn läser det lagrade namnet genom `sokArendenIVy()` i `src/services/arenden.ts`, och `search_issues` svarar med samma sex fält som förut och, sedan Story 11.2, fältet `lank`. Varje verb som koden skriver har en svensk text i `VERB`. Provet läser verben ur källkoden, i de filer som väljer ett verb åt händelseloggen, och fäller ett verb utan text med verbets namn.
 
 Regeln står ordagrant som i regelkällan:
 

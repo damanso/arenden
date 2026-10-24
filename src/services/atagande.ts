@@ -32,6 +32,7 @@
 // uppdateraArendeState godtar för ett ärende med åtagande bara den, under radlås.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
+import { arendeLank } from '../lib/arendelank.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import type { Aktor } from '../lib/aktor.js';
 import type { StateTyp } from '../lib/validation.js';
@@ -82,6 +83,8 @@ export interface AtagandeJson {
 
 export interface Atagande {
   identifier: string;
+  /** D-2, B-21 (Story 11.2): ärendets absoluta adress, härledd vid läsning och aldrig lagrad. */
+  lank: string;
   issue_id: string;
   utfall: string;
   lage: Lage;
@@ -236,6 +239,7 @@ export function kravOppetSteg(
 function tillAtagande(rad: Rad): Atagande {
   return {
     identifier: rad.identifier,
+    lank: arendeLank(rad.identifier),
     issue_id: rad.id,
     utfall: rad.title,
     lage: rad.atagande_lage as Lage,

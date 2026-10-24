@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
+import { arendeLank, type Befintliga } from '../lib/arendelank.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
-import { delaIdentifier, MAX_ARENDENUMMER, type StateTyp } from '../lib/validation.js';
+import { delaIdentifier, kanoniskIdentifier, MAX_ARENDENUMMER, type StateTyp } from '../lib/validation.js';
 import { kravTeam, stateAvTyp, type WorkflowState } from './team.js';
 // Cirkulär ESM-import: tabellen läses bara inne i funktioner, efter modulernas utvärdering.
 import { STATE_FOR_LAGE, type Lage } from './atagande.js';
@@ -8,6 +9,11 @@ import { STATE_FOR_LAGE, type Lage } from './atagande.js';
 export interface Arende {
   id: string;
   identifier: string;
+  /**
+   * D-2, B-21 (Story 11.2): ärendets absoluta adress, arendeLank(identifier). Härleds vid läsning,
+   * precis som identifier, och lagras aldrig i en tabell eller en händelserad.
+   */
+  lank: string;
   team_key: string;
   title: string;
   description: string;
@@ -80,18 +86,29 @@ const FRAN = `
   LEFT JOIN issues f ON f.id = i.foralder_id
   LEFT JOIN teams ft ON ft.id = f.team_id`;
 
+/** En rad ur KOLUMNER: läsmodellen utan `lank`. Varje fråga som läser KOLUMNER typas med den. */
+export type ArendeRad = Omit<Arende, 'lank'>;
+
+/**
+ * D-2, B-21 (Story 11.2): den ENDA vägen från en rad till läsmodellen. Raderna typas utan `lank`, så
+ * tsc fäller ett ställe som returnerar en rad utan att gå hit.
+ */
+function medLank<T extends { identifier: string }>(rad: T): T & { lank: string } {
+  return { ...rad, lank: arendeLank(rad.identifier) };
+}
+
 export async function hamtaArendeViaId(
   client: PoolClient,
   tenantId: string,
   id: string,
 ): Promise<Arende> {
-  const { rows } = await client.query<Arende>(
+  const { rows } = await client.query<ArendeRad>(
     `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND i.id = $2`,
     [tenantId, id],
   );
   const arende = rows[0];
   if (!arende) throw new NotFoundError('ärende');
-  return arende;
+  return medLank(arende);
 }
 
 export async function hamtaArende(
@@ -100,13 +117,16 @@ export async function hamtaArende(
   identifier: string,
 ): Promise<Arende> {
   const { teamKey, nummer } = delaIdentifier(identifier);
-  const { rows } = await client.query<Arende>(
+  // D-2, D-5 (Story 11.2): ett nummer över integer kan inte finnas och når aldrig databasen
+  // (22003 hade blivit 500). 400 siffror blir Infinity, som också är större.
+  if (nummer > MAX_ARENDENUMMER) throw new NotFoundError('ärende');
+  const { rows } = await client.query<ArendeRad>(
     `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND t.key = $2 AND i.sequence_number = $3`,
     [tenantId, teamKey, nummer],
   );
   const arende = rows[0];
   if (!arende) throw new NotFoundError('ärende');
-  return arende;
+  return medLank(arende);
 }
 
 /**
@@ -127,6 +147,8 @@ export async function hamtaArendeForAndring(
   identifier: string,
 ): Promise<Arende> {
   const { teamKey, nummer } = delaIdentifier(identifier);
+  // Samma gräns som i hamtaArende: inget nummer över integer når databasen (Story 11.2).
+  if (nummer > MAX_ARENDENUMMER) throw new NotFoundError('ärende');
   const { rows } = await client.query<{ id: string }>(
     `SELECT i.id FROM issues i JOIN teams t ON t.id = i.team_id
       WHERE i.tenant_id = $1 AND t.key = $2 AND i.sequence_number = $3
@@ -182,7 +204,7 @@ export async function listaArenden(
   filter: ListaFilter,
 ): Promise<ListaResultat> {
   const efter = filter.cursor ? avkodaCursor(filter.cursor) : null;
-  const { rows } = await client.query<Arende & { skapad_nyckel: string }>(
+  const { rows } = await client.query<ArendeRad & { skapad_nyckel: string }>(
     `SELECT ${KOLUMNER}, i.skapad::text AS skapad_nyckel ${FRAN}
       WHERE i.tenant_id = $1
         AND ($2::text[] IS NULL OR s.typ = ANY($2::text[]))
@@ -213,7 +235,7 @@ export async function listaArenden(
   const sista = valda[valda.length - 1];
   return {
     // skapad_nyckel är intern paginering och lämnar aldrig tjänstelagret.
-    arenden: valda.map(({ skapad_nyckel: _, ...arende }) => arende),
+    arenden: valda.map(({ skapad_nyckel: _, ...arende }) => medLank(arende)),
     pageInfo: {
       har_nasta: harNasta,
       slut_cursor: sista ? kodaCursor(sista.skapad_nyckel, sista.id) : null,
@@ -694,12 +716,12 @@ export async function barnFor(
   tenantId: string,
   issueId: string,
 ): Promise<Arende[]> {
-  const { rows } = await client.query<Arende>(
+  const { rows } = await client.query<ArendeRad>(
     `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND i.foralder_id = $2
       ORDER BY i.sequence_number`,
     [tenantId, issueId],
   );
-  return rows;
+  return rows.map((rad) => medLank(rad));
 }
 
 /**
@@ -713,11 +735,11 @@ export async function listaArendenMedSourceRef(
   tenantId: string,
   sourceRefs: string[],
 ): Promise<Arende[]> {
-  const { rows } = await client.query<Arende>(
+  const { rows } = await client.query<ArendeRad>(
     `SELECT ${KOLUMNER} ${FRAN} WHERE i.tenant_id = $1 AND i.source_ref = ANY($2::text[])`,
     [tenantId, sourceRefs],
   );
-  return rows;
+  return rows.map((rad) => medLank(rad));
 }
 
 /**
@@ -783,12 +805,17 @@ export interface Soktraff {
   state_typ: StateTyp;
   rang: number;
   traff_i: string;
+  /** D-2, B-21 (Story 11.2): ärendets absoluta adress, som på Arende. */
+  lank: string;
 }
 
 /** Sökträffen i vyn: chippet visar det lagrade namnet (FR-37, Story 2.1 AK 2). */
 export interface SoktraffIVy extends Soktraff {
   state_namn: string;
 }
+
+/** En rad ur sökfrågan: träffen utan `lank`, som medLank lägger till. */
+type SoktraffRad = Omit<SoktraffIVy, 'lank'>;
 
 /**
  * KRAV-9/11: fritext över ärenden OCH kommentarer, rankad. Ett ord som bara
@@ -804,7 +831,7 @@ async function sokTraffar(
   fraga: string,
   limit: number,
 ): Promise<SoktraffIVy[]> {
-  const { rows } = await client.query<SoktraffIVy>(
+  const { rows } = await client.query<SoktraffRad>(
     `SELECT i.id,
             t.key || '-' || i.sequence_number AS identifier,
             i.title,
@@ -830,12 +857,13 @@ async function sokTraffar(
       LIMIT $3`,
     [tenantId, fraga, limit],
   );
-  return rows;
+  return rows.map((rad) => medLank(rad));
 }
 
 /**
- * search_issues svarar med exakt de sex fälten, som förut (test/sok-nummer.test.ts
- * F18): det lagrade namnet är vyns, inte API:ts, så träffen byggs om utan det.
+ * search_issues svarar med exakt de sju fälten: de sex som förut och, sedan Story 11.2,
+ * `lank` (test/sok-nummer.test.ts F18): det lagrade namnet är vyns, inte API:ts, så
+ * träffen byggs om utan det.
  */
 export async function sokArenden(
   client: PoolClient,
@@ -851,6 +879,7 @@ export async function sokArenden(
     state_typ: t.state_typ,
     rang: t.rang,
     traff_i: t.traff_i,
+    lank: t.lank,
   }));
 }
 
@@ -888,7 +917,7 @@ export async function hittaArendenMedNummer(
     (n) => Number.isInteger(n) && n >= 0 && n <= MAX_ARENDENUMMER,
   );
   if (nummer.length === 0) return fragor.map(() => []);
-  const { rows } = await client.query<Arende & { nummer: number }>(
+  const { rows } = await client.query<ArendeRad & { nummer: number }>(
     `SELECT ${KOLUMNER}, i.sequence_number AS nummer ${FRAN}
       WHERE i.tenant_id = $1 AND i.sequence_number = ANY($2::int[])
       ORDER BY t.key, i.sequence_number`,
@@ -897,8 +926,46 @@ export async function hittaArendenMedNummer(
   return fragor.map((f) =>
     rows
       .filter((r) => r.nummer === f.nummer && (f.teamKey === null || r.team_key === f.teamKey))
-      .map(({ nummer: _, ...arende }) => arende),
+      .map(({ nummer: _, ...arende }) => medLank(arende)),
   );
+}
+
+/**
+ * D-2, D-5, B-21 (Story 11.2): vilka av kandidaterna som finns, och tenantens teamnycklar, i EXAKT en
+ * fråga per sida — också för noll kandidater, eftersom renderaren behöver teamen för att skilja ett
+ * nummer som inte finns från ett okänt team. Varje kandidat görs kanonisk; en ogiltig hoppas över, och
+ * ett nummer över integer går aldrig till frågan. Svaret är två mängder i kanonisk form.
+ */
+export async function befintligaArenden(
+  client: PoolClient,
+  tenantId: string,
+  kandidater: readonly string[],
+): Promise<Befintliga> {
+  const kanoniska = new Set<string>();
+  const nummer = new Set<number>();
+  for (const kandidat of kandidater) {
+    const k = kanoniskIdentifier(kandidat);
+    if (k === null) continue;
+    const delar = delaIdentifier(k);
+    if (delar.nummer > MAX_ARENDENUMMER) continue;
+    kanoniska.add(k);
+    nummer.add(delar.nummer);
+  }
+  // En rad per team utan träff (identifier NULL) och en per kandidat som finns.
+  const { rows } = await client.query<{ team_key: string; identifier: string | null }>(
+    `SELECT t.key AS team_key, t.key || '-' || i.sequence_number AS identifier
+       FROM teams t
+       LEFT JOIN issues i
+         ON i.team_id = t.id AND i.tenant_id = $1
+        AND i.sequence_number = ANY($2::int[])
+        AND t.key || '-' || i.sequence_number = ANY($3::text[])
+      WHERE t.tenant_id = $1`,
+    [tenantId, [...nummer], [...kanoniska]],
+  );
+  return {
+    team: new Set(rows.map((r) => r.team_key)),
+    arenden: new Set(rows.flatMap((r) => (r.identifier === null ? [] : [r.identifier]))),
+  };
 }
 
 // ---- K-1: rättningsvägar för etiketter och namn ----------------------------
@@ -1105,7 +1172,7 @@ export async function oppnaMedSpar(
   tenantId: string,
   aktorNamn: string | null,
 ): Promise<MittArende[]> {
-  const { rows } = await client.query<MittArende>(
+  const { rows } = await client.query<Omit<MittArende, 'lank'>>(
     `${SPARFRAGA}
      SELECT ${KOLUMNER},
             sist.aktor_typ  AS sist_aktor_typ,
@@ -1120,7 +1187,7 @@ export async function oppnaMedSpar(
       ORDER BY i.uppdaterad DESC, i.id DESC`,
     [tenantId, OPPNA_TYPER, aktorNamn],
   );
-  return rows;
+  return rows.map((rad) => medLank(rad));
 }
 
 /** Namnen som faktiskt lämnat spår på ÖPPNA ärenden — underlag för aktörsvalet. */

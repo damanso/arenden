@@ -29,6 +29,16 @@
 //
 // Autolänkningen sker i RENDERINGSSTEGET. Beskrivningar, kommentarer och
 // databasen rörs inte.
+//
+// D-2, D-5, B-21 (Story 11.2): ett ärendenummer i vilket team och skiftläge som
+// helst (ARENDE) blir en länk bara när ärendet finns. Renderarna får mängden
+// befintliga nummer som parameter, och anroparen slår upp den en gång per sida
+// med befintligaArenden i tjänstelagret — filen har ingen databasåtkomst.
+// arendereferens är den enda funktionen som gör ett nummer till markup, och
+// därför också den enda som samlar kandidaterna: anroparen kör samma rendering
+// först med en insamling (arendekandidater) och sedan med de befintliga numren.
+import { arendeSokvag, nummeruppslagSokvag, type Befintliga } from '../../lib/arendelank.js';
+import { kanoniskIdentifier } from '../../lib/validation.js';
 import { vitlistad, type Dokumentindex } from './dokument.js';
 import { esc } from './mall.js';
 
@@ -38,7 +48,10 @@ const SOKVAG = String.raw`(?<sokvag>[\p{L}\p{N}_][\p{L}\p{N}_.\-/]*\.md)\b`;
 // KRAV-1: originalnamnet på ett speglat kunddokument. Samma teckenklass som
 // SOKVAG men UTAN '/', så i en längre Drive-sökväg matchas bara sista segmentet.
 const FILNAMN = String.raw`(?<filnamn>[\p{L}\p{N}_][\p{L}\p{N}_.\-]*\.(?:docx|pdf|pptx|xlsx))\b`;
-const ARENDE = String.raw`\b(?<arende>LOC-\d+)\b`;
+// D-2 (Story 11.2): teamnyckel och nummer i alla team och skiftlägen. Mönstret
+// har inget tecken som esc() ändrar, och det står sist i alternationerna, så att
+// en sökväg eller ett filnamn som börjar på samma plats vinner.
+const ARENDE = String.raw`\b(?<arende>[A-Za-z][A-Za-z0-9]{0,9}-\d+)\b`;
 const KOD = String.raw`\x60(?<kod>[^\x60\n]+)\x60`;
 const FET = String.raw`\*\*(?<fet>[^*\n]+)\*\*`;
 const MDLANK = String.raw`\[(?<mdtext>[^\[\]]+)\]\((?<mdurl>[^()\s]+)\)`;
@@ -65,6 +78,8 @@ export type LinearAdress = { nummer: string | null };
 export const TIDIGARE_LINEAR_LANK = 'tidigare Linear-länk';
 /** Metan för en Linear-adress utan nummer, som nu är ren text. */
 export const AVVECKLAD_LINEAR_LANK = 'Linear-länk — Linear är avvecklat';
+/** D-2 (Story 11.2): efter en länk till nummeruppslaget, när teamet finns men inte numret. */
+export const FINNS_INTE = '(finns inte)';
 
 const LINEARVARD = 'linear.app';
 const LINEARNUMMER = /^LOC-\d+$/;
@@ -82,8 +97,8 @@ const LINEARNUMMER = /^LOC-\d+$/;
  * Bara http och https klassas: inget annat schema blir ett href på de två
  * ställen som frågar (sakerUrl() och markdownlänkarnas schemaprov).
  *
- * Numret räknas bara som ett HELT segment i sökvägen, med versaler som
- * autolänkarens ARENDE. Linears ärendeadresser har numret som eget segment;
+ * Numret räknas bara som ett HELT segment i sökvägen, med versaler och teamet
+ * LOC, som Linear skrev det. Linears ärendeadresser har numret som eget segment;
  * ett nummer i frågan eller inne i ett längre segment är inget ärende, och en
  * sådan adress blir ren text i stället för en gissad länk.
  */
@@ -101,14 +116,79 @@ export function linearAdress(adress: string): LinearAdress | null {
   return { nummer: nummer ?? null };
 }
 
+// ---- D-2, B-21 (Story 11.2): en länk till ett ärende bara när det finns ----
+
+/**
+ * Insamlingen av kandidater (arendekandidater): arendereferens antecknar varje
+ * nummer den får i kanonisk form, i stället för att slå upp det.
+ */
+class Insamling {
+  private readonly nummer = new Set<string>();
+
+  samla(identifier: string): void {
+    const k = kanoniskIdentifier(identifier);
+    if (k !== null) this.nummer.add(k);
+  }
+
+  kandidater(): string[] {
+    return [...this.nummer];
+  }
+}
+
+/** Vad renderarna slår upp ett nummer i: de befintliga numren, eller en insamling av kandidaterna. */
+export type Uppslag = Befintliga | Insamling;
+
+/**
+ * Den ENDA byggaren av markup för ett ärendenummer: autolänkaren, linearlank()
+ * och bilageRad() i routes/vy.ts anropar den. `visad` är redan escapad text och
+ * skrivs som den är. Finns ärendet blir numret en länk till ärendet; finns
+ * teamet men inte numret blir det en länk till nummeruppslaget i /vy/sok med
+ * «(finns inte)»; ett okänt team ger null, och anroparen skriver vanlig text.
+ * esc() kring sökvägarna är, som i dokumentlank(), ett bälte kring en adress
+ * vi själva byggt.
+ *
+ * Under insamlingen antecknas numret och svaret är null. Vilka nummer som når
+ * hit beror aldrig på svaret, eftersom genererad markup aldrig skannas om; så
+ * insamlingen ser exakt de nummer som renderingen sedan slår upp.
+ */
+export function arendereferens(visad: string, identifier: string, uppslag: Uppslag): string | null {
+  if (uppslag instanceof Insamling) {
+    uppslag.samla(identifier);
+    return null;
+  }
+  const k = kanoniskIdentifier(identifier);
+  if (k === null) return null;
+  if (uppslag.arenden.has(k)) return `<a href="${esc(arendeSokvag(k))}">${visad}</a>`;
+  if (uppslag.team.has(k.slice(0, k.indexOf('-')))) {
+    return `<a href="${esc(nummeruppslagSokvag(k))}">${visad}</a> ${FINNS_INTE}`;
+  }
+  return null;
+}
+
+/**
+ * Kandidaterna att slå upp: `rendera` är sidans egen rendering, och den körs här
+ * med en insamling. Svaret är varje nummer som arendereferens fick, i kanonisk
+ * form och utan dubbletter, och markupen kastas. Kandidaterna tas alltså inte
+ * fram av ett eget mönsterpass över texten: ett sådant pass delar inte upp
+ * texten som renderaren gör (kursiv med understreck, `_LOC-504_`, där ordgränsen
+ * bara finns i delsträngen) och ser inte adressen som URL-tolken normaliserat
+ * (en bilaga med tabb eller radbrytning i numret). Med samma rendering är varje
+ * nummer som sidan slår upp en kandidat, genom konstruktion.
+ */
+export function arendekandidater(rendera: (uppslag: Uppslag) => unknown): string[] {
+  const insamling = new Insamling();
+  rendera(insamling);
+  return insamling.kandidater();
+}
+
 /**
  * Autolänkaren ensam: escape, sedan de fyra mönstren. Ärendevyn går numera via
  * renderaArendetext() (som lägger markdown mellan de två stegen), men den här
  * funktionen är fortfarande steg 3 i sin renaste form och används som
  * referenspunkt när autolänkningen ska bevisas oförändrad (KRAV-5).
  */
-export function autolanka(text: string, index: Dokumentindex): string {
-  return lankaEscapad(esc(text), index, LANKAR);
+export function autolanka(text: string, index: Dokumentindex, uppslag: Uppslag): string {
+  return lankaEscapad(esc(text), index, LANKAR, uppslag);
 }
 
 /**
@@ -122,13 +202,13 @@ export function autolanka(text: string, index: Dokumentindex): string {
  * innehåller '&' eller ';', så en entitet delar aldrig upp en träff som förut
  * var hel (och tvärtom).
  */
-function lankaEscapad(saker: string, index: Dokumentindex, monster: RegExp): string {
+function lankaEscapad(saker: string, index: Dokumentindex, monster: RegExp, uppslag: Uppslag): string {
   let ut = '';
   let sist = 0;
   monster.lastIndex = 0;
   for (const m of saker.matchAll(monster)) {
     ut += saker.slice(sist, m.index);
-    ut += ersatt(m.groups ?? {}, m[0], index);
+    ut += ersatt(m.groups ?? {}, m[0], index, uppslag);
     sist = m.index + m[0].length;
   }
   return ut + saker.slice(sist);
@@ -156,8 +236,12 @@ function ersatt(
   g: Record<string, string | undefined>,
   hel: string,
   index: Dokumentindex,
+  uppslag: Uppslag,
 ): string {
-  if (g['kod'] !== undefined) return `<code>${g['kod']}</code>`;
+  // Dokumentsidans kod inline länkas som ärendetextens (beslut #42, D-2 Story
+  // 11.2 AK 6): bara länkmönstren, aldrig formatering, och sökvägar går genom
+  // vitlistan som all annan text.
+  if (g['kod'] !== undefined) return `<code>${lankaEscapad(g['kod'], index, LANKAR, uppslag)}</code>`;
   if (g['fet'] !== undefined) return `<b>${g['fet']}</b>`;
   if (g['mal'] !== undefined) {
     const alias = g['alias']?.trim();
@@ -172,7 +256,7 @@ function ersatt(
       // FR-37, B-14 (Story 2.3): avesc() bara för klassningen, som för
       // losUpp() — den avkodade adressen skrivs aldrig ut.
       const linear = linearAdress(avesc(url));
-      if (linear !== null) return linearlank(text, linear);
+      if (linear !== null) return linearlank(text, linear, uppslag);
       return `<a href="${url}" rel="noreferrer noopener">${text}</a>`;
     }
     return dokumentlank(avesc(url), text, hel, index);
@@ -182,8 +266,9 @@ function ersatt(
   // esc() rör, så dess egna esc()-anrop är identitet på escapad indata.
   if (g['filnamn'] !== undefined) return spegellank(g['filnamn'], hel, index);
   if (g['arende'] !== undefined) {
-    // LOC-\d+ innehåller heller inget escapat tecken.
-    return `<a href="/vy/arende/${g['arende']}">${g['arende']}</a>`;
+    // D-2 (Story 11.2): numret slås upp i uppslaget. Texten står kvar som den
+    // skrevs (loc-503 visas som loc-503); ARENDE innehåller inget escapat tecken.
+    return arendereferens(g['arende'], g['arende'], uppslag) ?? hel;
   }
   return hel;
 }
@@ -209,13 +294,15 @@ function dokumentlank(
  * löptexten inte har någon metaklass. text är redan escapad, och numret är
  * LOC-\d+, som esc() lämnar orört; båda skrivs därför som de är, liksom
  * konstanterna (F1 i test/linear-lankar.test.ts visar att esc() lämnar dem).
+ *
+ * D-2 (Story 11.2): numret går genom arendereferens, som för ett befintligt
+ * ärende ger samma markup som förut, för ett nummer som inte finns en länk till
+ * nummeruppslaget med «(finns inte)», och för ett okänt team numret som text.
  */
-function linearlank(text: string, adress: LinearAdress): string {
+function linearlank(text: string, adress: LinearAdress, uppslag: Uppslag): string {
   if (adress.nummer === null) return `${text} (${AVVECKLAD_LINEAR_LANK})`;
-  // vag byggs här av husets väg och numret; esc() är, som i dokumentlank(),
-  // inte innehållsescape utan ett bälte kring en adress vi själva byggt.
-  const vag = `/vy/arende/${adress.nummer}`;
-  return `${text} (<a href="${esc(vag)}">${adress.nummer}</a>, ${TIDIGARE_LINEAR_LANK})`;
+  const referens = arendereferens(adress.nummer, adress.nummer, uppslag) ?? adress.nummer;
+  return `${text} (${referens}, ${TIDIGARE_LINEAR_LANK})`;
 }
 
 // ---- KRAV-2: speglade kunddokument ----------------------------------------
@@ -316,8 +403,11 @@ const NUMRERAD = /^[ \t]*\d+[.)][ \t]+(.*)$/;
  *
  * Ordningen är escape → markdown → autolänkning (KRAV-5), och esc() nedan är
  * det enda stället i hela kedjan där innehåll escapas.
+ *
+ * `uppslag` har ingen standardparameter (D-2, Story 11.2): en renderare utan
+ * kunskap om vad som finns hade länkat till ärenden som inte finns.
  */
-export function renderaArendetext(text: string, index: Dokumentindex): string {
+export function renderaArendetext(text: string, index: Dokumentindex, uppslag: Uppslag): string {
   const saker = esc(text);
   // KRAV-11: en vy som visar asterisker är bättre än en vy som kraschar, och en
   // vy som visar 200 000 tecken text är bättre än en som lägger sekunder på att
@@ -327,7 +417,7 @@ export function renderaArendetext(text: string, index: Dokumentindex): string {
     return `<!-- över ${MAX_TECKEN} tecken: visas oformaterad -->` + `<p>${saker}</p>`;
   }
   try {
-    return block(saker.split(/\r?\n/), index);
+    return block(saker.split(/\r?\n/), index, uppslag);
   } catch {
     return `<p>${saker}</p>`;
   }
@@ -346,7 +436,7 @@ function citatdjup(rad: string): { djup: number; rest: string } {
   return { djup, rest: rad.slice(slut) };
 }
 
-function block(rader: readonly string[], index: Dokumentindex): string {
+function block(rader: readonly string[], index: Dokumentindex, uppslag: Uppslag): string {
   const ut: string[] = [];
   let stycke: string[] = [];
   let lista: 'ul' | 'ol' | null = null;
@@ -354,7 +444,7 @@ function block(rader: readonly string[], index: Dokumentindex): string {
 
   const stangStycke = (): void => {
     if (stycke.length > 0) {
-      ut.push(`<p>${inline(stycke.join('\n'), index, 0)}</p>`);
+      ut.push(`<p>${inline(stycke.join('\n'), index, 0, uppslag)}</p>`);
       stycke = [];
     }
   };
@@ -412,7 +502,7 @@ function block(rader: readonly string[], index: Dokumentindex): string {
       stangStycke();
       stangLista();
       const niva = Math.min(rubrik[1]!.length + 1, 5);
-      ut.push(`<h${niva}>${inline(rubrik[2]!.trim(), index, 0)}</h${niva}>`);
+      ut.push(`<h${niva}>${inline(rubrik[2]!.trim(), index, 0, uppslag)}</h${niva}>`);
       continue;
     }
 
@@ -420,14 +510,14 @@ function block(rader: readonly string[], index: Dokumentindex): string {
     if (punkt !== null) {
       stangStycke();
       oppnaLista('ul');
-      ut.push(`<li>${inline(punkt[1]!, index, 0)}</li>`);
+      ut.push(`<li>${inline(punkt[1]!, index, 0, uppslag)}</li>`);
       continue;
     }
     const numrerad = NUMRERAD.exec(rest);
     if (numrerad !== null) {
       stangStycke();
       oppnaLista('ol');
-      ut.push(`<li>${inline(numrerad[1]!, index, 0)}</li>`);
+      ut.push(`<li>${inline(numrerad[1]!, index, 0, uppslag)}</li>`);
       continue;
     }
 
@@ -446,15 +536,15 @@ function block(rader: readonly string[], index: Dokumentindex): string {
  * en markdownkonstruktion skickas vidare till autolänkaren, det som är kod
  * skickas ingenstans alls (KRAV-6).
  */
-function inline(saker: string, index: Dokumentindex, djup: number): string {
-  if (djup > MAX_DJUP) return lankaEscapad(saker, index, LANKAR);
+function inline(saker: string, index: Dokumentindex, djup: number, uppslag: Uppslag): string {
+  if (djup > MAX_DJUP) return lankaEscapad(saker, index, LANKAR, uppslag);
   let ut = '';
   let sist = 0;
   INLINE.lastIndex = 0;
   // matchAll itererar över en egen kopia av mönstret, så rekursionen nedan kan
   // inte trampa på den här slingans position.
   for (const m of saker.matchAll(INLINE)) {
-    ut += lankaEscapad(saker.slice(sist, m.index), index, LANKAR);
+    ut += lankaEscapad(saker.slice(sist, m.index), index, LANKAR, uppslag);
     const g = m.groups!;
     // Beslut #42 (David, 2026-08-24): sökvägar och ärendenummer i backticks
     // SKA länkas. Formatering sker fortfarande aldrig i kod — innehållet går
@@ -462,16 +552,16 @@ function inline(saker: string, index: Dokumentindex, djup: number): string {
     // Mätt före ändringen: 55 av 291 länkar (18,9 %) föll bort på den gamla
     // regeln, i 31 av 336 ärenden.
     if (g['kod2'] !== undefined) {
-      ut += `<code>${lankaEscapad(kodspan(g['kod2']), index, LANKAR)}</code>`;
+      ut += `<code>${lankaEscapad(kodspan(g['kod2']), index, LANKAR, uppslag)}</code>`;
     } else if (g['kod1'] !== undefined) {
-      ut += `<code>${lankaEscapad(g['kod1'], index, LANKAR)}</code>`;
+      ut += `<code>${lankaEscapad(g['kod1'], index, LANKAR, uppslag)}</code>`;
     }
-    else if (g['fet2'] !== undefined) ut += `<strong>${inline(g['fet2'], index, djup + 1)}</strong>`;
-    else if (g['kursiv'] !== undefined) ut += `<em>${inline(g['kursiv'], index, djup + 1)}</em>`;
-    else ut += `<em>${inline(g['kursivu']!, index, djup + 1)}</em>`;
+    else if (g['fet2'] !== undefined) ut += `<strong>${inline(g['fet2'], index, djup + 1, uppslag)}</strong>`;
+    else if (g['kursiv'] !== undefined) ut += `<em>${inline(g['kursiv'], index, djup + 1, uppslag)}</em>`;
+    else ut += `<em>${inline(g['kursivu']!, index, djup + 1, uppslag)}</em>`;
     sist = m.index + m[0].length;
   }
-  return ut + lankaEscapad(saker.slice(sist), index, LANKAR);
+  return ut + lankaEscapad(saker.slice(sist), index, LANKAR, uppslag);
 }
 
 /** `` `x` `` skrivs med ett mellanrum i varje ände för att rymma backticken. */
@@ -491,14 +581,14 @@ function kodspan(kod: string): string {
  * h2 som första nivå) och rörs inte av KRAV-1 — men den delar KRAV-3:s ordning,
  * så esc() står här och ingen annanstans nedanför.
  */
-export function renderaMarkdown(text: string, index: Dokumentindex): string {
+export function renderaMarkdown(text: string, index: Dokumentindex, uppslag: Uppslag): string {
   const rader = esc(text).split(/\r?\n/);
   const ut: string[] = [];
   let stycke: string[] = [];
   let lista: 'ul' | 'ol' | null = null;
   let kod: string[] | null = null;
 
-  const inline = (rad: string): string => lankaEscapad(rad, index, MARKDOWN);
+  const inline = (rad: string): string => lankaEscapad(rad, index, MARKDOWN, uppslag);
   const stangStycke = (): void => {
     if (stycke.length > 0) {
       ut.push(`<p>${inline(stycke.join('\n'))}</p>`);

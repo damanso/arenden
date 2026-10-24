@@ -360,7 +360,7 @@ describe('D-1/Story 11.1: genom hela stacken', () => {
       expect(Array.isArray(svar.body.result)).toBe(true);
       const traffar = svar.body.result as { identifier: string }[];
       for (const traff of traffar) {
-        expect(Object.keys(traff).sort()).toEqual(['id', 'identifier', 'rang', 'state_typ', 'title', 'traff_i']);
+        expect(Object.keys(traff).sort()).toEqual(['id', 'identifier', 'lank', 'rang', 'state_typ', 'title', 'traff_i']);
       }
       expect(traffar.map((t) => t.identifier)).toContain('LOC-12');
       expect(traffar.map((t) => t.identifier)).not.toContain('LOC-503');

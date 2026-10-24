@@ -23,6 +23,7 @@ import { executeAction } from '../../actions/execute.js';
 import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
 import type { Aktor } from '../../lib/aktor.js';
+import { arendeSokvag } from '../../lib/arendelank.js';
 import { AppError, BadRequestError, UnauthenticatedError } from '../../lib/errors.js';
 import { TENANT_ID } from '../../lib/tenant.js';
 import { IdentifierSchema, StateTypSchema, type StateTyp } from '../../lib/validation.js';
@@ -342,8 +343,9 @@ function andrad(resultat: unknown): boolean {
 
 // ---- Byggstenar som ärendesidan använder -----------------------------------
 
+// D-2, B-21 (Story 11.2): adressen byggs bara i src/lib/arendelank.ts.
 export function arendeUrlFor(identifier: string): string {
-  return `/vy/arende/${encodeURIComponent(identifier)}`;
+  return arendeSokvag(identifier);
 }
 
 /** B-03: alla skrivformulär använder samma människokrav som skrivramen. */

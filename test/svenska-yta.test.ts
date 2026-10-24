@@ -301,7 +301,7 @@ describe('FR-37/Story 2.1 AK 1 och AK 2: summering, fasett, sökträffar och his
       TITLAR.map(([nyckel]) => fixtur[nyckel].identifier).sort(),
     );
     for (const traff of traffar) {
-      expect(Object.keys(traff).sort()).toEqual(['id', 'identifier', 'rang', 'state_typ', 'title', 'traff_i']);
+      expect(Object.keys(traff).sort()).toEqual(['id', 'identifier', 'lank', 'rang', 'state_typ', 'title', 'traff_i']);
     }
   });
 

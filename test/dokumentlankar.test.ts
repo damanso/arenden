@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
 import request from 'supertest';
+import { withTransaction } from '../src/db/tx.js';
 import { createApp } from '../src/http/app.js';
 import { nollstallIndex } from '../src/http/vy/dokument.js';
+import { sattSekvens } from '../src/services/arenden.js';
 import { TEST_VAULT } from './env.js';
 import { kor, nyNyckel, seedaTeam } from './helpers.js';
 
@@ -91,7 +93,7 @@ describe('Dokumentlänkar KRAV-1..6', () => {
     nollstallIndex();
 
     app = createApp();
-    await seedaTeam();
+    const team = await seedaTeam();
     agentnyckel = await nyNyckel({ typ: 'agent', namn: 'hermes' });
 
     const skapat = await kor(app, agentnyckel, 'create_issue', {
@@ -126,6 +128,15 @@ describe('Dokumentlänkar KRAV-1..6', () => {
       identifier: refererande,
       body: 'Skickat till personen: [[02-Områden/hermes/motesanalys-zeynep-2026-08-12]] — se även LOC-316.',
     });
+
+    // D-2 (Story 11.2): en ärendelänk renderas bara när ärendet finns. Texterna ovan länkar till
+    // LOC-316, som skapas här; de tidigare skapade ärendena behåller sina nummer.
+    await withTransaction((client) => sattSekvens(client, team.sekvensnamn, 315));
+    const lankmal = await kor(app, agentnyckel, 'create_issue', {
+      title: 'Ärendet texterna länkar till',
+      team_key: 'LOC',
+    });
+    expect(lankmal.body.result.identifier).toBe('LOC-316');
   });
 
   // ---- (a) vitlistan och path traversal ------------------------------------
