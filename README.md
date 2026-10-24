@@ -163,6 +163,7 @@ tailscale serve --https=8446 off   # ta bort
 | Adapter (Python, endast stdlib) | `adapter/arenden_klient.py` |
 | Läsvyn (Etapp 2a): router + mall | `src/http/routes/vy.ts`, `src/http/vy/mall.ts` |
 | Dokumentlänkar: vitlista + index, markdown/autolänkning | `src/http/vy/dokument.ts`, `src/http/vy/markdown.ts` |
+| MCP-gatewayen (egen process, klient till /api) | `src/mcp/` |
 | Tester mot riktig Postgres | `test/` |
 
 ### Actions
@@ -597,6 +598,75 @@ Typen avgör vilket kommando en insats får bära (FR-27, B-09). Tabellen är en
 | FR-27, typen styr kommandot: tabellen | en sluten konstant med en rad per typ och en citerad grund ur §4; härledda rader för `agarbeslut`, `utathandling` och `kundkontakt`; varje rad och lista fryst | `src/services/insats.ts` (`KOMMANDOTABELL`) | `test/insats.test.ts` (Story 6.3 AK 1, AK 2) |
 | FR-27, typen styr kommandot: grinden | `kommandotTillats()` före varje skrivning i `registreraInsats`; 400 `otillatet_kommando` och noll rader | `src/services/insats.ts` (`registreraInsats`, `kommandotTillats`) | `test/insats.test.ts` (Story 6.3 AK 3) |
 | FR-27, typen styr kommandot: mätningen | `matInsatskombinationer()` med samma predikat, i en READ ONLY-transaktion | `src/services/insats.ts`, `src/scripts/matInsatskombinationer.ts` | `test/insats.test.ts` (Story 6.3 AK 4) |
+
+### FR-24 (d) — Claude-sessionen når ärendenas actions och inget annat (Story 4.2)
+
+MCP-gatewayen (`src/mcp/`) är en egen process som «node dist/mcp/server.js» startar. Den binder bara 127.0.0.1, port 3003, och värd, port och API-adress är konstanter i koden: gatewayen läser ingen miljövariabel och laddar inte `src/config.ts`. Den är en klient till actions-API:t: varje verktygsanrop blir ett `POST` mot `/api/actions/<namn>` med sessionens nyckel som bearer, så aktören tas ur nyckeln som för alla andra (FR-4). Verktygen är en sluten lista med ärendenas actions (`get_issue`, `list_issues`, `search_issues`, `create_issue`, `add_comment`, `update_issue`, `update_issue_state`), med namn och titel ur registret. Gatewayen har ingen databasanslutning och läser varken valvet, CRM-konfigurationen eller redovisningen (Davids svar 2026-10-13, B-19). Exponeringen är Story 4.4.
+
+- Regel (FR-24 (d), B-19, Story 4.2): `src/mcp/` importerar bara express, express-rate-limit, zod, `path` och `pathToFileURL` ur Node, Nodes typer, varandra och `actionManifest` ur `src/actions/registry.ts`, läser ingen miljövariabel, och anropar plattformen bara genom `anropaApi()` mot `/api/actions/` med ett namn ur verktygslistan.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-24 (d), protokollet | JSON-RPC 2.0 i `POST /mcp` enligt Streamable HTTP med `initialize`, kuvertet tolkat med zod; inga sessioner i protokollet; 405 för annat än POST, 404 för allt utom `/mcp` | `src/mcp/server.ts` (`skapaMcpApp`, `besvara`) | `test/mcp.test.ts` (AK 1) |
+| FR-24 (d), verktygslistan | sluten konstant `VERKTYGSNAMN`; namn och titel ur `actionManifest()`; indata som tillåtelselista utan aktörsfält | `src/mcp/verktyg.ts` (`byggVerktyg`, `hittaVerktyg`, `otillatnaFalt`) | `test/mcp.test.ts` (AK 1, AK 3, AK 4) |
+| FR-24 (d), aktören och API:t | varje verktyg blir `POST /api/actions/<namn>` med sessionens nyckel som bearer; feltexten byggs av status, felkod, `details` och `Retry-After`, aldrig av ett fångat fel | `src/mcp/verktyg.ts` (`anropaApi`, `tolkaSvar`) | `test/mcp.test.ts` (AK 2, AK 3, AK 5) |
+| FR-24 (d), gränsen | express-rate-limit före sessionen, 429 med `Retry-After` och `{"error":"rate_limited"}` | `src/mcp/server.ts` (`skapaMcpApp`) | `test/mcp.test.ts` (AK 5) |
+| FR-24 (d), loopback och ingen databas | värd, port och API-adress som konstanter i `GATEWAYKONFIG`; ingen miljöläsning; importlistan och importgrafen prövas statiskt | `src/mcp/server.ts` (`GATEWAYKONFIG`, `startaGateway`) | `test/mcp.test.ts` (AK 2, AK 4, AK 6) |
+
+### FR-24 (d) — OAuth knyter Claude-sessionen till Davids människonyckel (Story 4.3)
+
+Gatewayen är sin egen OAuth 2.1-server: authorization code med PKCE (S256), metadata enligt RFC 9728 (`/.well-known/oauth-protected-resource`) och RFC 8414 (`/.well-known/oauth-authorization-server`), access tokens på en timme och roterade refresh tokens på 30 dygn. Klienten är sluten: klient-id, hemlighet och utgivarens adress står i klientfilen (0600) i katalogen .hermes i tjänstekontots hemkatalog, och bara Claudes två återkomstadresser godtas. På `/authorize` skriver David in sin människonyckel; gatewayen frågar `vem_ar_jag` genom API:t och utfärdar koden bara för en människonyckel. Koder och tokens lagras bara som sha256 i processens minne, och en omstart kräver ny auktorisering. När nyckeln återkallas svarar nästa verktygsanrop 401, och sessionen glöms.
+
+Story 4.3 gjorde de här påståendena i 4.2:s avsnitt ovan inaktuella. 4.2:s text står kvar ordagrant, och det som står här gäller:
+
+- «404 för allt utom `/mcp`»: gatewayen svarar också på OAuth-vägarna och metadata, alltså `/.well-known/oauth-protected-resource`, samma väg följd av `/mcp`, `/.well-known/oauth-authorization-server`, `/authorize` och `/token`. 404 gäller allt annat (`test/mcp-granser.test.ts`, Story 4.4 AK 1).
+- «importerar bara express, express-rate-limit, zod, `path` och `pathToFileURL` ur Node»: `src/mcp/oauth.ts` importerar också `createHash`, `randomBytes`, `randomUUID` och `timingSafeEqual` ur `node:crypto`, läsfunktionerna `closeSync`, `fstatSync`, `openSync` och `readFileSync` ur `node:fs` och `homedir` ur `node:os`. Ingen skrivande funktion ur `node:fs` får importeras (`test/mcp.test.ts` F6).
+- «läser ingen miljövariabel» och «ingen miljöläsning»: koden läser fortfarande ingen miljövariabel själv, och värd, portar och API-adress flyttas aldrig av miljön. Klientfilens sökväg byggs däremot av `homedir()`, som Node på POSIX tar ur miljövariabeln HOME, så HOME avgör vilken klientfil som läses.
+- «bara genom `anropaApi()` mot `/api/actions/` med ett namn ur verktygslistan»: när David skickar sin nyckel på `/authorize` anropar gatewayen också `vem_ar_jag`, som inte är ett verktyg, genom `fragaVemArJag()`, med samma `POST` mot `/api/actions/` och nyckeln som bearer.
+
+- Regel (FR-24 (d), B-19, Story 4.3): bara en människonyckel, prövad med `vem_ar_jag` genom `/api`, ger en kod; koder och tokens lagras bara som sha256 i processens minne; nyckeln skickas bara som bearer till API:t; `src/mcp/` skriver aldrig till disk, och `src/mcp/oauth.ts` loggar inget.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-24 (d), 401 och metadata | `WWW-Authenticate` med `resource_metadata`; metadata ur klientfilens utgivare | `src/mcp/server.ts` (`skapaMcpApp`), `src/mcp/oauth.ts` (`skapaOAuth`) | `test/mcp-oauth.test.ts` (AK 1, AK 2) |
+| FR-14, FR-4, människonyckeln | `vem_ar_jag` genom API:t; agent- och systemnycklar avvisas; aktören ur nyckeln | `src/actions/registry.ts` (`vem_ar_jag`), `src/mcp/verktyg.ts` (`fragaVemArJag`), `src/mcp/oauth.ts` | `test/mcp-oauth.test.ts` (AK 3, AK 4) |
+| FR-24 (d), återkallelsen | API:ts 401 dödar sessionen och dess refresh-token | `src/mcp/verktyg.ts` (`anropaApi`), `src/mcp/server.ts`, `src/mcp/oauth.ts` (`glom`) | `test/mcp-oauth.test.ts` (AK 4) |
+| FR-24 (d), hemligheterna | sha256 som nycklar i minnet; klientfilen 0600; importlistan utan skrivande fs | `src/mcp/oauth.ts` (`lasKlientfil`, `hashar`) | `test/mcp-oauth.test.ts` (AK 5), `test/mcp.test.ts` (F6) |
+| FR-24 (d), auktoriseringssidan | svensk, JS-fri sida med CSP, `esc()` på varje värde, ursprungskontroll | `src/mcp/oauth.ts` | `test/mcp-oauth.test.ts` (AK 6) |
+
+### FR-24 (d) — Fjärr-MCP nås utan Macen och gränserna står kvar (Story 4.4)
+
+En anpassad koppling i Claude ansluts från Anthropics servrar och inte från enheten, så gatewayen måste nås utanför tailnet. Den enda vägen dit är `tailscale funnel` på porten 8443 mot gatewayen på 127.0.0.1 port 3003 (Davids svar 2026-10-13, B-19). Funnel tillåter bara portarna 443, 8443 och 10000. 8443 är vald eftersom 8444–8446 redan hör till andra vägar på värden och 443 kan bära en väg som repot inte visar; att 8443 är ledig på värden kontrolleras före påslagningen (steg 1 nedan). Appen på 3002 rörs inte: den binder bara 127.0.0.1, `/vy` nås bara i tailnet genom `tailscale serve` på 8446 (avsnitt 8), och `/api` och `/health` stannar på loopback. Gatewayen svarar bara på `/mcp`, OAuth-vägarna och metadata, och `/vy`, `/api` och `/health` genom gatewayens port ger 404. 4.2:s tabellrad «404 för allt utom `/mcp`» gällde före OAuth-vägarna; det 4.3 ändrade i 4.2:s avsnitt står i listan i 4.3:s avsnitt. Gränserna för Etapp 1 och 2a längre ned gäller de etapperna; gatewayen och funneln kom med Davids svar 2026-10-13.
+
+Klientens hemlighet ligger i klientfilen arenden-mcp-klient.json i katalogen .hermes i tjänstekontots hemkatalog, med rättigheterna 0600 och fälten `client_id`, `client_secret` och `utgivare`. `utgivare` är funnelns https-adress utan sökväg, alltså värdens namn i tailnet med porten 8443. Filen skrivs på värden och checkas aldrig in, och gatewayen startar inte utan den.
+
+Slå på vägen, på värden och efter `npm run build`. Funnel slås på för hela porten, så en väg som redan står på 8443 och i dag bara nås i tailnet skulle nås från internet. Därför kommer kontrollen före påslagningen:
+
+1. Kontrollera med `tailscale serve status` att porten 8443 inte används, varken av en väg i tailnet eller av en funnel. Står 8443 där, slå inte på funneln och gå inte vidare. Då blir porten 10000 genom ett eget beslut, som ändrar README:n och klientfilens `utgivare` men ingen kod.
+2. Starta gatewayen med «node dist/mcp/server.js». Raden «MCP-gatewayen lyssnar på» visar att den är uppe.
+3. Slå på funneln med `tailscale funnel --bg --https=8443 3003`. Målet 3003 är 127.0.0.1 port 3003.
+4. Kontrollera med `tailscale funnel status` att funneln bara pekar porten 8443 mot 127.0.0.1 port 3003. Visar den något mer, en annan port, en annan sökväg på 8443 eller ett annat mål, stäng funneln direkt enligt steg 1 under *Stäng vägen* och slå inte på den igen förrän avvikelsen är utredd.
+
+Lägg till kopplingen i Claude en gång, på claude.ai i webbläsaren. Det går också från iPaden, och Macen behövs inte:
+
+1. Settings → Connectors → «Add custom connector». Namn: Ärenden. Adress: `utgivare` följd av `/mcp`.
+2. Under «Advanced settings» är «OAuth Client ID» `client_id` och «OAuth Client Secret» `client_secret` ur klientfilen.
+3. Anslut. Sidan *Godkänn Claude-kopplingen* öppnas. Skriv in din människonyckel och tryck *Godkänn*. Kopplingen finns sedan i Claude-appen på iPaden och telefonen.
+
+Stäng vägen:
+
+1. Stäng funneln med `tailscale funnel --https=8443 off`. Kontrollera sedan med statuskommandot i steg 4 under *Slå på vägen* att porten 8443 inte längre står i funneln. Står den kvar är vägen fortfarande öppen, och steget görs om innan nästa steg.
+2. Återkalla Davids människonyckel med `revoke_api_key` (`nyckel_id`). Nästa verktygsanrop får 401, och sessionen glöms (Story 4.3).
+3. Stoppa gatewayens process.
+
+- Regel (FR-24 (d), FR-39, B-19, Story 4.4): den enda vägen utanför tailnet är `tailscale funnel` på porten 8443 mot MCP-gatewayen på 127.0.0.1 port 3003, enligt Davids svar 2026-10-13. Appen på 3002 binder bara 127.0.0.1 och nås utifrån bara genom `tailscale serve` på 8446 mot `/vy`. Ingen annan väg öppnas, och gatewayen svarar bara på `/mcp`, OAuth-vägarna och metadata. `test/mcp-granser.test.ts` prövar gränserna i koden.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-39, appens bindning | ett enda `listen` i `src/server.ts`, med `config.HOST`, vars standardvärde är 127.0.0.1, och porten 3002 som standard | `src/server.ts`, `src/config.ts` (`EnvSchema`) | `test/mcp-granser.test.ts` (Story 4.4 AK 1) |
+| FR-39, nyckelgränsen (KRAV-10f) | `/vy` monteras före nyckelkravet, `/api` bakom `autentisera` | `src/http/app.ts` | `test/mcp-granser.test.ts` (Story 4.4 AK 1), `test/vy.test.ts` |
+| FR-24 (d), gatewayens vägar | `/mcp` och OAuth-routern, därefter gatewayens 404 för allt annat | `src/mcp/server.ts` (`skapaMcpApp`), `src/mcp/oauth.ts` (`skapaOAuth`) | `test/mcp-granser.test.ts` (Story 4.4 AK 1), `test/mcp.test.ts` (F4) |
+| FR-24 (d), exponeringen | funneln på 8443 mot gatewayen; kommandot, kopplingen i Claude, klientfilen och stängningen ovan | `README.md` | `test/mcp-granser.test.ts` (Story 4.4 AK 2) |
 
 ## Gränser för Etapp 2a
 
