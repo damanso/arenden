@@ -823,7 +823,13 @@ type SoktraffRad = Omit<SoktraffIVy, 'lank'>;
  * EXISTS över comments.sokvektor, och rangen är den bästa av de två.
  *
  * Den ENDA sökfrågan: sokArenden() och sokArendenIVy() läser båda härifrån, så
- * att ordningen bara bestäms på ett ställe (Story 2.5 ändrar den här).
+ * att ordningen bara bestäms på ett ställe.
+ *
+ * B-18 (FR-2, Story 2.5): ordningen är total. Rangen först, sedan skapad och sist
+ * id, alla fallande, så att samma sökning alltid ger samma ordning och samma början
+ * vid limit, också när två träffar har lika rang och samma skapad. Rangen är den
+ * bästa av ärendets och de kvarvarande kommentarernas rang utan vikter, så att
+ * titeln inte väger tyngre än en kommentar.
  */
 async function sokTraffar(
   client: PoolClient,
@@ -853,7 +859,7 @@ async function sokTraffar(
              OR EXISTS (SELECT 1 FROM comments c
                          WHERE c.issue_id = i.id AND c.sokvektor @@ q.tsq
                            AND c.borttagen IS NULL))
-      ORDER BY rang DESC, i.skapad DESC
+      ORDER BY rang DESC, i.skapad DESC, i.id DESC
       LIMIT $3`,
     [tenantId, fraga, limit],
   );
