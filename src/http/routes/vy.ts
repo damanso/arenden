@@ -27,10 +27,8 @@ import {
 } from '../../lib/validation.js';
 import {
   aktorerMedSpar,
-  barnFor,
   befintligaArenden,
   byggMittLage,
-  hamtaArende,
   hittaArendenMedNummer,
   listaArenden,
   listaEtikettnamn,
@@ -42,22 +40,18 @@ import {
   type MittArende,
   type SoktraffIVy,
 } from '../../services/arenden.js';
-import {
-  bilagorFor,
-  relationerFor,
-  type Bilaga,
-  type Relation,
-} from '../../services/relationer.js';
+import { hamtaArendekort } from '../../services/arendekort.js';
+import type { Bilaga, Relation } from '../../services/relationer.js';
 import {
   arendenMedAktivitetAv,
   listaAktorer,
-  listaHandelser,
   listaSenasteHandelser,
   type HandelseIVy,
 } from '../../services/handelser.js';
-import { listaBorttagnaKommentarer, listaKommentarer, type Kommentar } from '../../services/kommentarer.js';
+import type { Kommentar } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag, type Dokumentindex } from '../vy/dokument.js';
+import { kortet } from '../vy/kort.js';
 import {
   arendekandidater,
   arendereferens,
@@ -981,36 +975,25 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
 
   // Autolänkningen läser bara cachen (KRAV-5) — inga filsystemssökningar här.
   const index = await hamtaIndex();
-  const data = await withTransaction(async (client) => {
-    const arende = await hamtaArende(client, TENANT_ID, identifier);
-    const kommentarer = await listaKommentarer(client, TENANT_ID, arende.id);
-    const handelser = await listaHandelser(client, TENANT_ID, arende.id);
-    // K-3: strukturen runt ärendet — delärenden, relationer och de
-    // dokumentlänkar som annars inte finns någon annanstans.
-    const barn = await barnFor(client, TENANT_ID, arende.id);
-    const relationer = await relationerFor(client, TENANT_ID, arende.id);
-    const bilagor = await bilagorFor(client, TENANT_ID, arende.id);
-    // K-1: de mjukt borttagna — id, tidpunkt och den som tog bort (FR-12, Story 1.2),
-    // aldrig originalets text eller aktör.
-    const borttagna = await listaBorttagnaKommentarer(client, TENANT_ID, arende.id);
-    // D-2 (Story 11.2): varje ärendenummer på sidan — beskrivningen, kommentarerna
-    // och bilagornas adresser — slås upp i ETT anrop, aldrig ett per referens.
-    // Kandidaterna är de nummer som sidans egen rendering slår upp.
-    const befintliga = await befintligaArenden(client, TENANT_ID, arendekandidater((uppslag) =>
-      arendetexter(arende, kommentarer, bilagor, index, uppslag)));
-    return { arende, kommentarer, handelser, barn, relationer, bilagor, borttagna, befintliga };
-  }).catch((err: unknown) => {
+  // D-3, D-5, B-23 (Story 11.4): all kortets data hämtas av läsmodellen hamtaArendekort, i en
+  // transaktion och med ett antal frågor som inte beror på antalet poster. D-2 (Story 11.2):
+  // varje ärendenummer på sidan slås upp i ETT anrop, och kandidaterna är de nummer som sidans
+  // egen rendering slår upp; läsmodellen anropar renderingen en gång.
+  const kort = await withTransaction((client) =>
+    hamtaArendekort(client, TENANT_ID, identifier, (t) =>
+      arendekandidater((uppslag) => arendetexter(t.arende, t.kommentarer, t.bilagor, index, uppslag))),
+  ).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
     if (err instanceof NotFoundError) return null;
     throw err;
   });
 
-  if (!data) {
+  if (!kort) {
     res.status(404).type('html').send(ickeFunnen(`Ärendet ${identifier} finns inte.`, identifier));
     return;
   }
 
-  const a = data.arende;
+  const a = kort.arende;
   // K-1: skrivläget. Aktören kommer ur sessionen, som i sin tur kommer ur en
   // API-nyckel (src/http/vy/session.ts) — aldrig ur ett formulärfält.
   const aktor = sessionsAktor(req);
@@ -1022,36 +1005,38 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // K-4: kortet visas när ärendets PROJEKT är kopplat till en kund med id.
   // Ingen namnmatchning och ingen gissning ur titeln: är kopplingen inte
   // gjord visas inget kort alls, och det är ett ärligare svar än fel kund.
-  const crm = a.kund_id === null ? '' : crmKort(await hamtaCrm(a.kund_id));
-  const texter = arendetexter(a, data.kommentarer, data.bilagor, index, data.befintliga);
+  // Ett enda anrop, efter transaktionen och aldrig parallellt med ett annat.
+  const crmSvar = a.kund_id === null ? undefined : await hamtaCrm(a.kund_id);
+  const crmHtml = crmSvar === undefined ? '' : crmKort(crmSvar);
+  const texter = arendetexter(a, kort.kommentarer, kort.bilagor, index, kort.befintliga);
+  // AK 5: de nummer som beskrivningen och de synliga kommentarerna nämner, ur samma rendering
+  // och utan bilagorna. Ingen fråga ställs: kandidaterna ovan är en övermängd, så
+  // kort.befintliga känner redan dem som finns.
+  const namnda = arendekandidater((uppslag) => arendetexter(a, kort.kommentarer, [], index, uppslag));
 
   // KRAV-5: varje kommentar bär aktor_typ + aktor_namn ur comments-tabellen.
-  const kommentarer = data.kommentarer
-    .map(
-      (k, i) =>
-        '<li class=rad><div class=huvud>' +
-        `<span>${esc(datumtid(k.skapad))}</span>` +
-        proveniens(k.aktor_typ, k.aktor_namn) +
-        '</div>' +
-        `<div class=text>${texter.kommentarer[i]}</div>` +
-        kommentarsverktyg(aktor, k, retur) +
-        '</li>',
-    )
-    .join('');
+  const kommentarer = kort.kommentarer.map(
+    (k, i) =>
+      '<li class=rad><div class=huvud>' +
+      `<span>${esc(datumtid(k.skapad))}</span>` +
+      proveniens(k.aktor_typ, k.aktor_namn) +
+      '</div>' +
+      `<div class=text>${texter.kommentarer[i]}</div>` +
+      kommentarsverktyg(aktor, k, retur) +
+      '</li>',
+  );
 
-  const historik = data.handelser
-    .map(
-      (h) =>
-        '<li class=rad><div class=huvud>' +
-        `<span>${esc(datumtid(h.tidpunkt))}</span>` +
-        proveniens(h.aktor_typ, h.aktor_namn) +
-        `<span>${esc(verbText(h.verb))}${handelseDetalj(h.verb, h.payload)}</span>` +
-        '</div>' +
-        historikDetaljer(h.verb, h.payload) +
-        handelseSkal(h.payload) +
-        '</li>',
-    )
-    .join('');
+  const historik = kort.handelser.map(
+    (h) =>
+      '<li class=rad><div class=huvud>' +
+      `<span>${esc(datumtid(h.tidpunkt))}</span>` +
+      proveniens(h.aktor_typ, h.aktor_namn) +
+      `<span>${esc(verbText(h.verb))}${handelseDetalj(h.verb, h.payload)}</span>` +
+      '</div>' +
+      historikDetaljer(h.verb, h.payload) +
+      handelseSkal(h.payload) +
+      '</li>',
+  );
 
   // K-3: föräldern är en LÄNK och kan därför inte ligga i den escapade
   // summeringssträngen — den får en egen rad ovanför beskrivningen.
@@ -1084,33 +1069,34 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     etiketter +
     notisrad(req) +
     skrivlage(aktor, retur) +
-    crm +
-    '<h2>Beskrivning</h2>' +
-    (a.description.trim()
-      ? `<div class=text>${texter.beskrivning}</div>`
-      : '<p class=notis>Ingen beskrivning.</p>') +
-    // Beslut #145: hopfalld under texten den rattar. Menygrammatiken -
-    // enkel yta, komplexiteten en klickning ned.
-    rattaArendeForm(aktor, a.identifier, a.title, a.description) +
-    // Bilagorna står FÖRE kommentarerna: det är dokumentlänkarna David letade
-    // efter 19/8, och trettio av dem finns ingen annanstans i systemet.
-    (data.bilagor.length > 0
-      ? `<h2>Bilagor (${esc(data.bilagor.length)})</h2>` +
-        `<ul class=lista role=list>${texter.bilagor.join('')}</ul>`
-      : '') +
-    (data.barn.length > 0
-      ? `<h2>Delärenden (${esc(data.barn.length)})</h2>` + data.barn.map(arendeKort).join('')
-      : '') +
-    (data.relationer.length > 0
-      ? `<h2>Relationer (${esc(data.relationer.length)})</h2>` +
-        `<ul class=lista role=list>${data.relationer.map(relationRad).join('')}</ul>`
-      : '') +
-    `<h2>Kommentarer (${esc(data.kommentarer.length)})</h2>` +
-    (kommentarer ? `<ul class=lista role=list>${kommentarer}</ul>` : '<p class=notis>Ingen har kommenterat det här ärendet ännu.</p>') +
-    nyKommentarForm(aktor, a.identifier) +
-    borttagnaAvsnitt(aktor, data.borttagna, retur) +
-    `<h2>Historik (${esc(data.handelser.length)})</h2>` +
-    (historik ? `<ul class=lista role=list>${historik}</ul>` : '<p class=notis>Ärendet har inte ändrats sedan det kom in.</p>');
+    // D-3 (Story 11.4): kortets fält ur den slutna listan KORTFALT, vart och ett i exakt ett
+    // av fem lägen. Raderna byggs här som förut; kortet avgör läget och lägger dem i fältet.
+    // Bilagorna står FÖRE kommentarerna: det är dokumentlänkarna David letade efter 19/8,
+    // och trettio av dem finns ingen annanstans i systemet.
+    kortet(
+      {
+        kort,
+        // AK 3: kundens läge. Utan koppling slås CRM inte upp; ett uppslag utan svar ger null.
+        crm: crmSvar === undefined ? 'okopplat' : crmSvar === null ? 'svarade_inte' : 'svarade',
+        namnda,
+        rader: {
+          beskrivning: `<div class=text>${texter.beskrivning}</div>`,
+          bilagor: texter.bilagor,
+          delarenden: kort.barn.map(arendeKort),
+          relationer: kort.relationer.map(relationRad),
+          kommentarer,
+          historik,
+        },
+      },
+      {
+        crmKort: crmHtml,
+        // Beslut #145: hopfalld under texten den rattar. Menygrammatiken -
+        // enkel yta, komplexiteten en klickning ned.
+        efterBeskrivning: rattaArendeForm(aktor, a.identifier, a.title, a.description),
+        efterKommentarer:
+          nyKommentarForm(aktor, a.identifier) + borttagnaAvsnitt(aktor, kort.borttagna, retur),
+      },
+    );
 
   res.type('html').send(
     sida(a.identifier, kropp, undefined, aktor, [

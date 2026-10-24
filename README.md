@@ -437,6 +437,19 @@ Regeln står ordagrant som i regelkällan:
 | D-2, FR-12 (läsmodellerna och 404) | `medLank()`, `tillAtagande()` och `medKallor()` är läsmodellernas enda konstruktörer; gränsen för numret står före frågan och före transaktionen | `src/services/arenden.ts`, `src/services/atagande.ts`, `src/services/insats.ts`, `src/http/routes/vy.ts` | `test/djuplank.test.ts` (AK 3, AK 5) |
 | D-2, D-5, FR-13 (länkarna) | `arendereferens()` är den enda byggaren av en ärendelänk i text; `befintligaArenden()` en gång per sida; renderarna utan databas | `src/http/vy/markdown.ts`, `src/http/routes/vy.ts`, `src/services/arenden.ts` | `test/djuplank.test.ts` (AK 6, AK 8), `test/arendelankar.test.ts` (AK 7) |
 
+### D-3 — ärendekortet har en sluten lista fält och inget fält står tyst tomt (Story 11.4)
+
+Ärendesidan visar kortets fält ur den slutna konstanten `KORTFALT` i `src/http/vy/kort.ts`, i fast ordning och vart och ett med ankaret `falt-<id>`: under «Läget» Frist, Ägare, Projekt, Kund, Uppdrag och Ursprung, därefter CRM-kortet när projektet är kopplat, Beskrivning, rättelseformuläret och Bilagor, under «Kopplade ärenden» Förälder, Delärenden, Relationer, Nämner, Nämns i och Dubbletter, och sist Kommentarer och Historik. Varje fält står i exakt ett av fem lägen (värde, inga, saknas, finns inte i plattformen, kunde inte läsas just nu), och ett tomt läge säger i en notis varför och var uppgiften sätts. All kortets data hämtas av `hamtaArendekort()` i `src/services/arendekort.ts` i ärenderuttens transaktion, med ett antal frågor som inte beror på antalet poster; vylagret har ingen SQL. Ägaren härleds ur åtagandet, de öppna insatserna och `claimad_av`, eftersom plattformen inte har något ansvarigfält. Uppdrag och Dubbletter är luckor med föreslagen källa.
+
+Regeln står ordagrant som i regelkällan:
+
+- Kortets fält är en sluten lista med fem lägen. Ett nytt fält kräver ett provfall för värde och för sitt tomma läge.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| D-3 (fälten och lägena) | `KORTFALT` är kortets enda fältlista; `FALTLAGE` kräver ett läge per fält; `renderaFalt()` renderar varje fält och släpper aldrig igenom ett tomt | `src/http/vy/kort.ts`, `src/http/routes/vy.ts` | `test/arendekort.test.ts` (AK 1–6, AK 8–9) |
+| D-3, D-5 (läsmodellen) | `hamtaArendekort()` hämtar kortet i en transaktion med en fråga per uppsättning rader; GET skriver ingenting | `src/services/arendekort.ts` | `test/arendekort.test.ts` (AK 7) |
+
 ### FR-37 — svenska felbesked i vyn (Story 2.2)
 
 Vyns felsidor säger på svenska vad som hände och varför (B-14). Ett `AppError` utom `UnauthenticatedError` i skrivramen `skrivrutt()` eller i in- och utloggningens ursprungskontroll `ursprungOk()` blir felsida genom `felbesked()`, som slår upp koden i den slutna tabellen `FELBESKED` i `src/http/vy/skrivning.ts`: `atagandet_styr_statusen` ger 400 och «Tillståndet följer åtagandet» med ärendets nummer och en länk tillbaka, `kraver_manniska` ger 403 och «Det här kräver en människa», och `cross_origin` ger 403 och «Gick inte att utföra». En kod som inte står i tabellen ger «Gick inte att utföra» och tjänstens meddelande som förut, eller en fast mening när meddelandet bara är koden. Statusen är felets egen, som på `/api`. Felkoden står bara i ett `code`-element efter meningen. Ett valideringsfel ger «Ogiltig inmatning» med fältets svenska namn ur `FALTNAMN` och en fast mening; zods egna meddelanden läses aldrig. 401-sidan «Inloggning krävs» är oförändrad. Felsidorna visar ingen aktör i hörnet. API:ts JSON-svar är oförändrade.

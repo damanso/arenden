@@ -744,8 +744,11 @@ describe('D-2/Story 11.2: genom hela stacken', () => {
     it('D17 (AK 6): renderarna har ingen databasåtkomst, och vyn slår upp numren en gång per sidtyp', () => {
       const markdown = readFileSync(path.join(ROT, 'src/http/vy/markdown.ts'), 'utf8');
       const vy = readFileSync(path.join(ROT, 'src/http/routes/vy.ts'), 'utf8');
+      const arendekort = readFileSync(path.join(ROT, 'src/services/arendekort.ts'), 'utf8');
       expect(renderarfel(markdown)).toEqual([]);
-      expect(vy.split('befintligaArenden(').length - 1).toBe(2);
+      // D-3, B-23 (Story 11.4): dokumentsidans uppslag står i rutten, ärendesidans i läsmodellen hamtaArendekort().
+      expect(vy.split('befintligaArenden(').length - 1).toBe(1);
+      expect(arendekort.split('befintligaArenden(').length - 1).toBe(1);
       // Kontroll: en påhittad renderare som importerar uppslaget ur tjänstelagret fälls.
       expect(renderarfel("import { befintligaArenden } from '../../services/arenden.js';\n"))
         .toEqual(['importerar ../../services/arenden.js']);

@@ -397,7 +397,9 @@ describe('FR-37/Story 2.3 AK 4: text i ärenden, kommentarer och dokument', () =
     // Kontrollen: de interna länkarna finns, så den tomma listan betyder något.
     const lank = `href="/vy/arende/${malnummer}"`;
     expect(antal(html.get(`/vy/arende/${bilagenummer}`) ?? '', lank)).toBe(6);
-    expect(antal(html.get(`/vy/arende/${textnummer}`) ?? '', lank)).toBe(2);
+    // D-3 (Story 11.4): den tredje är fältet Nämner, eftersom beskrivningen och kommentaren nämner målärendet
+    // genom Linear-adressen.
+    expect(antal(html.get(`/vy/arende/${textnummer}`) ?? '', lank)).toBe(3);
     expect(antal(html.get(`/vy/dok/${DOKREL}`) ?? '', lank)).toBe(2);
   });
 });
