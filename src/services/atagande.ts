@@ -30,6 +30,14 @@
 // Ärendets state-typ härleds ur läget på alla vägar (FR-16 delkrav 4 och 6,
 // B-02; Story 3.2). STATE_FOR_LAGE är tabellen, synkaState sätter den, och
 // uppdateraArendeState godtar för ett ärende med åtagande bara den, under radlås.
+//
+// Och huvudåtagandet kan inte bli genomfört medan ett märkt nödvändigt delresultat
+// saknas (FR-16 delkrav 5, B-07; Story 5.5). Vilka delresultat som är nödvändiga är
+// data med spår, inte en räkning av barnärenden: märkningen har en enda skrivare,
+// markaNodvandigtDelresultat och taBortNodvandigtDelresultat, och spärren är en enda
+// fråga, saknadeDelresultat, i redovisaResultat före skrivningen. Mätningen
+// matDelresultat läser dagens hierarki med den gamla regelns villkor och bara läser:
+// den är underlaget för märkningen i drift, inte en spärr.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { arendeLank } from '../lib/arendelank.js';
@@ -110,7 +118,6 @@ interface Rad {
   atagande_revision: number;
   atagande: AtagandeJson;
   team_id: string;
-  antal_oavslutade_barn: number;
 }
 
 const HAMTA = `
@@ -121,11 +128,7 @@ const HAMTA = `
          i.atagande_lage, i.atagande_tillhor,
          i.atagande_utforare_typ, i.atagande_utforare_namn,
          i.atagande_overtaget_nar, i.atagande_foljs_upp,
-         i.atagande_revision, i.atagande,
-         (SELECT count(*)::int FROM issues b
-           WHERE b.foralder_id = i.id
-             AND b.atagande_lage IS NOT NULL
-             AND b.atagande_lage NOT IN ('genomfort','avslutat')) AS antal_oavslutade_barn
+         i.atagande_revision, i.atagande
     FROM issues i JOIN teams t ON t.id = i.team_id
    WHERE i.tenant_id = $1 AND i.id = $2`;
 
@@ -581,9 +584,9 @@ export async function hindraAtagande(
 }
 
 /**
- * Genomfört. Kräver belägg, uppfyllda villkor och att inget nödvändigt
- * delarbete återstår. Går ALDRIG från hindrat: ett hinder som blivit gammalt
- * är inte ett resultat.
+ * Genomfört. Kräver belägg, uppfyllda villkor och att varje märkt nödvändigt
+ * delresultat finns (FR-16 delkrav 5, B-07; Story 5.5). Går ALDRIG från hindrat:
+ * ett hinder som blivit gammalt är inte ett resultat.
  */
 export async function redovisaResultat(
   client: PoolClient,
@@ -612,10 +615,17 @@ export async function redovisaResultat(
       `${kvar.length} villkor är inte uppfyllt: ${kvar.map((v) => v.text).join(' | ')}`,
     );
   }
-  if (rad.antal_oavslutade_barn > 0) {
+  // FR-16 delkrav 5, B-07 (Story 5.5): spärren står före skrivningen och prövas sist bland
+  // reglerna. Bara märkta delärenden räknas, och ett avslut utan resultat spärrar fortfarande
+  // (Davids svar 2026-10-16 kl. 13.21). Listan går till anroparen som details, så att felet
+  // namnger delärendena; meningen når aldrig klienten.
+  const saknas = await saknadeDelresultat(client, tenantId, rad.id);
+  if (saknas.length) {
+    const lista = saknas.map((s) => `${s.identifier} (${s.lage ?? 'inget åtagande'})`).join(', ');
     throw new BadRequestError(
-      'delarbete_aterstar',
-      `${rad.antal_oavslutade_barn} delåtagande är inte avslutade — huvudåtagandet kan inte stängas`,
+      'nodvandigt_delresultat_saknas',
+      `nödvändigt delresultat saknas: ${lista} — huvudåtagandet kan inte redovisas`,
+      saknas,
     );
   }
   const data: AtagandeJson = {
@@ -704,6 +714,143 @@ export async function hamtaAtagande(
   const rad = await viaIdentifier(client, tenantId, identifier, false);
   kravAtagande(rad);
   return tillAtagande(rad);
+}
+
+// ------------------------------------------------------ delresultatspärren
+//
+// FR-16 delkrav 5, B-07 (Story 5.5; Davids svar 2026-10-16 kl. 13.21): vilka delresultat som är
+// nödvändiga är ett beslut med spår, inte en räkning av barnärenden. Märkningen är en rad per par av
+// huvudärende och delärende i nodvandiga_delresultat, och den skrivs bara av de två funktionerna
+// här, nådda bara från actionerna marka_nodvandigt_delresultat och ta_bort_nodvandigt_delresultat.
+// Ingenting härleds ur titlar eller hierarkin.
+
+/** Märkningens svar. issue_id och identifier är huvudärendets, där spärren verkar. */
+export interface Delresultatsmarkning {
+  issue_id: string;
+  identifier: string;
+  delarende: string;
+  andrad: boolean;
+}
+
+/**
+ * B-01 (architecture.md, låsande läsning): delärendets radlås och förälder i samma sats, så att ingen
+ * kan flytta delärendet medan märkningen prövar föräldern och skriver. Delärendet låses FÖRE
+ * huvudärendet: update_issue låser delärendet och tar sedan, genom främmandenyckeln foralder_id, ett
+ * delat lås på den nya föräldern. I samma ordning väntar den ena in den andra, i stället för att
+ * Postgres avbryter en av dem med 40P01.
+ */
+async function hamtaDelarendeForAndring(
+  client: PoolClient,
+  tenantId: string,
+  delId: string,
+): Promise<string | null> {
+  const { rows } = await client.query<{ foralder_id: string | null }>(
+    'SELECT foralder_id FROM issues WHERE tenant_id = $1 AND id = $2 FOR UPDATE',
+    [tenantId, delId],
+  );
+  const rad = rows[0];
+  if (!rad) throw new NotFoundError('ärende');
+  return rad.foralder_id;
+}
+
+/**
+ * FR-16 delkrav 5, B-07 (Story 5.5 AK 5): märker ett delärende som nödvändigt delresultat för
+ * huvudåtagandet, med aktören ur nyckeln. Delärendet måste ha huvudåtagandets ärende som förälder
+ * när märkningen görs (inte_delarende), och huvudärendet måste bära ett åtagande (inget_atagande).
+ * Märkningen rör inte åtagandet: ingen revision höjs och issues skrivs inte. Samma märkning igen
+ * ger andrad: false, och det unika indexet med villkor gör två samtidiga märkningar till en rad.
+ */
+export async function markaNodvandigtDelresultat(
+  client: PoolClient,
+  tenantId: string,
+  aktor: Aktor,
+  input: { identifier: string; delarende: string },
+): Promise<Delresultatsmarkning> {
+  const del = await hamtaArende(client, tenantId, input.delarende);
+  const foralderId = await hamtaDelarendeForAndring(client, tenantId, del.id);
+  const huvud = await viaIdentifier(client, tenantId, input.identifier);
+  kravAtagande(huvud);
+  // Täcker ett fristående ärende, ett barnbarn, ett barn till ett annat ärende och huvudärendet självt.
+  if (foralderId !== huvud.id) {
+    throw new BadRequestError(
+      'inte_delarende',
+      `${del.identifier} är inte ett delärende till ${huvud.identifier} — bara huvudåtagandets egna delärenden kan märkas`,
+    );
+  }
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO nodvandiga_delresultat (tenant_id, huvud_issue_id, del_issue_id, markt_av_typ, markt_av_namn)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (tenant_id, huvud_issue_id, del_issue_id) WHERE borttagen IS NULL DO NOTHING
+     RETURNING id`,
+    [tenantId, huvud.id, del.id, aktor.typ, aktor.namn],
+  );
+  return {
+    issue_id: huvud.id,
+    identifier: huvud.identifier,
+    delarende: del.identifier,
+    andrad: rows.length > 0,
+  };
+}
+
+/**
+ * FR-16 delkrav 5, B-07 (Story 5.5 AK 6): tar bort märkningen genom att sätta borttagen på den aktiva
+ * raden. Raden står kvar som historik, och spärren läser bara rader utan borttagen. Skälet krävs av
+ * schemat och står i händelseraden. Inget krav på åtagande eller förälder: en märkning ska alltid
+ * kunna tas bort med skäl, också efter att delärendet flyttats. Huvudärendet låses, så att
+ * borttagningen och en samtidig redovisning går i tur och ordning. En märkning som inte finns ger
+ * andrad: false.
+ */
+export async function taBortNodvandigtDelresultat(
+  client: PoolClient,
+  tenantId: string,
+  input: { identifier: string; delarende: string },
+): Promise<Delresultatsmarkning> {
+  const del = await hamtaArende(client, tenantId, input.delarende);
+  const huvud = await viaIdentifier(client, tenantId, input.identifier);
+  const { rows } = await client.query<{ id: string }>(
+    `UPDATE nodvandiga_delresultat SET borttagen = now()
+      WHERE tenant_id = $1 AND huvud_issue_id = $2 AND del_issue_id = $3 AND borttagen IS NULL
+      RETURNING id`,
+    [tenantId, huvud.id, del.id],
+  );
+  return {
+    issue_id: huvud.id,
+    identifier: huvud.identifier,
+    delarende: del.identifier,
+    andrad: rows.length > 0,
+  };
+}
+
+/** Ett märkt delärende vars resultat saknas, med delåtagandets läge (null: inget åtagande). */
+export interface SaknatDelresultat {
+  identifier: string;
+  lage: Lage | null;
+}
+
+/**
+ * FR-16 delkrav 5, B-07 (Story 5.5 AK 1–4): spärrens enda definition. De aktiva märkningarna för
+ * huvudärendet vars delärende inte står i genomfört, ordnade efter nummer. Ett genomfört åtagande
+ * bär alltid sitt resultat (CHECK issues_atagande_resultat), så läget genomfort är «genomfört med
+ * resultat». IS DISTINCT FROM är sant också för NULL: ett delärende utan åtagande saknar resultat.
+ * Frågan utgår från märkningen och aldrig från hierarkin, så ett omärkt delärende spärrar inte, och
+ * den läser varken ärendets tillstånd eller dess namn. Delärendets läge läses utan lås, som förut.
+ */
+export async function saknadeDelresultat(
+  client: PoolClient,
+  tenantId: string,
+  huvudId: string,
+): Promise<SaknatDelresultat[]> {
+  const { rows } = await client.query<SaknatDelresultat>(
+    `SELECT t.key || '-' || d.sequence_number AS identifier, d.atagande_lage AS lage
+       FROM nodvandiga_delresultat n
+       JOIN issues d ON d.id = n.del_issue_id
+       JOIN teams t ON t.id = d.team_id
+      WHERE n.tenant_id = $1 AND n.huvud_issue_id = $2 AND n.borttagen IS NULL
+        AND d.atagande_lage IS DISTINCT FROM 'genomfort'
+      ORDER BY t.key, d.sequence_number`,
+    [tenantId, huvudId],
+  );
+  return rows;
 }
 
 // ------------------------------------------------------- beslut → åtagande
@@ -932,7 +1079,6 @@ export async function listaAtaganden(
             i.atagande_utforare_typ, i.atagande_utforare_namn,
             i.atagande_overtaget_nar, i.atagande_foljs_upp,
             i.atagande_revision, i.atagande,
-            0 AS antal_oavslutade_barn,
             (i.atagande_foljs_upp IS NOT NULL AND i.atagande_foljs_upp < now()) AS forfallen
        FROM issues i JOIN teams t ON t.id = i.team_id
       WHERE ${villkor.join(' AND ')}
@@ -1010,4 +1156,51 @@ export async function matStatusavvikelser(client: PoolClient, tenantId: string):
     [tenantId, JSON.stringify(STATE_FOR_LAGE)],
   );
   return rows;
+}
+
+/** Ett huvudåtagande som barnräkningen spärrade, med delärendena vars åtagande var öppet. */
+export interface Delresultatsparr {
+  identifier: string;
+  lage: Lage;
+  delarenden: { identifier: string; lage: Lage }[];
+}
+
+/**
+ * FR-16 delkrav 5, B-07 (Story 5.5 AK 8–9): läsande mätning av dagens spärrar, underlaget för
+ * märkningen i drift. Den mäter med avsikt den gamla regeln, barnräkningen: varje ärende med åtagande
+ * som har minst ett delärende vars åtagande finns och inte står i genomfört eller avslutat. Spärren
+ * själv är saknadeDelresultat, och skillnaden är meningen: mätningen säger vilka delärenden som ska
+ * märkas eller lämnas med ett antecknat skäl. Den läser bara issues och teams, så den ger samma lista
+ * före migrationen 0018 som direkt efter driftsättningen. Den listar huvudåtagandet i varje läge, också
+ * genomfört, så att ett huvudåtagande som redovisats efter spärrbytet syns i listan (AK 9). Inget
+ * radlås och ingen skrivning. Står sist i filen, så att provet N17 läser kroppen till filens slut.
+ */
+export async function matDelresultat(client: PoolClient, tenantId: string): Promise<Delresultatsparr[]> {
+  const { rows } = await client.query<{ identifier: string; lage: Lage; del_identifier: string; del_lage: Lage }>(
+    `SELECT ht.key || '-' || h.sequence_number AS identifier,
+            h.atagande_lage AS lage,
+            bt.key || '-' || b.sequence_number AS del_identifier,
+            b.atagande_lage AS del_lage
+       FROM issues h
+       JOIN teams ht ON ht.id = h.team_id
+       JOIN issues b ON b.foralder_id = h.id
+       JOIN teams bt ON bt.id = b.team_id
+      WHERE h.tenant_id = $1 AND b.tenant_id = $1
+        AND h.atagande_lage IS NOT NULL
+        AND b.atagande_lage IS NOT NULL
+        AND b.atagande_lage NOT IN ('genomfort','avslutat')
+      ORDER BY ht.key, h.sequence_number, bt.key, b.sequence_number`,
+    [tenantId],
+  );
+  // Raderna kommer ordnade per huvudärende; de grupperas här, ett huvudåtagande per post.
+  const sparrar: Delresultatsparr[] = [];
+  for (const r of rows) {
+    let sista = sparrar[sparrar.length - 1];
+    if (!sista || sista.identifier !== r.identifier) {
+      sista = { identifier: r.identifier, lage: r.lage, delarenden: [] };
+      sparrar.push(sista);
+    }
+    sista.delarenden.push({ identifier: r.del_identifier, lage: r.del_lage });
+  }
+  return sparrar;
 }

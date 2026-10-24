@@ -1176,6 +1176,11 @@ export const VERB: Readonly<Record<string, string>> = {
   importerade_kommentar: 'importerade en kommentar',
   // B-05 (Story 3.2): också försöket att lämna samma status ska synas i historiken.
   status_oforandrad: 'lämnade statusen oförändrad',
+  // FR-16 delkrav 5 (Story 5.5): märkningen av nödvändiga delresultat, med sitt no-op.
+  markte_nodvandigt_delresultat: 'märkte ett delresultat som nödvändigt',
+  delresultatet_var_redan_markt: 'delresultatet var redan märkt som nödvändigt',
+  tog_bort_markning_av_delresultat: 'tog bort märkningen av ett nödvändigt delresultat',
+  delresultatet_var_inte_markt: 'delresultatet var inte märkt som nödvändigt',
 };
 
 /**

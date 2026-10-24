@@ -2,13 +2,23 @@
 // till JSON i felmiddlewaren — aldrig stacktraces till klienten.
 
 export class AppError extends Error {
+  /**
+   * B-07 (Story 5.5): strukturerad data som tjänsten väljer och som felhanteraren
+   * skriver som `details` bredvid `error`, så att en felkod kan namnge det den gäller
+   * (nodvandigt_delresultat_saknas namnger delärendena). Utelämnad saknas nyckeln, och
+   * svaret är `{ error }` som förut. Meddelandet når fortfarande aldrig klienten.
+   */
+  readonly details?: unknown;
+
   constructor(
     readonly status: number,
     readonly code: string,
     message?: string,
+    details?: unknown,
   ) {
     super(message ?? code);
     this.name = new.target.name;
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -36,7 +46,7 @@ export class ForbiddenError extends AppError {
 }
 
 export class BadRequestError extends AppError {
-  constructor(code = 'bad_request', message?: string) {
-    super(400, code, message);
+  constructor(code = 'bad_request', message?: string, details?: unknown) {
+    super(400, code, message, details);
   }
 }

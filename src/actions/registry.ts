@@ -57,10 +57,12 @@ import {
   kopplaBeslut,
   listaAtaganden,
   loggaMoment,
+  markaNodvandigtDelresultat,
   overtaAtagande,
   redovisaResultat,
   registreraAtagande,
   registreraSvarsversion,
+  taBortNodvandigtDelresultat,
   type Andring,
   type Atagande,
 } from '../services/atagande.js';
@@ -1043,6 +1045,60 @@ export const ACTIONS: RegistreradAction[] = [
         tidigare,
       }, andring);
       return atagande;
+    },
+  }),
+
+  // ---- Delresultatspärren (FR-16 delkrav 5, B-07; Story 5.5) -----------------
+  //
+  // Märkningen är data med spår (Davids svar 2026-10-16 kl. 13.21): den görs bara
+  // här, med aktören ur nyckeln, och händelseraden står på huvudärendet, där
+  // spärren i redovisa_resultat verkar. Märkningen ändrar inget åtagandefält och
+  // går därför inte genom skrivAtagandeHandelse. En upprepning loggas med ett eget
+  // no-op-namn och samma payload.
+  def({
+    name: 'marka_nodvandigt_delresultat',
+    title: 'Märk ett delärende som nödvändigt delresultat för huvudåtagandet',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        // Huvudåtagandets ärende.
+        identifier: IdentifierSchema,
+        delarende: IdentifierSchema,
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const svar = await markaNodvandigtDelresultat(ctx.client, ctx.tenantId, ctx.aktor, input);
+      await ctx.skrivHandelse({
+        issueId: svar.issue_id,
+        verb: svar.andrad ? 'markte_nodvandigt_delresultat' : 'delresultatet_var_redan_markt',
+        payload: { identifier: svar.identifier, delarende: svar.delarende },
+      });
+      return { identifier: svar.identifier, delarende: svar.delarende, andrad: svar.andrad };
+    },
+  }),
+
+  def({
+    name: 'ta_bort_nodvandigt_delresultat',
+    title: 'Ta bort märkningen av ett nödvändigt delresultat (kräver skäl)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        identifier: IdentifierSchema,
+        delarende: IdentifierSchema,
+        // Samma SkalSchema som update_issue, men OBLIGATORISKT (Story 5.5 AK 6; Davids svar
+        // 2026-10-16 kl. 13.21): ett anrop utan skäl stoppas i parse, före transaktionen.
+        skal: SkalSchema,
+      })
+      .strict(),
+    handler: async (ctx, input) => {
+      const svar = await taBortNodvandigtDelresultat(ctx.client, ctx.tenantId, input);
+      await ctx.skrivHandelse({
+        issueId: svar.issue_id,
+        verb: svar.andrad ? 'tog_bort_markning_av_delresultat' : 'delresultatet_var_inte_markt',
+        // Skälet ordagrant, också på no-op-raden.
+        payload: { identifier: svar.identifier, delarende: svar.delarende, skal: input.skal },
+      });
+      return { identifier: svar.identifier, delarende: svar.delarende, andrad: svar.andrad };
     },
   }),
 

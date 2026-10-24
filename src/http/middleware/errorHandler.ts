@@ -20,7 +20,10 @@ export function errorHandler(err: unknown, _req: Request, res: Response, next: N
     return;
   }
   if (err instanceof AppError) {
-    res.status(err.status).json({ error: err.code });
+    // B-07 (Story 5.5): details bara när tjänsten satt det; annars exakt { error } som förut.
+    res.status(err.status).json(
+      err.details !== undefined ? { error: err.code, details: err.details } : { error: err.code },
+    );
     return;
   }
   // body-parser (express.json) kastar fel med klientstatus, t.ex. SyntaxError

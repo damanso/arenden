@@ -3,7 +3,7 @@
 // förberedelserna och har en giltig motkontroll. D8:s tillåtna celler kontrollerar
 // samma åtgärder som de förbjudna. Motproven M1–M15 redovisas i berättelsen.
 // Befintliga åtaganden ändras med aktuell revision och, när så krävs, skal (5.2).
-// AK 6 gäller dagens barnräkning; Story 5.5 ersätter just det describe-blocket.
+// AK 6 (barnräkningen) är borttaget: Story 5.5 prövar märkta nödvändiga delresultat i test/delresultat.test.ts.
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
 import pg from 'pg';
@@ -433,45 +433,6 @@ describe('FR-16/Story 5.3: åtagandets datakontrakt är provat i varje led', () 
       const efter = await avtryck(oppet);
       expect(efter.events).toBe(fore.events + 2);
       expect(efter.rad.atagande_revision).toBe(fore.rad.atagande_revision + 2);
-    });
-  });
-
-  describe('FR-16/Story 5.3 AK 6: delresultatspärren i dagens form (barnräkningen; ersätts av Story 5.5 AK 7)', () => {
-    const BARN: { lage: Lage | 'inget'; sparrar: boolean }[] = [
-      { lage: 'registrerat', sparrar: true },
-      { lage: 'overtaget', sparrar: true },
-      { lage: 'hindrat', sparrar: true },
-      { lage: 'genomfort', sparrar: false },
-      { lage: 'avslutat', sparrar: false },
-      { lage: 'inget', sparrar: false },
-    ];
-    it.each(BARN)('D11 (AK 6): delärendets åtagande i $lage — spärrar: $sparrar', async ({ lage, sparrar }) => {
-      const huvud = await iLage('overtaget', `D11 huvud (${lage})`);
-      const barn = lage === 'inget'
-        ? await nyttArende('D11 delärende utan åtagande')
-        : await iLage(lage, `D11 delärende ${lage}`);
-      await steg(hermes, 'update_issue', { identifier: barn, parent: huvud });
-      const redovisa = async () => kor(app, hermes, 'redovisa_resultat', {
-        identifier: huvud, sammanfattning: 'Huvudet klart', belagg: BELAGG,
-        forvantad_revision: await revisionNu(huvud),
-      });
-      const fore = await avtryck(huvud);
-      if (sparrar) {
-        avvisad(await redovisa(), 'delarbete_aterstar');
-        expect(await avtryck(huvud)).toEqual(fore);
-        // Motkontroll: redovisa delen och gör sedan exakt samma redovisning av huvudet.
-        const vidare = async (action: string, input: Record<string, unknown>) =>
-          steg(hermes, action, { identifier: barn, ...input, forvantad_revision: await revisionNu(barn) });
-        if (lage !== 'overtaget') await vidare('ta_over_atagande', { nasta: INTERNT, foljs_upp: SEN });
-        await vidare('redovisa_resultat', { sammanfattning: 'Delen klar', belagg: BELAGG });
-      }
-      const foreRedovisning = await avtryck(huvud);
-      const svar = await redovisa();
-      expect(svar.status, JSON.stringify(svar.body)).toBe(200);
-      expect(svar.body.result.lage).toBe('genomfort');
-      const efter = await avtryck(huvud);
-      expect(efter.events).toBe(foreRedovisning.events + 1);
-      expect(efter.rad.atagande_revision).toBe(foreRedovisning.rad.atagande_revision + 1);
     });
   });
 
