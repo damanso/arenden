@@ -38,6 +38,12 @@
 // fråga, saknadeDelresultat, i redovisaResultat före skrivningen. Mätningen
 // matDelresultat läser dagens hierarki med den gamla regelns villkor och bara läser:
 // den är underlaget för märkningen i drift, inte en spärr.
+//
+// Och ett arbetsmoment bokförs alltid på nyckeln som skrev det (FR-17, B-06; Story 5.4).
+// loggaMoment är den enda som skriver arbetsmoment, och momentradens aktör och tid är alltid
+// nyckelns aktör och skrivtiden. Den historiska vägen behåller sin form, men den påstådda
+// aktören och tiden bokförs bara som påstående i belagg.historisk, på en rad märkt historisk
+// som arbetsandel aldrig räknar.
 import { isDeepStrictEqual } from 'node:util';
 import type { PoolClient } from 'pg';
 import { arendeLank } from '../lib/arendelank.js';
@@ -949,12 +955,18 @@ export async function registreraSvarsversion(
 // ------------------------------------------------------------- momentloggen
 
 /**
- * Skriver ett arbetsmoment. Aktören tas UR NYCKELN — annars mäter prov 6 vad
- * någon påstår om arbetsfördelningen i stället för vem som arbetade.
+ * Skriver ett arbetsmoment, och är den enda funktion som gör det. Aktören tas
+ * UR NYCKELN och tiden ur skrivtransaktionen (kolumnens standardvärde), också
+ * på den historiska vägen — annars mäter prov 6 vad någon påstår om
+ * arbetsfördelningen i stället för vem som arbetade (FR-17, B-06; Story 5.4).
  *
- * `historisk` är den enda vägen att ange en annan aktör, och den finns bara
- * för backfill av gammal data. Historiska rader räknas aldrig in i mätningen
- * efter införandet; de skulle blanda påstående med observation.
+ * `historisk` behåller sin form för Åtagandenas anropare, men blir aldrig
+ * radens aktör eller tid: den påstådda aktören och tiden bokförs ordagrant som
+ * påstående i `belagg.historisk` (`pastadd_aktor_typ`, `pastadd_aktor_namn`,
+ * `pastadd_tidpunkt`), lagt efter de skickade beläggen så att nyckeln alltid
+ * bär serverns uppteckning av påståendet. Raden märks historisk och räknas
+ * aldrig av arbetsandel; den skulle blanda påstående med observation. Utan
+ * `historisk` står beläggen som de skickades.
  */
 export async function loggaMoment(
   client: PoolClient,
@@ -969,21 +981,30 @@ export async function loggaMoment(
   },
 ): Promise<{ id: string }> {
   const h = input.historisk;
+  const belagg = h
+    ? {
+        ...(typeof input.belagg === 'object' && input.belagg !== null ? input.belagg : {}),
+        historisk: {
+          pastadd_aktor_typ: h.aktor_typ,
+          pastadd_aktor_namn: h.aktor_namn,
+          pastadd_tidpunkt: h.tidpunkt,
+        },
+      }
+    : (input.belagg ?? {});
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO arbetsmoment
-       (tenant_id, issue_id, beslut_id, moment, aktor_typ, aktor_namn, belagg, historisk, tidpunkt)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, COALESCE($9::timestamptz, now()))
+       (tenant_id, issue_id, beslut_id, moment, aktor_typ, aktor_namn, belagg, historisk)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
      RETURNING id::text`,
     [
       tenantId,
       input.issue_id ?? null,
       input.beslut_id ?? null,
       input.moment,
-      h ? h.aktor_typ : aktor.typ,
-      h ? h.aktor_namn : aktor.namn,
-      JSON.stringify(input.belagg ?? {}),
+      aktor.typ,
+      aktor.namn,
+      JSON.stringify(belagg),
       Boolean(h),
-      h ? h.tidpunkt : null,
     ],
   );
   const rad = rows[0];
