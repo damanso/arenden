@@ -270,6 +270,57 @@ function handelseDetalj(verb: string, payload: unknown): string {
   return ` ${esc(fran)} → ${esc(till)}`;
 }
 
+/**
+ * FR-12, FR-8, B-13 (Story 1.2): det som en historikrad på ärendesidan ersatte
+ * eller tog bort, hopfällt under raden. Formerna är en sluten tabell med två
+ * poster: rättelserna (rattade_kommentar, rattade_beskrivning) bär gammal_text
+ * och ny_text och får 'Visa tidigare text'; borttagningen (tog_bort_kommentar)
+ * bär gammal_text och originalets aktör och får 'Visa den borttagna
+ * kommentaren'. Varje fält som formen kräver måste vara en sträng. Allt annat —
+ * ett annat verb, en äldre rad utan fälten, ett fält av fel typ — ger tom
+ * sträng, och raden visas som förut. Inga händelser skrivs om (events är
+ * append-only).
+ *
+ * Texterna skrivs med esc() som ren text och går aldrig genom
+ * markdown-renderaren: en tidigare version får inga nya länkar och inga
+ * element. Originalets aktör skrivs med proveniens(). Blocket står efter radens
+ * huvud, så att huvudet bär exakt ett märke, den som utförde händelsen. Bara
+ * ärenderuttens historiklista anropar historikDetaljer; digesten visar verbet.
+ */
+function historikDetaljer(verb: string, payload: unknown): string {
+  if (typeof payload !== 'object' || payload === null) return '';
+  const p = payload as {
+    gammal_text?: unknown;
+    ny_text?: unknown;
+    gammal_aktor_typ?: unknown;
+    gammal_aktor_namn?: unknown;
+  };
+  if (verb === 'rattade_kommentar' || verb === 'rattade_beskrivning') {
+    if (typeof p.gammal_text !== 'string' || typeof p.ny_text !== 'string') return '';
+    return (
+      '<details class=rattelse><summary>Visa tidigare text</summary><div class=text>' +
+      `<h5>Före</h5><div class=text>${esc(p.gammal_text)}</div>` +
+      `<h5>Efter</h5><div class=text>${esc(p.ny_text)}</div></div></details>`
+    );
+  }
+  if (verb === 'tog_bort_kommentar') {
+    if (
+      typeof p.gammal_text !== 'string' ||
+      typeof p.gammal_aktor_typ !== 'string' ||
+      typeof p.gammal_aktor_namn !== 'string'
+    ) {
+      return '';
+    }
+    return (
+      '<details class=rattelse><summary>Visa den borttagna kommentaren</summary>' +
+      '<p class=notis>Borttagen — visas bara här i historiken.</p>' +
+      `<p>${proveniens(p.gammal_aktor_typ, p.gammal_aktor_namn)}</p>` +
+      `<div class=text>${esc(p.gammal_text)}</div></details>`
+    );
+  }
+  return '';
+}
+
 // ---- K-3: bilagor, delärenden och relationer -------------------------------
 
 /**
@@ -939,7 +990,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
     const barn = await barnFor(client, TENANT_ID, arende.id);
     const relationer = await relationerFor(client, TENANT_ID, arende.id);
     const bilagor = await bilagorFor(client, TENANT_ID, arende.id);
-    // K-1: de mjukt borttagna — endast id och tidpunkt, aldrig text/aktör.
+    // K-1: de mjukt borttagna — id, tidpunkt och den som tog bort (FR-12, Story 1.2),
+    // aldrig originalets text eller aktör.
     const borttagna = await listaBorttagnaKommentarer(client, TENANT_ID, arende.id);
     // D-2 (Story 11.2): varje ärendenummer på sidan — beskrivningen, kommentarerna
     // och bilagornas adresser — slås upp i ETT anrop, aldrig ett per referens.
@@ -995,6 +1047,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         proveniens(h.aktor_typ, h.aktor_namn) +
         `<span>${esc(verbText(h.verb))}${handelseDetalj(h.verb, h.payload)}</span>` +
         '</div>' +
+        historikDetaljer(h.verb, h.payload) +
         handelseSkal(h.payload) +
         '</li>',
     )

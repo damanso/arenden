@@ -387,7 +387,9 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     // Assertionen MÅSTE gälla historikblocket, inte hela sidan: beskrivningen
     // ska ju synas under rubriken Beskrivning. Första skrivningen av det här
     // provet läste HELA sidan som proxy för historikraden och blev röd av att
-    // systemet gjorde rätt. Exakt det fel provet finns för att fånga.
+    // systemet gjorde rätt. Exakt det fel provet finns för att fånga. Story 1.2 lägger dessutom
+    // texterna i historikradens detaljer (Visa tidigare text) med avsikt, så den långa texten mäts
+    // i radernas huvuden.
     const start = sida.text.indexOf('<h2>Historik');
     expect(start, 'historikblocket hittades inte').toBeGreaterThan(-1);
     const historik = sida.text.slice(start);
@@ -395,9 +397,16 @@ describe('#145: ärendets titel och beskrivning går att rätta', () => {
     expect(historik).toContain('Före → Efter');
     // POSITIV KONTROLL: raden finns. Utan den bevisar frånvaron nedan inget.
     expect(historik).toContain('rättade beskrivningen');
-    // Det som hålet handlar om: brödtexten får inte hamna på en historikrad.
+    // Det som hålet handlar om: brödtexten får inte hamna på en historikrad. Sedan Story 1.2 står
+    // den med avsikt i radens detaljer, men aldrig i radens huvud.
     expect(historik).not.toContain('Kort text. → ');
-    expect(historik).not.toContain('y'.repeat(200));
+    const huvudena = historik
+      .split('<div class=huvud>')
+      .slice(1)
+      .map((bit) => bit.slice(0, bit.indexOf('</div>')))
+      .join('');
+    expect(huvudena).toContain('rättade beskrivningen');
+    expect(huvudena).not.toContain('y'.repeat(200));
   });
 
   /**

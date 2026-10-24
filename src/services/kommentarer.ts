@@ -167,23 +167,59 @@ export async function aterstallKommentar(
 }
 
 /**
- * De borttagna kommentarerna på ett ärende — ENDAST id och tidpunkt.
+ * En borttagen kommentar som avsnittet Borttagna kommentarer visar den: id,
+ * tidpunkt och den som tog bort.
+ */
+export interface BorttagenKommentar {
+  id: string;
+  borttagen: Date;
+  borttagen_av_typ: string | null;
+  borttagen_av_namn: string | null;
+}
+
+/**
+ * De borttagna kommentarerna på ett ärende — id, tidpunkt och den som tog bort.
  *
- * Medvetet utan body och utan aktör: sidan ska visa ATT något togs bort (och ge
- * vägen tillbaka), aldrig återge det borttagna innehållet eller den aktör som
- * stod på det. Var det just aktörsuppgiften som var fel — LOC-255:s tre falska
- * "personer" — hade en återgivning här gjort borttagningen meningslös. Det gamla
- * värdet finns i händelseraden, som är den plats där det hör hemma.
+ * Medvetet utan body och utan den aktör som stod på kommentaren: avsnittet
+ * Borttagna kommentarer ska visa ATT något togs bort, av vem, och ge vägen
+ * tillbaka, aldrig återge det borttagna innehållet eller originalets aktör. Var
+ * det just aktörsuppgiften som var fel — LOC-255:s tre falska "personer" — hade
+ * en återgivning där gjort borttagningen meningslös. Det gamla värdet finns i
+ * händelseraden, som är den plats där det hör hemma; ärendesidans historik
+ * visar det därifrån, under 'Visa den borttagna kommentaren'.
+ *
+ * FR-12, B-13 (Story 1.2): den som tog bort läses i samma sats (ingen fråga per
+ * kommentar) ur händelsen tog_bort_kommentar för den borttagning som gäller nu.
+ * Händelsen knyts till borttagningen genom tidpunkten: taBortKommentar sätter
+ * borttagen till now(), och händelseraden får now() som tidpunkt i samma
+ * transaktion, så de två är lika. En ångrad borttagning har en annan tidpunkt
+ * och väljs aldrig — inte heller när borttagningen som gäller nu började
+ * tidigare, fick radlåset efter den ångrade och därför bär den lägre
+ * tidpunkten. Delar två händelser ändå tidpunkten avgör den senast skrivna
+ * (högsta id). Har borttagningen som gäller nu ingen händelse (borttagen satt
+ * förbi API:t) är båda fälten null, också när en tidigare borttagning har en:
+ * ingen aktör hittas på.
  */
 export async function listaBorttagnaKommentarer(
   client: PoolClient,
   tenantId: string,
   issueId: string,
-): Promise<{ id: string; borttagen: Date }[]> {
-  const { rows } = await client.query<{ id: string; borttagen: Date }>(
-    `SELECT id, borttagen FROM comments
-      WHERE tenant_id = $1 AND issue_id = $2 AND borttagen IS NOT NULL
-      ORDER BY borttagen, id`,
+): Promise<BorttagenKommentar[]> {
+  const { rows } = await client.query<BorttagenKommentar>(
+    `SELECT c.id, c.borttagen,
+            t.aktor_typ AS borttagen_av_typ, t.aktor_namn AS borttagen_av_namn
+       FROM comments c
+       LEFT JOIN LATERAL (
+         SELECT e.aktor_typ, e.aktor_namn
+           FROM events e
+          WHERE e.tenant_id = $1 AND e.issue_id = $2 AND e.verb = 'tog_bort_kommentar'
+            AND e.payload->>'kommentar_id' = c.id::text
+            AND e.tidpunkt = c.borttagen
+          ORDER BY e.id DESC
+          LIMIT 1
+       ) t ON true
+      WHERE c.tenant_id = $1 AND c.issue_id = $2 AND c.borttagen IS NOT NULL
+      ORDER BY c.borttagen, c.id`,
     [tenantId, issueId],
   );
   return rows;

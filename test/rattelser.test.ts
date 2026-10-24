@@ -193,7 +193,11 @@ describe('K-1: rättningsvägar, aktörsidentitet och skrivvägen i vyn', () => 
 
     const sida = await request(app).get(`/vy/arende/${identifier}`);
     expect(sida.text).toContain('Rättad siffra: 21 av 40.');
-    expect(sida.text).not.toContain('Fel siffra: 19 av 40.');
+    // Story 1.2 lägger den gamla texten i historikens detaljer (Visa tidigare text) med avsikt.
+    // Den levande kommentaren, ovanför historiken, bär bara den rättade.
+    const levande = sida.text.slice(sida.text.indexOf('<h2>Kommentarer ('), sida.text.indexOf('<h2>Historik ('));
+    expect(levande).toContain('Rättad siffra: 21 av 40.');
+    expect(levande).not.toContain('Fel siffra: 19 av 40.');
   });
 
   it('proveniensen på en kommentar går ALDRIG att rätta — bara texten', async () => {
@@ -245,7 +249,14 @@ describe('K-1: rättningsvägar, aktörsidentitet och skrivvägen i vyn', () => 
     expect(Number(kvar.rows[0]!.n)).toBe(1);
 
     const sida = await request(app).get(`/vy/arende/${identifier}`);
-    expect(sida.text).not.toContain('tigerbalsam');
+    // Story 1.2 lägger den borttagna texten i historikens detaljer (Visa den borttagna kommentaren)
+    // med avsikt. Ovanför historiken, under Kommentarer och Borttagna kommentarer, står den inte.
+    const ovanforHistoriken = sida.text.slice(
+      sida.text.indexOf('<h2>Kommentarer ('),
+      sida.text.indexOf('<h2>Historik ('),
+    );
+    expect(ovanforHistoriken).toContain('Borttagna kommentarer (1)');
+    expect(ovanforHistoriken).not.toContain('tigerbalsam');
     expect(sida.text).toContain('Borttagna kommentarer (1)');
 
     const hamtat = await kor(app, agentnyckel, 'get_issue', { identifier });

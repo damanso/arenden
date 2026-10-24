@@ -30,7 +30,7 @@ import { IdentifierSchema, StateTypSchema, type StateTyp } from '../../lib/valid
 import { listaEtikettnamn, listaProjektnamn, type Arende } from '../../services/arenden.js';
 // Åtagande- och ärendemodulen importerar varandra: tabellen läses bara inne i tillatnaMal().
 import { STATE_FOR_LAGE, type Lage } from '../../services/atagande.js';
-import type { Kommentar } from '../../services/kommentarer.js';
+import type { BorttagenKommentar, Kommentar } from '../../services/kommentarer.js';
 import { listaNycklar, slaUppAktor, type NyckelIVy } from '../../services/nycklar.js';
 import { datumtid, esc, proveniens, sida, statuschip, statusordForTyp } from './mall.js';
 import {
@@ -525,19 +525,30 @@ export function kommentarsverktyg(aktor: Aktor | null, kommentar: Kommentar, ret
 }
 
 /**
- * Varken texten eller den aktör som stod på den återges här. Sidan säger ATT
- * något togs bort; VAD som togs bort står i händelseraden, som är append-only.
- * Var det just aktörsuppgiften som var fel — LOC-255:s tre falska "personer" —
- * hade en återgivning här gjort borttagningen meningslös.
+ * Varken texten eller den aktör som stod på den återges här. Avsnittet säger
+ * ATT något togs bort, när och av vem; VAD som togs bort står i händelseraden,
+ * som är append-only, och visas bara i historiken under 'Visa den borttagna
+ * kommentaren'. Var det just aktörsuppgiften som var fel — LOC-255:s tre falska
+ * "personer" — hade en återgivning här gjort borttagningen meningslös.
+ *
+ * FR-12, B-13 (Story 1.2): ingen rad står omärkt. Den som tog bort kommer ur
+ * tjänstelagret (händelsen tog_bort_kommentar för den borttagning som gäller
+ * nu) och skrivs med proveniens() i radens huvud, före Återställ-knappen. Har
+ * borttagningen som gäller nu ingen händelse märks raden som okänd i stället
+ * för att en aktör hittas på.
  */
 export function borttagnaAvsnitt(
   aktor: Aktor | null,
-  borttagna: { id: string; borttagen: Date }[],
+  borttagna: readonly BorttagenKommentar[],
   retur: string,
 ): string {
   if (borttagna.length === 0) return '';
   const rader = borttagna
     .map((b) => {
+      const marke =
+        b.borttagen_av_typ !== null && b.borttagen_av_namn !== null
+          ? proveniens(b.borttagen_av_typ, b.borttagen_av_namn)
+          : proveniens('okänd', 'ingen händelserad');
       const knapp = kanSkriva(aktor)
         ? `<form class=skrivform method=post action="/vy/kommentar/${esc(b.id)}/aterstall">` +
           `<input type=hidden name=fran value="${esc(retur)}">` +
@@ -545,13 +556,13 @@ export function borttagnaAvsnitt(
         : '';
       return (
         '<li class=rad><div class=huvud>' +
-        `<span>borttagen ${esc(datumtid(b.borttagen))}</span>${knapp}</div></li>`
+        `<span>borttagen ${esc(datumtid(b.borttagen))} av</span>${marke}${knapp}</div></li>`
       );
     })
     .join('');
   return (
     `<h2>Borttagna kommentarer (${esc(borttagna.length)})</h2>` +
-    '<p class=notis>Innehållet och aktören står kvar i historiken nedan — inte här.</p>' +
+    "<p class=notis>Innehållet och aktören står i historiken nedan, under 'Visa den borttagna kommentaren'.</p>" +
     `<ul class=lista role=list>${rader}</ul>`
   );
 }
