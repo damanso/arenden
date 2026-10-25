@@ -25,6 +25,10 @@ import { sattVyPublikUrl } from './lib/arendelank.js';
 // CRM_KONF_PATH — och standardvärdet prövas som varje satt värde.
 export const VY_PUBLIK_URL_STANDARD = 'https://david-brain.tail743706.ts.net:8446';
 
+// FR-39, B-12 (Story 7.2): den enda adress servern får binda. Literalen, standardvärdet och felets
+// text delar värdet; konstanten exporteras inte, så att proven jämför med värdet självt.
+const LOOPBACK = '127.0.0.1';
+
 /**
  * En https-adress som är exakt sin egen origin. Jämförelsen med origin fäller en
  * sökväg, ett avslutande snedstreck, en fråga eller ett fragment (också tomma),
@@ -44,8 +48,20 @@ export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   // Ärendeplattformen kör på 3002 — redovisningen äger 3000/3001-området.
   PORT: z.coerce.number().int().nonnegative().max(65535).default(3002),
-  // Ingen extern yta i Etapp 1: servern binds till loopback.
-  HOST: z.string().min(1).default('127.0.0.1'),
+  // FR-39, B-12 (Story 7.2): läsvyn kräver ingen nyckel, och gränsen är att servern bara nås på värden
+  // själv; utifrån nås den bara genom tailscale serve på porten 8446. HOST är därför en tillåtelselista med
+  // ett enda värde: ett annat värde, också en annan loopbackadress, stoppar starten med FATAL nedan innan
+  // poolen ansluter och innan något lyssnar. Prövningen står på fältet och standardvärdet utanpå, så att
+  // också det utelämnade värdet går genom literalen.
+  HOST: z
+    .literal(LOOPBACK, {
+      errorMap: () => ({
+        message:
+          `HOST får bara vara ${LOOPBACK} — servern binder aldrig en annan adress, ` +
+          'och vägen utifrån går genom tailscale serve (FR-39, B-12)',
+      }),
+    })
+    .default(LOOPBACK),
   DATABASE_URL: z
     .string()
     .min(1, 'DATABASE_URL krävs (postgres://app@127.0.0.1:5435/arenden — den lågprivilegierade rollen)'),

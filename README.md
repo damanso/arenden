@@ -706,6 +706,24 @@ Ett arbetsmoment bokförs alltid på den nyckel som skrev det, så att Davids ar
 | FR-17, mätningen på observationer | `arbetsandel` räknar bara rader med `historisk = false`, och `andel_manniska` är null när summan av observationer är noll | `src/services/atagande.ts` (`arbetsandel`) | `test/arbetsmoment.test.ts` (Story 5.4 AK 3) |
 | FR-17, append-only | `app` har bara SELECT och INSERT på `arbetsmoment`, och triggern spärrar UPDATE och DELETE också för ägaren; schemat för `historisk` är oförändrat | `migrations/0014_atagande.sql` | `test/arbetsmoment.test.ts` (Story 5.4 AK 4) |
 
+### FR-39 — servern kan bara binda 127.0.0.1 (Story 7.2)
+
+Läsvyn kräver ingen nyckel, och gränsen är att servern bara nås på värden själv; utifrån nås den bara genom `tailscale serve` på porten 8446 i tailnet (FR-39, B-12, KRAV-10f). `HOST` i `EnvSchema` (`src/config.ts`) är därför en tillåtelselista med ett enda värde, 127.0.0.1, som också är standardvärdet. Varje annat värde, också `0.0.0.0`, `::`, `localhost`, en LAN-adress och en tom sträng, stoppar starten: `src/config.ts` skriver `FATAL: vägrar starta` med en rad som namnger `HOST` och avslutar med exitkod 1 innan något ansluter eller lyssnar. `src/server.ts` har ett enda `listen`, med `config.PORT` och `config.HOST`, och `/vy` och `/health` monteras före nyckelkravet medan `/api` kräver bearer (`src/http/app.ts`). Provet `test/config.test.ts` prövar värdena, startar `src/server.ts` som barnprocess, läser serverns lyssnande adress ur kärnans tabell över lyssnande socklar (samma källa som `ss -ltn`) och prövar nyckelgränsen genom den startade servern.
+
+Bindningen och exponeringen mäts på värden efter driftsättningen, och kommando, utfall och datum antecknas i berättelsefilen för Story 7.2:
+
+1. `tailscale serve status` visar porten 8446 med sökvägen `/vy` mot appen på 127.0.0.1 port 3002, och ingen annan väg till port 3002. Den enda vägen utanför tailnet är funneln på porten 8443 mot MCP-gatewayen på 127.0.0.1 port 3003 (avsnittet för Story 4.4), aldrig mot port 3002.
+2. `ss -ltnp` visar port 3002 bara med den lokala adressen 127.0.0.1, och ingen rad för port 3002 med `0.0.0.0`, `*` eller `[::]`.
+
+- Bindningen (FR-39, B-12, Story 7.2): `HOST` i `EnvSchema` godtar bara 127.0.0.1, som också är standardvärdet, och varje annat värde stoppar starten med en felrad som namnger `HOST`. `src/server.ts` har ett enda `listen`, med `config.PORT` och `config.HOST`. Appen nås utifrån bara genom `tailscale serve` på porten 8446, och inget prov och ingen hjälpare i sviten binder alla adresser.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| FR-39, bindningsadressen | `HOST` i `EnvSchema` är en tillåtelselista med ett värde, 127.0.0.1, som också är standardvärdet; varje annat värde ger FATAL och exitkod 1 före anslutningen | `src/config.ts` (`EnvSchema`) | `test/config.test.ts` (Story 7.2 AK 1) |
+| FR-39, serverns adress | ett enda `listen` med `config.HOST`; provet läser den lyssnande adressen ur kärnans tabell | `src/server.ts` | `test/config.test.ts` (Story 7.2 AK 2), `test/mcp-granser.test.ts` (Story 4.4 AK 1) |
+| FR-39, nyckelgränsen (KRAV-10f) | `/vy` och `/health` före nyckelkravet, `/api` bakom `autentisera` | `src/http/app.ts` | `test/config.test.ts` (Story 7.2 AK 3), `test/mcp-granser.test.ts` (Story 4.4 AK 1) |
+| FR-39, exponeringen och bindningen i drift | mätningarna 1–2 ovan, med utfall och datum i berättelsefilen; provet läser att avsnittet bär kommandona | värdens tailscale-konfiguration (i drift) | `test/config.test.ts` (Story 7.2 AK 4) och mätningarna i drift |
+
 ## Gränser för Etapp 2a
 
 Ingen skrivfunktion från vyn (inga POST-rutter under `/vy`), ingen auth-UI, inga
