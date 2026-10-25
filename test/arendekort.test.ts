@@ -437,7 +437,11 @@ beforeAll(async () => {
     for (const namn of ['K-oavgjort', 'K-kopplat', 'K-internt', FULT_PROJEKT]) {
       await hamtaEllerSkapaProjekt(client, TENANT_ID, namn);
     }
-    await sattKundkoppling(client, TENANT_ID, 'K-kopplat', { status: 'kopplad', kund_id: TESTKUND });
+    await sattKundkoppling(client, TENANT_ID, 'K-kopplat', {
+      status: 'kopplad',
+      kund_id: TESTKUND,
+      kund_kalla: 'redovisning',
+    });
     await sattKundkoppling(client, TENANT_ID, 'K-internt', { status: 'intern' });
   });
 

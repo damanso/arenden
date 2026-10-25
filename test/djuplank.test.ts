@@ -214,7 +214,7 @@ const GRUND = { typ: 'beslut', id: '153', version: '1' };
 
 const ARENDEFALT = [
   'antal_barn', 'atagande_lage', 'claimad_av', 'description', 'due_date', 'foralder_id', 'foralder_identifier',
-  'foralder_titel', 'id', 'identifier', 'kund_id', 'labels', 'milstolpe', 'priority', 'projekt', 'skapad',
+  'foralder_titel', 'id', 'identifier', 'kund_id', 'kund_kalla', 'labels', 'milstolpe', 'priority', 'projekt', 'skapad',
   'source_ref', 'state_namn', 'state_typ', 'team_key', 'title', 'uppdaterad',
 ];
 const TRAFFALT = ['id', 'identifier', 'rang', 'state_typ', 'title', 'traff_i'];

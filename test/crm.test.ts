@@ -4,7 +4,7 @@ import type { Express } from 'express';
 import request from 'supertest';
 import { createApp } from '../src/http/app.js';
 import { withTransaction } from '../src/db/tx.js';
-import { crmAnrop, nollstallCrmCache } from '../src/http/vy/crm.js';
+import { crmAnrop, hamtaCrm, nollstallCrmCache } from '../src/http/vy/crm.js';
 import { hamtaEllerSkapaProjekt } from '../src/services/arenden.js';
 import { sattKundkoppling } from '../src/services/kundkoppling.js';
 import { TEST_CRM_KONF } from './env.js';
@@ -23,13 +23,20 @@ const TESTBOLAG = '00000000-0000-4000-8000-000000000000';
  */
 const TESTKUND = '11111111-2222-4333-8444-555555555555';
 
-async function kopplaKund(projekt: string, kundId: string | null): Promise<void> {
+/** B-08 (Story 6.1): ett kund-id i en annan källa än redovisningen. CRM-uppslaget kan inte tolka det. */
+const ANNAN_KUND = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+
+/**
+ * B-08 (Story 6.1): källan är en obligatorisk parameter och skickas som den är. Hjälparen har ingen
+ * standardkälla, av samma skäl som tjänsten inte har någon.
+ */
+async function kopplaKund(projekt: string, kundId: string | null, kalla: string | null): Promise<void> {
   await withTransaction(async (client) => {
     await sattKundkoppling(
       client,
       TENANT_ID,
       projekt,
-      kundId === null ? { status: 'intern' } : { status: 'kopplad', kund_id: kundId },
+      kundId === null ? { status: 'intern' } : { status: 'kopplad', kund_id: kundId, kund_kalla: kalla },
     );
   });
 }
@@ -47,12 +54,24 @@ async function sattProjekt(identifier: string, projekt: string): Promise<void> {
   });
 }
 
+/**
+ * Sidan utan sidhuvudet: 'CRM' står i huvudmenyn på varje sida, så markören prövas på innehållet.
+ * Avskriven ur fallet «KRAV-1/5/6d» nedan.
+ */
+function utanKrom(s: string): string {
+  const i = s.indexOf('</header>');
+  return i === -1 ? s : s.slice(i);
+}
+
 describe('CRM-koppling KRAV-1..6', () => {
   let app: Express;
   /** Ärende i projekt NVR-001 — mappar till Nordic Vision Retail AB. */
   let mappat: string;
   /** Ärende i ett internt projekt och med neutral titel — mappar aldrig. */
   let omappat: string;
+  /** Ärende i ett projekt kopplat i en annan källa än redovisningen (Story 6.1) — inget uppslag. */
+  let annan: string;
+  let agentnyckel: string;
 
   beforeAll(async () => {
     await rm(TEST_CRM_KONF, { force: true });
@@ -75,7 +94,7 @@ describe('CRM-koppling KRAV-1..6', () => {
 
     app = createApp();
     await seedaTeam();
-    const agentnyckel = await nyNyckel({ typ: 'agent', namn: 'hermes' });
+    agentnyckel = await nyNyckel({ typ: 'agent', namn: 'hermes' });
 
     const ett = await kor(app, agentnyckel, 'create_issue', {
       title: 'Leverans av butiksdata',
@@ -84,7 +103,7 @@ describe('CRM-koppling KRAV-1..6', () => {
     });
     mappat = ett.body.result.identifier;
     await sattProjekt(mappat, 'NVR-001');
-    await kopplaKund('NVR-001', TESTKUND);
+    await kopplaKund('NVR-001', TESTKUND, 'redovisning');
     await kor(app, agentnyckel, 'add_comment', {
       identifier: mappat,
       body: 'Avstämning bokad.',
@@ -99,7 +118,17 @@ describe('CRM-koppling KRAV-1..6', () => {
     await sattProjekt(omappat, 'Hermes');
     // Hermes ar INTERNT. Det ar ocksa namnet pa en arkiverad, tom
     // CRM-organisation - fallan en namnmatchning gar rakt i.
-    await kopplaKund('Hermes', null);
+    await kopplaKund('Hermes', null, null);
+
+    // Story 6.1: kopplat med ett id, men i en annan källa. Varken projektnamnet eller titeln
+    // innehåller ordet CRM, eftersom KRAV-1/5/6d prövar att /vy och /vy/sok saknar det.
+    const tre = await kor(app, agentnyckel, 'create_issue', {
+      title: 'Ärende i ett projekt med en annan källa',
+      team_key: 'LOC',
+    });
+    annan = tre.body.result.identifier;
+    await sattProjekt(annan, 'K-annan-kalla');
+    await kopplaKund('K-annan-kalla', ANNAN_KUND, 'annat-system');
   });
 
   // ---- (a) mappningen ------------------------------------------------------
@@ -219,5 +248,65 @@ describe('CRM-koppling KRAV-1..6', () => {
   it('KRAV: CRM-kortet är GET-renderat — ingen mutation finns', async () => {
     const post = await request(app).post(`/vy/arende/${mappat}`).send({ text: 'nej' });
     expect(post.status).toBe(404);
+  });
+
+  describe('FR-26/Story 6.1 AK 4: ärendets läsmodell bär kund_kalla', () => {
+    it('KC2 (AK 4): get_issue ger källan och id:t för redovisningens, en annan källas och ett internt ärende', async () => {
+      const fall: [string, string | null, string | null][] = [
+        [mappat, 'redovisning', TESTKUND],
+        [annan, 'annat-system', ANNAN_KUND],
+        [omappat, null, null],
+      ];
+      for (const [identifier, kalla, kundId] of fall) {
+        const svar = await kor(app, agentnyckel, 'get_issue', { identifier });
+        expect(svar.status, identifier).toBe(200);
+        expect(svar.body.result.arende.kund_kalla, identifier).toBe(kalla);
+        expect(svar.body.result.arende.kund_id, identifier).toBe(kundId);
+      }
+    });
+  });
+
+  describe('FR-26/Story 6.1 AK 4: kundkortet läses bara ur det system id:t hör till (B-08)', () => {
+    it('KC1 (AK 4): bara redovisningens koppling slås upp; en annan källa visas med källa och id, utan kort', async () => {
+      nollstallCrmCache();
+
+      const andra = await request(app).get(`/vy/arende/${annan}`);
+      const tredje = await request(app).get(`/vy/arende/${omappat}`);
+      expect(andra.status).toBe(200);
+      expect(tredje.status).toBe(200);
+      // Varken den andra källans id eller det interna projektet nådde uppslaget.
+      expect(crmAnrop()).toBe(0);
+      expect(utanKrom(andra.text)).not.toContain('CRM');
+      expect(andra.text).toMatch(
+        new RegExp(`<p>annat-system · kund-id ${ANNAN_KUND} · kopplad \\d{4}-\\d{2}-\\d{2}</p>`),
+      );
+      expect(utanKrom(tredje.text)).not.toContain('CRM');
+
+      // Kontroll: det första ärendet skiljer sig från det andra bara i källan, och det slås upp.
+      const forsta = await request(app).get(`/vy/arende/${mappat}`);
+      expect(forsta.status).toBe(200);
+      expect(forsta.text).toContain('<h2>CRM</h2>');
+      expect(forsta.text).toContain('CRM-data ej tillgänglig just nu.');
+      expect(crmAnrop()).toBe(1);
+    });
+
+    it('KC3 (AK 4): hamtaCrm slår upp en koppling bara när källan är exakt redovisningen', async () => {
+      nollstallCrmCache();
+      const utanUppslag = [
+        { kund_id: null, kund_kalla: null },
+        { kund_id: TESTKUND, kund_kalla: 'annat-system' },
+        // Exakt jämförelse: inget skiftläge viks ihop.
+        { kund_id: TESTKUND, kund_kalla: 'Redovisning' },
+      ];
+      for (const koppling of utanUppslag) {
+        const namn = JSON.stringify(koppling);
+        expect(await hamtaCrm(koppling), namn).toBeUndefined();
+        expect(crmAnrop(), namn).toBe(0);
+      }
+
+      // Kontroll: samma id med källan redovisningen slås upp. Porten är stängd, så svaret är null.
+      expect(await hamtaCrm({ kund_id: TESTKUND, kund_kalla: 'redovisning' })).toBeNull();
+      expect(crmAnrop()).toBe(1);
+    });
   });
 });

@@ -22,6 +22,11 @@ export interface Arende {
   projekt: string | null;
   /** K-4: projektets kund i redovisningen (customers.id). null = okopplat. */
   kund_id: string | null;
+  /**
+   * K-4, B-08 (Story 6.1): vilket system `kund_id` hör hemma i. null = okopplat. Ett id utan sitt
+   * system är inte ett id.
+   */
+  kund_kalla: string | null;
   labels: string[];
   priority: number | null;
   due_date: string | null;
@@ -56,6 +61,7 @@ const KOLUMNER = `
   s.typ AS state_typ,
   p.namn AS projekt,
   p.kund_id,
+  p.kund_kalla,
   i.priority,
   to_char(i.due_date, 'YYYY-MM-DD') AS due_date,
   i.milstolpe,

@@ -747,6 +747,9 @@ export const ACTIONS: RegistreradAction[] = [
     // kund_id är ETT UUID, aldrig ett namn. Det är hela poängen: ett namn hade
     // matchat "Hermes" mot en arkiverad, tom CRM-post och knutit 33 ärenden
     // till den utan att någon sett det.
+    // B-08 (FR-26, Story 6.1): kund_kalla krävs vid kopplad och förbjuds annars.
+    // Regeln prövas i tjänstelagret (provaKopplingsVal) och inte här, så att
+    // också en direkt anropare av tjänsten får den.
     inputSchema: z
       .object({
         projekt: safeText(200),

@@ -1,7 +1,7 @@
 // CRM-kopplingen i vyn (Davids precisering 19/8). Enda modulen i ärendeplattformen
 // som rör redovisningen — och den LÄSER bara, med två lässignaturer.
 //
-// TRE invarianter, som granskaren kan läsa av rakt här:
+// FYRA invarianter, som granskaren kan läsa av rakt här:
 //   1. TOKENET STANNAR I PROCESSEN. Bas-URL, company-id och agent-token läses
 //      server-side ur SAMMA konfigfil som crm_ingest.py använder
 //      (~/.hermes/redovisning-mcp.json). Tokenet skrivs aldrig i HTML, i en
@@ -13,6 +13,8 @@
 //      fallbacktexten i kortet. Inget fel propagerar till sidan.
 //   3. INGEN SKRIVNING. Bara crm_relation_state och list_crm_commitments, båda
 //      läsande. Vyn förblir ren läsyta; kortet är GET-renderat.
+//   4. BARA REDOVISNINGENS ID (B-08). hamtaCrm slår upp en koppling bara när
+//      källan är CRM_KALLA; en annan källa ger inget uppslag och ingen räkning.
 import { readFile } from 'node:fs/promises';
 import { config } from '../../config.js';
 import { esc } from './mall.js';
@@ -27,9 +29,12 @@ import { esc } from './mall.js';
 // namnmatchningen hade knutit 33 ärenden till den tomma posten och aldrig
 // sagt ett ord om saken.
 //
-// Kopplingen bor nu i projects.kund_id (migration 0012) och bär
-// redovisningens customers.id. Vägen är därmed ett ID hela vägen:
-//   ärende -> projects.kund_id -> relationsradens customer_id -> organisationen.
+// Kopplingen bor nu i projects.kund_id (migration 0012), och kund_id är id:t i
+// det system som projects.kund_kalla anger (B-08). Bara när källan är CRM_KALLA
+// är id:t redovisningens customers.id, och bara då görs uppslaget (invariant 4).
+// Vägen är därmed ett ID hela vägen:
+//   ärende -> projects.kund_id med källan CRM_KALLA -> relationsradens customer_id
+//   -> organisationen.
 // Organisationens NAMN hämtas ur svaret; det gissas aldrig fram härifrån.
 
 // ---- Konfiguration och anrop ----------------------------------------------
@@ -164,12 +169,31 @@ export function nollstallCrmCache(): void {
   anropsraknare = 0;
 }
 
+/** B-08: den enda källa vars kund_id CRM-uppslaget kan tolka (redovisningens customers.id). */
+export const CRM_KALLA = 'redovisning';
+
+/**
+ * B-08 (Story 6.1): kopplingen som uppslaget avgör på — id:t och systemet det hör till. Ett bart
+ * id går inte att lämna, så ingen anropare kan glömma källan.
+ */
+export interface CrmKoppling {
+  readonly kund_id: string | null;
+  readonly kund_kalla: string | null;
+}
+
 /**
  * KRAV-3: hämtar läget för EN organisation och kan aldrig kasta. `null` betyder
  * "gick inte just nu" — orsaken kastas medvetet bort, för den kan bära
  * konfigurationsdetaljer och hör inte hemma i en läsyta.
+ *
+ * B-08 (FR-26, Story 6.1): `undefined` betyder "inget uppslag". Det gäller en
+ * okopplad koppling och en koppling vars källa inte är exakt CRM_KALLA: ett id
+ * i ett annat system tolkas aldrig som redovisningens. Villkoret står först,
+ * före cachen och räknaren, så en annan källa varken räknas eller cachas.
  */
-export async function hamtaCrm(kundId: string): Promise<CrmLage | null> {
+export async function hamtaCrm(koppling: CrmKoppling): Promise<CrmLage | null | undefined> {
+  if (koppling.kund_id === null || koppling.kund_kalla !== CRM_KALLA) return undefined;
+  const kundId = koppling.kund_id;
   const nu = Date.now();
   const post = cache.get(kundId);
   if (post && nu - post.tid < (post.lage === null ? TTL_FEL_MS : TTL_OK_MS)) return post.lage;

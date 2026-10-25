@@ -1010,11 +1010,15 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
 
   // CRM KRAV-1/5: ENDAST här, och bara när ärendet mappar till en organisation.
   // hamtaCrm() kan aldrig kasta (KRAV-3) — värsta utfallet är fallbacktexten.
-  // K-4: kortet visas när ärendets PROJEKT är kopplat till en kund med id.
+  // K-4: kortet visas när ärendets PROJEKT är kopplat till en kund med id och
+  // källan är redovisningen (B-08, nedan).
   // Ingen namnmatchning och ingen gissning ur titeln: är kopplingen inte
   // gjord visas inget kort alls, och det är ett ärligare svar än fel kund.
   // Ett enda anrop, efter transaktionen och aldrig parallellt med ett annat.
-  const crmSvar = a.kund_id === null ? undefined : await hamtaCrm(a.kund_id);
+  // B-08 (Story 6.1): hamtaCrm får kopplingen, id och källa, och gör uppslaget
+  // bara när källan är redovisningen. En koppling i en annan källa ger inget
+  // uppslag och inget kort; kundfältet visar den med källa och id.
+  const crmSvar = await hamtaCrm(a);
   const crmHtml = crmSvar === undefined ? '' : crmKort(crmSvar);
   const texter = arendetexter(a, kort.kommentarer, kort.bilagor, index, kort.befintliga);
   // AK 5: de nummer som beskrivningen och de synliga kommentarerna nämner, ur samma rendering

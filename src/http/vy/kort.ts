@@ -408,7 +408,10 @@ const INSATSTYPORD: Record<InsatsTyp, string> = {
   intygande: 'intygande',
 };
 
-/** Hur CRM-uppslaget gick: inget uppslag (projektet är inte kopplat), ett svar eller inget svar. */
+/**
+ * Hur CRM-uppslaget gick: inget uppslag (projektet är inte kopplat, eller kopplat i en annan källa än
+ * redovisningen, B-08), ett svar eller inget svar.
+ */
 export type Crmsvar = 'okopplat' | 'svarade' | 'svarade_inte';
 
 /**
@@ -479,6 +482,7 @@ export function projektLage(arende: Pick<Arende, 'projekt'>): Faltlage {
 /**
  * AK 3: kunden läses ur projektets kundkoppling. `null` betyder att ärendet inget projekt har. Svarar CRM
  * inte för ett kopplat projekt står kopplingen ur databasen kvar som det som ändå lästes.
+ * B-08 (Story 6.1): en koppling i en annan källa visas med källa och id, utan CRM-uppslag och utan kundnamn.
  */
 export function kundLage(koppling: Kundkoppling | null, crm: Crmsvar): Faltlage {
   if (koppling === null) return tomt('saknas', TEXT.kundUtanProjekt);
