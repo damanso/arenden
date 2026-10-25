@@ -42,6 +42,7 @@ import {
   besvaraInsats,
   hamtaInsats,
   insatsForKalla,
+  kopplaInsatsTillArende,
   listaInsatser,
   registreraInsats,
   skjutUppInsats,
@@ -1352,6 +1353,8 @@ export const ACTIONS: RegistreradAction[] = [
           typ: insats.typ,
           svar: input.svar,
           // Handlingskontraktet sager vem som ska UTFORA. Svaret utfor inget.
+          // B-22 (Story 11.3): kontraktet ar det harledda ur lasningen, med arendets adress som underlag,
+          // sa att historiken visar samma adress som ytan visade nar svaret gavs.
           handlingskontrakt: insats.handlingskontrakt,
         },
       });
@@ -1394,6 +1397,27 @@ export const ACTIONS: RegistreradAction[] = [
         payload: { insats_id: insats.id, skal: input.skal },
       });
       return insats;
+    },
+  }),
+
+  // D-2, B-22 (Story 11.3 AK 4): rättningsvägen för en insats utan ärende. Mät först, rätta sedan: mätningen
+  // pekar ut insatsen och ärendet, och kopplingen görs bara här, med aktören ur nyckeln och en händelserad på
+  // ärendet. En upprepning loggas med ett eget no-op-namn och samma payload, som märkningen i Story 5.5.
+  def({
+    name: 'koppla_insats_till_arende',
+    title: 'Koppla en insats utan ärende till sitt ärende i efterhand',
+    sensitivity: 'write',
+    inputSchema: z.object({ id: UuidSchema, identifier: IdentifierSchema }).strict(),
+    handler: async (ctx, input) => {
+      // 404 för ett okänt ärende, också för ett nummer över heltalsgränsen (Story 11.2).
+      const arende = await hamtaArende(ctx.client, ctx.tenantId, input.identifier);
+      const svar = await kopplaInsatsTillArende(ctx.client, ctx.tenantId, { id: input.id, issue_id: arende.id });
+      await ctx.skrivHandelse({
+        issueId: arende.id,
+        verb: svar.andrad ? 'kopplade_insats_till_arende' : 'insatsen_var_redan_kopplad',
+        payload: { insats_id: svar.insats.id, identifier: arende.identifier },
+      });
+      return { insats: svar.insats, andrad: svar.andrad };
     },
   }),
 

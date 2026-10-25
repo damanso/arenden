@@ -43,15 +43,25 @@ export interface Kallreferens {
   lank?: string | null;
 }
 
+/** D-2, B-22 (Story 11.3): ärendet som en insats hör till, joinat in i insatsfrågan. */
+export interface InsatsArende {
+  identifier: string;
+  titel: string;
+  /** Ärendets absoluta adress ur arendeLank. Härleds vid läsning och lagras aldrig. */
+  lank: string;
+}
+
 export interface Insats {
   id: string;
   stopp_id: string;
   issue_id: string | null;
   /**
    * D-2, B-21 (Story 11.2): ärendets absoluta adress, eller null för en insats utan ärende.
-   * Härleds vid läsning i medKallor och lagras aldrig.
+   * Härleds vid läsning i medKallor och lagras aldrig. Samma värde som `arende.lank`.
    */
   lank: string | null;
+  /** D-2, B-22 (Story 11.3): ärendet, eller null för en insats utan ärende. */
+  arende: InsatsArende | null;
   typ: InsatsTyp;
   tillhor: InsatsTillhor;
   utfall: string;
@@ -62,7 +72,12 @@ export interface Insats {
   vackningstid: Date | null;
   lage: InsatsLage;
   version: number;
-  handlingskontrakt: Record<string, unknown>;
+  /**
+   * jsonb som pg ger det, med underlaget härlett vid läsning (harledHandlingskontrakt). Ett objekt för
+   * varje rad som API:t skrivit; `unknown`, som Kortinsats.handlingskontrakt, eftersom en rad som bara
+   * ägarrollen kan skriva får vara något annat och då returneras oförändrad.
+   */
+  handlingskontrakt: unknown;
   svar_text: string | null;
   svar_aktor: string | null;
   svar_nar: Date | null;
@@ -71,14 +86,56 @@ export interface Insats {
   kallor: Kallreferens[];
 }
 
-const KOL = `id, stopp_id, issue_id, typ, tillhor, utfall, begard_handling,
-             blockeringsgrund, belagg, frist, vackningstid, lage, version,
-             handlingskontrakt, svar_text, svar_aktor, svar_nar, fortsattning, skapad`;
+// Insatsens kolumner, kvalificerade med insatsens alias ins: issues har också id, tenant_id och skapad.
+const KOL = `ins.id, ins.stopp_id, ins.issue_id, ins.typ, ins.tillhor, ins.utfall, ins.begard_handling,
+             ins.blockeringsgrund, ins.belagg, ins.frist, ins.vackningstid, ins.lage, ins.version,
+             ins.handlingskontrakt, ins.svar_text, ins.svar_aktor, ins.svar_nar, ins.fortsattning, ins.skapad`;
 
+// D-2, B-22 (Story 11.3): ärendet joinas in i insatsfrågan, så att adressen och underlaget härleds ur samma
+// fråga som insatsen och ingen fråga ställs per insats eller per ärende (inga N+1-frågor). LEFT JOIN, så att
+// en insats utan ärende står kvar med två null-kolumner. De två kolumnerna står aldrig i svaret.
+const ARENDEKOL = `t.key || '-' || i.sequence_number AS arende_identifier, i.title AS arende_titel`;
+const FRAN = `FROM insatser ins
+  LEFT JOIN issues i ON i.id = ins.issue_id AND i.tenant_id = ins.tenant_id
+  LEFT JOIN teams t ON t.id = i.team_id AND t.tenant_id = i.tenant_id`;
+
+/** En rad ur insatsfrågan: insatsens kolumner och ärendets två inkopplade kolumner (null utan ärende). */
+type Insatsrad = Omit<Insats, 'kallor' | 'lank' | 'arende'> & {
+  arende_identifier: string | null;
+  arende_titel: string | null;
+};
+
+/**
+ * D-2, B-22 (Story 11.3): handlingskontraktet som läsvägarna svarar med. För en insats på ett ärende är
+ * underlaget ärendets adress ur arendeLank, och det lagrade underlaget står bredvid som
+ * `underlag_lagrat`. Utan ärende är underlaget det lagrade, eller null när nyckeln saknas, aldrig en påhittad
+ * adress. `underlag_harlett` säger vilket. Härledd data lagras inte: funktionen är ren, läser ingen databas,
+ * ändrar inte sitt indata och anropas bara vid läsning. De tre nycklarna skrivs efter de lagrade, så att en
+ * äldre rad med egna värden för dem aldrig behåller dem. Ett lagrat kontrakt som inte är ett objekt (bara
+ * ägarrollen kan skriva ett sådant, schemat i registrera_insats är strikt) returneras oförändrat.
+ */
+export function harledHandlingskontrakt(lagrat: unknown, identifier: string | null): unknown {
+  if (typeof lagrat !== 'object' || lagrat === null || Array.isArray(lagrat)) return lagrat;
+  const kontrakt = lagrat as Record<string, unknown>;
+  // Object.hasOwn: bara en egen nyckel är ett lagrat underlag, som i arInsatsTyp.
+  const lagratUnderlag = Object.hasOwn(kontrakt, 'underlag') ? kontrakt.underlag : null;
+  return {
+    ...kontrakt,
+    underlag: identifier === null ? lagratUnderlag : arendeLank(identifier),
+    underlag_harlett: identifier !== null,
+    underlag_lagrat: lagratUnderlag,
+  };
+}
+
+/**
+ * Läsmodellen byggs bara här, och alla läsvägar går hit: las, listaInsatser och, via las, insatsForKalla
+ * och skrivvägarnas svar. Källorna läses i EN fråga för hela uppsättningen rader; ärendet kommer redan ur
+ * insatsfrågan. Härledningen skriver aldrig: raden i insatser är densamma före och efter (B-22).
+ */
 async function medKallor(
   client: PoolClient,
   tenantId: string,
-  rader: Omit<Insats, 'kallor' | 'lank'>[],
+  rader: Insatsrad[],
 ): Promise<Insats[]> {
   if (!rader.length) return [];
   const { rows } = await client.query<Kallreferens & { insats_id: string }>(
@@ -98,22 +155,21 @@ async function medKallor(
     });
     per.set(k.insats_id, lista);
   }
-  // D-2, B-21 (Story 11.2): ärendets adress, i EN fråga för hela uppsättningen rader som
-  // källfrågan ovan — aldrig en per rad. Bara när någon rad har ett ärende.
-  const arendeIdn = [...new Set(rader.flatMap((r) => (r.issue_id === null ? [] : [r.issue_id])))];
-  const identifierFor = new Map<string, string>();
-  if (arendeIdn.length > 0) {
-    const { rows: arenden } = await client.query<{ id: string; identifier: string }>(
-      `SELECT i.id, t.key || '-' || i.sequence_number AS identifier
-         FROM issues i JOIN teams t ON t.id = i.team_id
-        WHERE i.tenant_id = $1 AND i.id = ANY($2::uuid[])`,
-      [tenantId, arendeIdn],
-    );
-    for (const a of arenden) identifierFor.set(a.id, a.identifier);
-  }
-  return rader.map((r) => {
-    const identifier = r.issue_id === null ? undefined : identifierFor.get(r.issue_id);
-    return { ...r, lank: identifier === undefined ? null : arendeLank(identifier), kallor: per.get(r.id) ?? [] };
+  // D-2, B-21 och B-22 (Story 11.2 och 11.3): ärendets adress och handlingskontraktets underlag
+  // härleds ur de två inkopplade kolumnerna, som inte följer med till svaret.
+  return rader.map(({ arende_identifier, arende_titel, ...r }) => {
+    const arende: InsatsArende | null =
+      arende_identifier === null || arende_titel === null
+        ? null
+        : { identifier: arende_identifier, titel: arende_titel, lank: arendeLank(arende_identifier) };
+    const identifier = arende === null ? null : arende.identifier;
+    return {
+      ...r,
+      lank: arende === null ? null : arende.lank,
+      arende,
+      handlingskontrakt: harledHandlingskontrakt(r.handlingskontrakt, identifier),
+      kallor: per.get(r.id) ?? [],
+    };
   });
 }
 
@@ -123,8 +179,21 @@ async function las(
   id: string,
   lasa = false,
 ): Promise<Insats> {
-  const { rows } = await client.query<Omit<Insats, 'kallor' | 'lank'>>(
-    `SELECT ${KOL} FROM insatser WHERE tenant_id = $1 AND id = $2${lasa ? ' FOR UPDATE' : ''}`,
+  if (lasa) {
+    // B-01 (som hamtaArendeForAndring i src/services/arenden.ts): sats 1 tar radlåset på insatsens rad och
+    // väntar in den som håller det, och sats 2 nedan läser insatsen och ärendet med en NY ögonblicksbild
+    // (READ COMMITTED ger varje sats sin egen). En enda låsande sats med joinen hade efter väntan gett
+    // insatsens nya rad men ärendet ur den gamla ögonblicksbilden: en samtidig koppling hade svarat med
+    // issue_id satt och arende null. Därför är varje låsande läsning färsk, också den som en skrivväg svarar
+    // med utan att skriva. Låset tar bara insatsens rad; ärendet och teamet låses inte.
+    const { rows: last } = await client.query<{ id: string }>(
+      'SELECT ins.id FROM insatser ins WHERE ins.tenant_id = $1 AND ins.id = $2 FOR UPDATE OF ins',
+      [tenantId, id],
+    );
+    if (!last[0]) throw new NotFoundError('insats');
+  }
+  const { rows } = await client.query<Insatsrad>(
+    `SELECT ${KOL}, ${ARENDEKOL} ${FRAN} WHERE ins.tenant_id = $1 AND ins.id = $2`,
     [tenantId, id],
   );
   const rad = rows[0];
@@ -450,6 +519,45 @@ export async function aterkallaInsats(
   return las(client, tenantId, input.id);
 }
 
+/**
+ * D-2, B-22 (Story 11.3 AK 4): kopplar en insats som saknar ärende till sitt ärende i efterhand. Det är den
+ * enda rättningsvägen för mätningens grupp arendekalla, och den går genom en action med händelserad, aldrig
+ * genom rå SQL. TRE utfall, alla avgjorda under radlåset ur las(…, true), så att två samtidiga kopplingar
+ * köar och den andra ser den förstas issue_id. las läser insatsen och ärendet först efter låset, så varje
+ * svar bär ärendet som det är committat:
+ *
+ *   1. Samma ärende: `andrad: false` och ingen skrivning, med insatsen som den lästes efter låset.
+ *   2. Ett annat ärende: insatsen_hor_till_annat_arende före varje skrivning. En insats flyttas aldrig i
+ *      tysthet, och executeAction rullar tillbaka hela transaktionen.
+ *   3. Inget ärende: issue_id sätts. Skrivningen har dessutom villkoret att issue_id är null, och det prövas:
+ *      träffar den ingen rad har raden ändrats förbi radlåset, och då kastas ett fel i stället för
+ *      `andrad: true`, så att transaktionen rullas tillbaka och ingen händelserad påstår en koppling.
+ *
+ * `version` ändras inte: den skyddar svaret mot en ändrad fråga, och kopplingen ändrar inte frågan. Ett svar
+ * som David påbörjat före kopplingen avvisas alltså inte som gammalt. Insatsen kopplas i varje läge.
+ */
+export async function kopplaInsatsTillArende(
+  client: PoolClient,
+  tenantId: string,
+  input: { id: string; issue_id: string },
+): Promise<{ insats: Insats; andrad: boolean }> {
+  const fore = await las(client, tenantId, input.id, true);
+  if (fore.issue_id === input.issue_id) return { insats: fore, andrad: false };
+  if (fore.issue_id !== null) {
+    throw new BadRequestError(
+      'insatsen_hor_till_annat_arende',
+      'insatsen hör redan till ett annat ärende och flyttas aldrig i tysthet',
+    );
+  }
+  const { rowCount } = await client.query(
+    `UPDATE insatser SET issue_id = $3, uppdaterad = now()
+      WHERE tenant_id = $1 AND id = $2 AND issue_id IS NULL`,
+    [tenantId, input.id, input.issue_id],
+  );
+  if (rowCount !== 1) throw new Error(`insatsen ${input.id} ändrades förbi radlåset och kopplades inte`);
+  return { insats: await las(client, tenantId, input.id), andrad: true };
+}
+
 export async function hamtaInsats(
   client: PoolClient,
   tenantId: string,
@@ -468,24 +576,26 @@ export async function listaInsatser(
   tenantId: string,
   filter: { lage?: InsatsLage; tillhor?: InsatsTillhor; inklusive_stangda?: boolean } = {},
 ): Promise<Insats[]> {
-  const villkor = ['tenant_id = $1'];
+  // Villkoren och ordningen kvalificeras med insatsens alias, eftersom ärendet är inkopplat (Story 11.3).
+  // Ordningen i kön är densamma som förut.
+  const villkor = ['ins.tenant_id = $1'];
   const params: unknown[] = [tenantId];
   if (filter.lage) {
     params.push(filter.lage);
-    villkor.push(`lage = $${params.length}`);
+    villkor.push(`ins.lage = $${params.length}`);
   } else if (!filter.inklusive_stangda) {
     villkor.push(
-      `(lage = 'vantande' OR (lage = 'uppskjuten' AND vackningstid <= now()))`,
+      `(ins.lage = 'vantande' OR (ins.lage = 'uppskjuten' AND ins.vackningstid <= now()))`,
     );
   }
   if (filter.tillhor) {
     params.push(filter.tillhor);
-    villkor.push(`tillhor = $${params.length}`);
+    villkor.push(`ins.tillhor = $${params.length}`);
   }
-  const { rows } = await client.query<Omit<Insats, 'kallor' | 'lank'>>(
-    `SELECT ${KOL} FROM insatser WHERE ${villkor.join(' AND ')}
-      ORDER BY CASE tillhor WHEN 'agare' THEN 0 ELSE 1 END,
-               frist NULLS LAST, skapad`,
+  const { rows } = await client.query<Insatsrad>(
+    `SELECT ${KOL}, ${ARENDEKOL} ${FRAN} WHERE ${villkor.join(' AND ')}
+      ORDER BY CASE ins.tillhor WHEN 'agare' THEN 0 ELSE 1 END,
+               ins.frist NULLS LAST, ins.skapad`,
     params,
   );
   return medKallor(client, tenantId, rows);
@@ -518,4 +628,62 @@ export async function matInsatskombinationer(client: PoolClient, tenantId: strin
     [tenantId],
   );
   return rows.filter((r) => !kommandotTillats(r.typ, r.kommando));
+}
+
+/**
+ * D-2, B-22 (Story 11.3 AK 5): mätningens fyra grupper, i den här ordningen. Varje insats i tenanten står i
+ * exakt en, och id:na står i ordningen skapad och id. För arendekalla står också de ärendenummer som
+ * insatsens källor pekar på, unika och sorterade.
+ */
+export interface Insatsunderlag {
+  /** Med ärende, och det lagrade underlaget är exakt «/uppfoljning». */
+  arende_uppfoljning: string[];
+  /** Med ärende och ett annat lagrat underlag, eller inget. */
+  arende_eget: string[];
+  /** Utan ärende, och minst en källa vars objekt_id tecken för tecken är ett befintligt ärendes identifierare. */
+  arendekalla: { id: string; arenden: string[] }[];
+  /** Allt annat. */
+  utan_arende: string[];
+}
+
+/**
+ * D-2, B-22 (Story 11.3 AK 5): läsande mätning före rättningen. Mät först, rätta sedan: listan pekar ut de
+ * insatser som saknar ärende men har en källa som är ett ärendenummer, och rättningen görs bara med actionen
+ * koppla_insats_till_arende. Grupperna är en sluten regel som prövas i ordning, och den första som gäller
+ * vinner. Mätningen tolkar inga skrivsätt: ett objekt_id som loc-503 eller LOC-0503 är ingen ärendekälla.
+ * Den läser issue_id och det lagrade underlaget, som härledningen vid läsning aldrig skriver om, och ger
+ * därför samma grupper före och efter driftsättningen. Inget radlås och ingen skrivning; skriptet kör den
+ * i en READ ONLY-transaktion.
+ */
+export async function matInsatsunderlag(client: PoolClient, tenantId: string): Promise<Insatsunderlag> {
+  // En fråga: insatsen och, för varje källa vars objekt_id är ett ärendes identifierare, det ärendet.
+  const { rows } = await client.query<{
+    id: string;
+    issue_id: string | null;
+    underlag: string | null;
+    arenden: string[];
+  }>(
+    `SELECT ins.id, ins.issue_id, ins.handlingskontrakt->>'underlag' AS underlag,
+            ARRAY(SELECT t.key || '-' || i.sequence_number
+                    FROM insats_kallor k
+                    JOIN issues i ON i.tenant_id = k.tenant_id
+                    JOIN teams t ON t.id = i.team_id
+                   WHERE k.tenant_id = ins.tenant_id AND k.insats_id = ins.id
+                     AND k.objekt_id = t.key || '-' || i.sequence_number) AS arenden
+       FROM insatser ins
+      WHERE ins.tenant_id = $1
+      ORDER BY ins.skapad, ins.id`,
+    [tenantId],
+  );
+  const svar: Insatsunderlag = { arende_uppfoljning: [], arende_eget: [], arendekalla: [], utan_arende: [] };
+  for (const r of rows) {
+    if (r.issue_id !== null) {
+      (r.underlag === '/uppfoljning' ? svar.arende_uppfoljning : svar.arende_eget).push(r.id);
+    } else if (r.arenden.length > 0) {
+      svar.arendekalla.push({ id: r.id, arenden: [...new Set(r.arenden)].sort() });
+    } else {
+      svar.utan_arende.push(r.id);
+    }
+  }
+  return svar;
 }

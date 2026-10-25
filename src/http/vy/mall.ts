@@ -1181,6 +1181,9 @@ export const VERB: Readonly<Record<string, string>> = {
   delresultatet_var_redan_markt: 'delresultatet var redan märkt som nödvändigt',
   tog_bort_markning_av_delresultat: 'tog bort märkningen av ett nödvändigt delresultat',
   delresultatet_var_inte_markt: 'delresultatet var inte märkt som nödvändigt',
+  // D-2, B-22 (Story 11.3): kopplingen av en insats till sitt ärende i efterhand, med sitt no-op.
+  kopplade_insats_till_arende: 'kopplade en insats till ärendet',
+  insatsen_var_redan_kopplad: 'insatsen var redan kopplad till ärendet',
 };
 
 /**

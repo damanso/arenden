@@ -223,7 +223,7 @@ const ATAGANDEFALT = [
   'utforare_namn', 'utforare_typ',
 ];
 const INSATSFALT = [
-  'begard_handling', 'belagg', 'blockeringsgrund', 'fortsattning', 'frist', 'handlingskontrakt', 'id', 'issue_id',
+  'arende', 'begard_handling', 'belagg', 'blockeringsgrund', 'fortsattning', 'frist', 'handlingskontrakt', 'id', 'issue_id',
   'kallor', 'lage', 'skapad', 'stopp_id', 'svar_aktor', 'svar_nar', 'svar_text', 'tillhor', 'typ', 'utfall',
   'vackningstid', 'version',
 ];
