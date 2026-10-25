@@ -607,6 +607,19 @@ export interface FaltInput {
 }
 
 /**
+ * B-10 (FR-28, Story 6.4): hierarkilåset för tenanten. Samma lås som cykelspärrens
+ * trigger tar när en rad får eller byter förälder; nyckeln är definierad bara i
+ * databasfunktionen issues_ta_hierarkilas (migrationen 0019), så ingen kod här
+ * räknar fram den. Tas före radlåset, så att två samtidiga förälderändringar
+ * väntar in varandra i stället för att Postgres avbryter den ena (40P01).
+ * Låset är transaktionsbundet: det släpps vid COMMIT eller ROLLBACK, och
+ * triggerns anrop i samma transaktion tar det igen utan att vänta.
+ */
+async function taHierarkilaset(client: PoolClient, tenantId: string): Promise<void> {
+  await client.query('SELECT issues_ta_hierarkilas($1::uuid)', [tenantId]);
+}
+
+/**
  * K-2: prioritet och deadline (och K-3: milstolpe och förälder) på ett
  * befintligt ärende. Returnerar exakt vilka fält som FAKTISKT ändrades — det är
  * den listan actionen skriver händelserader ur, så loggen kan aldrig påstå en
@@ -615,6 +628,11 @@ export interface FaltInput {
  * B-01: ärendet läses under radlås (hamtaArendeForAndring), så att `fran` och
  * bara_om_osatt-spärren jämför mot det värde som faktiskt ersätts — också när
  * en annan transaktion just har skrivit samma rad.
+ *
+ * B-10 (FR-28, Story 6.4): när indata har parent, också null, tas hierarkilåset
+ * först, före radlåset. Annars hade den här transaktionen hållit radlåset på
+ * sitt ärende medan triggern väntade på hierarkilåset, och en samtidig
+ * förälderändring åt andra hållet hade kunnat vänta på samma radlås (40P01).
  */
 export async function uppdateraArendeFalt(
   client: PoolClient,
@@ -622,6 +640,7 @@ export async function uppdateraArendeFalt(
   identifier: string,
   input: FaltInput,
 ): Promise<{ arende: Arende; andringar: Faltandring[] }> {
+  if (input.parent !== undefined) await taHierarkilaset(client, tenantId);
   const arende = await hamtaArendeForAndring(client, tenantId, identifier);
   const baraOmOsatt = input.bara_om_osatt === true;
 
