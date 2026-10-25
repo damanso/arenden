@@ -51,7 +51,7 @@ import {
 import type { Kommentar } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag, type Dokumentindex } from '../vy/dokument.js';
-import { atagandeLage, insatserLage, kortet } from '../vy/kort.js';
+import { atagandeLage, handelsensDetaljer, insatserLage, kortet } from '../vy/kort.js';
 import {
   arendekandidater,
   arendereferens,
@@ -980,13 +980,15 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // varje ärendenummer på sidan slås upp i ETT anrop, och kandidaterna är de nummer som sidans
   // egen rendering slår upp; läsmodellen anropar renderingen en gång. D-3, D-4 (Story 11.5):
   // renderingen omfattar också åtagandets referenser och insatsernas källor, som kan länka till
-  // ett ärende, genom samma lägesfunktioner som kortet sedan visar dem med.
+  // ett ärende, genom samma lägesfunktioner som kortet sedan visar dem med. D-3 (Story 11.6):
+  // likaså historikens detaljer, genom samma funktion som historiklistan nedan.
   const kort = await withTransaction((client) =>
     hamtaArendekort(client, TENANT_ID, identifier, (t) =>
       arendekandidater((uppslag) => {
         arendetexter(t.arende, t.kommentarer, t.bilagor, index, uppslag);
         atagandeLage(t.arende, t.atagande, index, uppslag);
         insatserLage(t.insatser, index, uppslag);
+        for (const h of t.handelser) handelsensDetaljer(h, index, uppslag);
       })),
   ).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
@@ -1032,17 +1034,22 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       '</li>',
   );
 
-  const historik = kort.handelser.map(
-    (h) =>
+  // D-3, B-24 (Story 11.6): detaljerna ur DETALJFALT står efter huvudet, så att huvudet bär exakt ett
+  // märke. För ett verb i tabellen är skälet ett av fälten och ersätter handelseSkal; för varje annat
+  // verb, och för en rad vars payload inte har något av fälten, står raden som förut.
+  const historik = kort.handelser.map((h) => {
+    const detaljer = handelsensDetaljer(h, index, kort.befintliga);
+    return (
       '<li class=rad><div class=huvud>' +
       `<span>${esc(datumtid(h.tidpunkt))}</span>` +
       proveniens(h.aktor_typ, h.aktor_namn) +
       `<span>${esc(verbText(h.verb))}${handelseDetalj(h.verb, h.payload)}</span>` +
       '</div>' +
       historikDetaljer(h.verb, h.payload) +
-      handelseSkal(h.payload) +
-      '</li>',
-  );
+      (detaljer === '' ? handelseSkal(h.payload) : detaljer) +
+      '</li>'
+    );
+  });
 
   // K-3: föräldern är en LÄNK och kan därför inte ligga i den escapade
   // summeringssträngen — den får en egen rad ovanför beskrivningen.

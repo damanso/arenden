@@ -1,7 +1,7 @@
 // D-3, D-5, B-23 (Story 11.4): ärendekortet. Kortets fält renderas här ur den slutna konstanten KORTFALT,
 // i fast ordning och vart och ett i en section med ankaret falt-<id>.
 //
-// FYRA invarianter, som granskaren kan läsa av rakt här:
+// FEM invarianter, som granskaren kan läsa av rakt här:
 //   1. SLUTEN FÄLTLISTA. KORTFALT är kortets enda fältlista. FALTLAGE har en lägesfunktion per fält, typad
 //      som en mappad typ över fältens id, så att tsc kräver en funktion för varje fält i listan, och
 //      kortet() renderar fälten bara genom en loop över KORTFALT och renderaFalt(). Ett nytt fält kräver
@@ -20,6 +20,16 @@
 //      insatsernas källor frågar privatKalla() först och skriver då bara den fasta meningen PRIVAT_TEXT.
 //      Därefter avgör den slutna tabellen REFERENSLANK hur länken härleds, och en typ som tabellen inte
 //      känner visas som «typ · id» utan länk och utelämnas aldrig.
+//   5. EN SLUTEN DETALJTABELL (D-3, B-24; Story 11.6). En historikrad visar under sitt huvud bara de
+//      payloadfält som DETALJFALT anger för verbet, i tabellens ordning och med källan «händelse #<id>».
+//      handelsensDetaljer är den enda funktion som läser tabellen och den enda vägen från en händelse till
+//      dess detaljer, och fältets slag är en sluten union (DETALJSLAG) med en uttömmande switch. Varje värde
+//      går genom esc() eller genom referens, kallrad, proveniens och datumtid, aldrig genom
+//      markdown-renderaren, och ett fält i fel form står med raden om formen, aldrig med ett gissat värde.
+//      Ett objekt i ett värde skrivs bara genom sin tabell med delar, en per fält i domäntypen, och det som
+//      står utöver dem som «övrigt»; ett byte vars två sidor skrivs lika fast de lagrade värdena skiljer sig
+//      står med raden om formen; och en tid är en tid bara i ISO-formen. Ett verb som inte står i tabellen
+//      får inga detaljer härifrån.
 //
 // Raderna som redan fanns (bilagornas, relationernas, kommentarernas och historikens rader och delärendenas
 // kort) byggs kvar i ärenderutten och kommer hit som färdig markup; modulen avgör fältets läge och lägger
@@ -38,9 +48,19 @@ import {
   type Kortsvarsversion,
   type Markning,
 } from '../../services/arendekort.js';
-import type { Lage, Slag, Tillhor, Villkor } from '../../services/atagande.js';
+import type {
+  Andring,
+  AtagandeJson,
+  Lage,
+  Moment,
+  Nasta,
+  Slag,
+  Tidigare,
+  Tillhor,
+  Villkor,
+} from '../../services/atagande.js';
 import type { Handelse } from '../../services/handelser.js';
-import type { InsatsLage, InsatsTyp } from '../../services/insats.js';
+import type { InsatsLage, InsatsTyp, Kallreferens } from '../../services/insats.js';
 import type { Kommentar } from '../../services/kommentarer.js';
 import type { Kundkoppling } from '../../services/kundkoppling.js';
 import type { Bilaga } from '../../services/relationer.js';
@@ -679,11 +699,16 @@ function felform(etikett: string): string {
   return `<p>${esc(etikett)}: ${esc(OKAND_DEL)}</p>`;
 }
 
+/** Markup under en etikett i div.text, som bevarar radbrytningarna. `markup` är redan escapad. */
+function textrad(etikett: string, markup: string): string {
+  return `<div class=text><b>${esc(etikett)}:</b> ${markup}</div>`;
+}
+
 /** Fri text ordagrant under en etikett; inget när värdet saknas, raden om formen när det inte är en text. */
 function fritext(etikett: string, varde: unknown): string {
   if (saknas(varde)) return '';
   if (typeof varde !== 'string') return felform(etikett);
-  return `<div class=text><b>${esc(etikett)}:</b> ${esc(varde)}</div>`;
+  return textrad(etikett, esc(varde));
 }
 
 /** En referens under en etikett, eller inget när den saknas. En referens i fel form säger referens() ifrån om. */
@@ -705,6 +730,23 @@ function referenslistrad(etikett: string, lista: unknown, index: Dokumentindex, 
 function objektdel(etikett: string, varde: unknown, rendera: (del: Record<string, unknown>) => string): string {
   if (saknas(varde)) return '';
   return arObjekt(varde) ? rendera(varde) : felform(etikett);
+}
+
+/**
+ * Nästa steg under en etikett: handlingen med slaget i ord, en rad om formen för ett slag som inte är ett
+ * slag, och nästa stegs grund. Fältet Åtagande och historikens detaljer (Story 11.6) skriver nästa steg bara
+ * här, så att de två visar det likadant.
+ */
+function nastaSteg(etikett: string, varde: unknown, index: Dokumentindex, uppslag: Uppslag): string {
+  return objektdel(etikett, varde, (nasta) => {
+    const slag = nasta.slag;
+    const slagtext = arSlag(slag) ? ` (${SLAGORD[slag]})` : '';
+    return (
+      fritext(`${etikett}${slagtext}`, nasta.handling) +
+      (saknas(slag) || arSlag(slag) ? '' : felform('Nästa stegs slag')) +
+      referensrad('Nästa stegs grund', nasta.grund, index, uppslag)
+    );
+  });
 }
 
 /**
@@ -739,17 +781,7 @@ export function atagandeLage(
   const data: Record<string, unknown> = arObjekt(atagande.data) ? atagande.data : {};
   rader.push(fritext('Precisering', data.utfall_precisering));
   rader.push(referenslistrad('Grund', data.grund, index, uppslag));
-  rader.push(
-    objektdel('Nästa steg', data.nasta, (nasta) => {
-      const slag = nasta.slag;
-      const slagtext = arSlag(slag) ? ` (${SLAGORD[slag]})` : '';
-      return (
-        fritext(`Nästa steg${slagtext}`, nasta.handling) +
-        (saknas(slag) || arSlag(slag) ? '' : felform('Nästa stegs slag')) +
-        referensrad('Nästa stegs grund', nasta.grund, index, uppslag)
-      );
-    }),
-  );
+  rader.push(nastaSteg('Nästa steg', data.nasta, index, uppslag));
   const villkoren = data.villkor;
   if (!saknas(villkoren) && !Array.isArray(villkoren)) rader.push(felform('Villkor'));
   if (Array.isArray(villkoren)) {
@@ -1027,6 +1059,697 @@ export function mailLage(
   }
   if (rader.length === 0) return tomt('finns_inte', TEXT.mail);
   return varde(`${rader.join('')}<p class=summering>${esc(TEXT.mailrad)}</p>`);
+}
+
+// ---- Historikens detaljer (D-3, B-24; Story 11.6) -------------------------------------------------------
+//
+// En historikrad på ärendesidan visar under sitt huvud vad som faktiskt hände: de payloadfält som DETALJFALT
+// anger för verbet, som etikett och värde i escapad ren text och med källan «händelse #<id>». Allt läses ur
+// payloaden som den står, och inget lagras eller skrivs om. Ett fält visas bara när payloaden har nyckeln som
+// egen nyckel med ett värde som inte är null; ett fält i fel form står med raden om formen (felform). Varje
+// referens går genom referens, varje källa genom kallrad och handlingskontraktets delar genom privatKalla
+// (R5), och varje aktör skrivs med proveniens. Inga nya komponenter: div.text för fri text, p och code.
+
+/** Slagen som avgör hur ett fält renderas. Sluten: detaljfalt har en uttömmande switch över dem. */
+export const DETALJSLAG = [
+  'text',
+  'svar',
+  'tal',
+  'tid',
+  'lage',
+  'tillhor',
+  'insatstyp',
+  'moment',
+  'janej',
+  'kod',
+  'beslut',
+  'referens',
+  'referenser',
+  'nasta',
+  'utforare',
+  'handlingskontrakt',
+  'krockar',
+  'andring',
+  'tidigare',
+] as const;
+export type Detaljslag = (typeof DETALJSLAG)[number];
+
+/**
+ * Ett fält under en historikrad: payloadnyckeln, den svenska etiketten och slaget. För slaget utforare läses
+ * `<nyckel>_typ` och `<nyckel>_namn`.
+ */
+export type Detaljfalt = { readonly nyckel: string; readonly etikett: string; readonly slag: Detaljslag };
+
+/** En fryst lista fält, i den ordning de står under raden. */
+function detaljlista(
+  ...falt: (readonly [nyckel: string, etikett: string, slag: Detaljslag])[]
+): readonly Detaljfalt[] {
+  return Object.freeze(falt.map(([nyckel, etikett, slag]) => Object.freeze({ nyckel, etikett, slag })));
+}
+
+// Ett verb och dess upprepning (no-op-verbet) har samma payload och delar lista.
+const BESLUTSFALT = detaljlista(['beslut_id', 'Beslut', 'beslut']);
+const SVARSVERSIONSFALT = detaljlista(
+  ['beslut_id', 'Beslut', 'beslut'],
+  ['version', 'Version', 'tal'],
+  ['svar_hash', 'Svarshash', 'kod'],
+);
+const INSATSFALT = detaljlista(
+  ['typ', 'Typ', 'insatstyp'],
+  ['tillhor', 'Tillhörighet', 'tillhor'],
+  ['stopp_id', 'Stopp', 'kod'],
+  ['kallor', 'Antal källor', 'tal'],
+  ['krockar', 'Krockar', 'krockar'],
+);
+const KOPPLINGSFALT = detaljlista(['insats_id', 'Insats', 'kod'], ['identifier', 'Ärende', 'kod']);
+
+/**
+ * AK 1: den slutna tabellen verb → fält, för exakt 21 verb. Kriteriets fält står i kriteriets ordning och
+ * därefter Story 5.2:s fält (grund, skal, tidigare och andring) som inte redan stod med; andring står på alla
+ * sju uppdateringsverb (Story 5.2 AK 11; Dev Notes → Tolkningar, punkt 1). Ett nytt verb eller fält här kräver
+ * samma rad i VERBFALT i test/historik-detaljer.test.ts.
+ */
+export const DETALJFALT: Readonly<Record<string, readonly Detaljfalt[]>> = Object.freeze({
+  skapade_arende: detaljlista(['title', 'Titel', 'text']),
+  registrerade_atagande: detaljlista(
+    ['lage', 'Läge', 'lage'],
+    ['tillhor', 'Tillhörighet', 'tillhor'],
+    ['revision', 'Revision', 'tal'],
+    ['grund', 'Grund', 'referenser'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  atagandet_fanns_redan: detaljlista(
+    ['lage', 'Läge', 'lage'],
+    ['tillhor', 'Tillhörighet', 'tillhor'],
+    ['revision', 'Revision', 'tal'],
+  ),
+  tog_over_atagande: detaljlista(
+    ['utforare', 'Utförare', 'utforare'],
+    ['nasta', 'Nästa steg', 'nasta'],
+    ['revision', 'Revision', 'tal'],
+    ['grund', 'Grund', 'referens'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  andrade_atagande: detaljlista(
+    ['tillhor', 'Tillhörighet', 'tillhor'],
+    ['nasta', 'Nästa steg', 'nasta'],
+    ['revision', 'Revision', 'tal'],
+    ['skal', 'Skäl', 'text'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  hindrade_atagande: detaljlista(
+    ['orsak', 'Orsak', 'text'],
+    ['revision', 'Revision', 'tal'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  redovisade_resultat: detaljlista(
+    ['sammanfattning', 'Sammanfattning', 'text'],
+    ['antal_belagg', 'Antal belägg', 'tal'],
+    ['revision', 'Revision', 'tal'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  avslutade_atagande: detaljlista(
+    ['skal', 'Skäl', 'text'],
+    ['grund', 'Grund', 'referens'],
+    ['revision', 'Revision', 'tal'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  aterppnade_atagande: detaljlista(
+    ['grund', 'Grund', 'referens'],
+    ['revision', 'Revision', 'tal'],
+    ['tidigare', 'Tidigare', 'tidigare'],
+    ['andring', 'Ändring', 'andring'],
+  ),
+  kopplade_beslut: BESLUTSFALT,
+  beslutet_var_redan_kopplat: BESLUTSFALT,
+  behandlade_svarsversion: SVARSVERSIONSFALT,
+  svarsversionen_var_behandlad: SVARSVERSIONSFALT,
+  registrerade_insats: INSATSFALT,
+  insatsen_fanns_redan: INSATSFALT,
+  besvarade_insats: detaljlista(
+    ['typ', 'Typ', 'insatstyp'],
+    ['svar', 'Svar', 'svar'],
+    ['handlingskontrakt', 'Handlingskontrakt', 'handlingskontrakt'],
+  ),
+  skot_upp_insats: detaljlista(['till', 'Till', 'tid'], ['skal', 'Skäl', 'text']),
+  aterkallade_insats: detaljlista(['skal', 'Skäl', 'text']),
+  skrev_arbetsmoment: detaljlista(
+    ['moment', 'Moment', 'moment'],
+    ['beslut_id', 'Beslut', 'beslut'],
+    ['historisk', 'Historisk', 'janej'],
+  ),
+  kopplade_insats_till_arende: KOPPLINGSFALT,
+  insatsen_var_redan_kopplad: KOPPLINGSFALT,
+});
+
+/** Arbetsmomentet i ord. Record över unionen, så att tsc fäller ett moment utan ord. */
+const MOMENTORD: Record<Moment, string> = {
+  hitta_underlag: 'hitta underlag',
+  avgora_riktning: 'avgöra riktning',
+  forbereda: 'förbereda',
+  utfora: 'utföra',
+  kontrollera: 'kontrollera',
+  folja_upp: 'följa upp',
+};
+
+/** Hur ett fält i ändringen skrivs. Sluten: andringsvarde har en uttömmande switch, utforarbyte resten. */
+type Andringsslag =
+  | 'lage'
+  | 'tillhor'
+  | 'utforare'
+  | 'tid'
+  | 'text'
+  | 'referenser'
+  | 'nasta'
+  | 'villkor'
+  | 'hinder'
+  | 'resultat'
+  | 'avslutsskal';
+
+/** Etiketten och slaget för ett fält i ändringen. */
+type Andringsdel = { readonly etikett: string; readonly slag: Andringsslag };
+
+/**
+ * Ändringens fält (Andring i src/services/atagande.ts) i den ordning raderna står, med etikett och slag. Den
+ * mappade typen gör att tsc fäller ett fält i åtagandets fältlista som saknar post. Utförarens typ och namn
+ * delar en rad.
+ */
+const ANDRINGSDEL: { readonly [K in keyof Andring]-?: Andringsdel } = {
+  lage: { etikett: 'Läge', slag: 'lage' },
+  tillhor: { etikett: 'Tillhörighet', slag: 'tillhor' },
+  utforare_typ: { etikett: 'Utförare', slag: 'utforare' },
+  utforare_namn: { etikett: 'Utförare', slag: 'utforare' },
+  overtaget_nar: { etikett: 'Tog över', slag: 'tid' },
+  foljs_upp: { etikett: 'Följs upp', slag: 'tid' },
+  grund: { etikett: 'Grund', slag: 'referenser' },
+  nasta: { etikett: 'Nästa steg', slag: 'nasta' },
+  villkor: { etikett: 'Villkor', slag: 'villkor' },
+  utfall_precisering: { etikett: 'Precisering', slag: 'text' },
+  hinder: { etikett: 'Hinder', slag: 'hinder' },
+  resultat: { etikett: 'Resultat', slag: 'resultat' },
+  avslutsskal: { etikett: 'Avslutsskäl', slag: 'avslutsskal' },
+};
+
+/** Ett fält i ett objekt ur jsonb: värdet under en egen nyckel, annars undefined (ett ärvt namn är inget). */
+function egetFalt(objekt: Record<string, unknown>, nyckel: string): unknown {
+  return Object.hasOwn(objekt, nyckel) ? objekt[nyckel] : undefined;
+}
+
+/** Typvakten före ett uppslag i en ordtabell, som arSlag: bara en sträng som är en egen nyckel. */
+function arOrd<K extends string>(tabell: Record<K, string>, varde: unknown): varde is K {
+  return typeof varde === 'string' && Object.hasOwn(tabell, varde);
+}
+
+/**
+ * Tidens enda form i detaljerna: ISO 8601 som tidsschemat i actionerna (datetime med offset) tar emot och
+ * toISOString skriver — datum, T, timme och minut, valfria sekunder med decimaler, och Z eller en
+ * förskjutning. Datumtolken i JavaScript godtar mycket mer («12» blir den 1 december 2001, ett datum utan
+ * klockslag får en tid på dygnet och en tid utan zon en gissad zon), och det vore påhittade värden (AK 6).
+ */
+const ISOTID = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:Z|([+-])(\d{2}):?(\d{2}))$/;
+
+/** Dagarna i månaden, med skottdagen. */
+function dagarI(ar: number, manad: number): number {
+  if (manad === 2) return (ar % 4 === 0 && ar % 100 !== 0) || ar % 400 === 0 ? 29 : 28;
+  return [4, 6, 9, 11].includes(manad) ? 30 : 31;
+}
+
+/**
+ * En tid ur jsonb: en sträng i ISO-formen vars datum och klockslag finns, annars null. Ögonblicket räknas
+ * fram ur delarna och lämnas aldrig åt datumtolken, så att ingen annan form kan bli en tid.
+ */
+function giltigTid(varde: unknown): Date | null {
+  if (typeof varde !== 'string') return null;
+  const m = ISOTID.exec(varde);
+  if (m === null) return null;
+  const tal = (del: string | undefined): number => Number(del ?? '0');
+  const [ar, manad, dag] = [tal(m[1]), tal(m[2]), tal(m[3])] as const;
+  const [timme, minut, sekund] = [tal(m[4]), tal(m[5]), tal(m[6])] as const;
+  const [zonTimme, zonMinut] = [tal(m[9]), tal(m[10])] as const;
+  if (manad < 1 || manad > 12 || dag < 1 || dag > dagarI(ar, manad)) return null;
+  if (timme > 23 || minut > 59 || sekund > 59 || zonTimme > 23 || zonMinut > 59) return null;
+  const zon = (m[8] === '-' ? -1 : 1) * (zonTimme * 60 + zonMinut);
+  const tid = new Date(0);
+  tid.setUTCFullYear(ar, manad - 1, dag);
+  tid.setUTCHours(timme, minut - zon, sekund, Math.floor(Number(`0.${m[7] ?? '0'}`) * 1000));
+  return tid;
+}
+
+/** Ett fält på en rad, med etiketten och ett värde som redan är markup. */
+function faltrad(etikett: string, markup: string): string {
+  return `<p>${esc(etikett)}: ${markup}</p>`;
+}
+
+/** Ett byte i ändringen: ett objekt med fran och till som egna nycklar. */
+function arByte(varde: unknown): varde is Record<string, unknown> {
+  return arObjekt(varde) && Object.hasOwn(varde, 'fran') && Object.hasOwn(varde, 'till');
+}
+
+// Värdena i ändringen och i det tidigare: varje del som finns, åtskilda med « · », och en del i fel form som
+// texten om formen. Varje referens går genom referens, så R5 gäller också här.
+//
+// Ett objekt i ett värde skrivs bara genom sin tabell med delar (Vardedelar), en del per fält i domäntypen i
+// src/services/atagande.ts. Den mappade typen gör att tsc fäller ett fält utan del, och det som står i värdet
+// utöver tabellens nycklar står som «övrigt» med texten om formen. Ingen del tappas alltså i tysthet, och två
+// värden som skiljer sig i en läsbar del skrivs olika.
+
+/** Ordet för det som står i ett objekt utöver de nycklar som detaljerna läser. */
+const OVRIGT = 'övrigt';
+
+/** Har objektet en egen nyckel utöver de kända? */
+function harOvrigt(objekt: Record<string, unknown>, kanda: readonly string[]): boolean {
+  return Object.keys(objekt).some((nyckel) => !kanda.includes(nyckel));
+}
+
+/** En del av ett värde: fri text escapad, inget när den saknas, texten om formen när den inte är en text. */
+function textdel(varde: unknown): string {
+  if (saknas(varde)) return '';
+  return typeof varde === 'string' ? esc(varde) : esc(OKAND_DEL);
+}
+
+/** En del efter sitt ord (gäller, kontroll, kontrollerat), eller inget när delen saknas. */
+function orddel(ord: string, markup: string): string {
+  return markup === '' ? '' : `${esc(ord)} ${markup}`;
+}
+
+/** En referens som del av ett värde, efter sitt ord (grund, belägg, källa); inget när den saknas. */
+function referensdel(ord: string, ref: unknown, index: Dokumentindex, uppslag: Uppslag): string {
+  return saknas(ref) ? '' : `${esc(ord)} ${referens(ref, index, uppslag)}`;
+}
+
+/** En lista som värde: «inga» när den är tom, posterna åtskilda med semikolon, annars texten om formen. */
+function listvarde(lista: unknown, post: (varde: unknown) => string): string {
+  if (!Array.isArray(lista)) return esc(OKAND_DEL);
+  return lista.length === 0 ? 'inga' : lista.map((v: unknown) => post(v)).join('; ');
+}
+
+/** En del av ett objekt i ett värde, läst ur hela objektet: markup, eller inget när delen saknas. */
+type Vardedel = (objekt: Record<string, unknown>, index: Dokumentindex, uppslag: Uppslag) => string;
+
+/** Ett objekts delar i den ordning de skrivs, en per fält i domäntypen T. */
+type Vardedelar<T> = { readonly [K in keyof T]-?: Vardedel };
+
+/** Nästa steg (Nasta): HANDLING (SLAG) · grund REF, och slaget efter sitt ord när handlingen inte är en text. */
+const NASTADELAR: Vardedelar<Nasta> = {
+  handling: (n) => {
+    const handling = n.handling;
+    const slag = n.slag;
+    return typeof handling === 'string' && arSlag(slag)
+      ? `${esc(handling)} (${esc(SLAGORD[slag])})`
+      : textdel(handling);
+  },
+  slag: (n) => {
+    const slag = n.slag;
+    if (saknas(slag)) return '';
+    if (!arSlag(slag)) return orddel('slag', esc(OKAND_DEL));
+    return typeof n.handling === 'string' ? '' : orddel('slag', esc(SLAGORD[slag]));
+  },
+  grund: (n, index, uppslag) => referensdel('grund', n.grund, index, uppslag),
+};
+
+/** Ett villkor (Villkor): TEXT · källa REF · gäller G · kontroll K · utfall ORD · belägg REF. */
+const VILLKORSDELAR: Vardedelar<Villkor> = {
+  text: (v) => textdel(v.text),
+  kalla: (v, index, uppslag) => referensdel('källa', v.kalla, index, uppslag),
+  galler: (v) => orddel('gäller', textdel(v.galler)),
+  kontroll: (v) => orddel('kontroll', textdel(v.kontroll)),
+  utfall: (v) => {
+    const utfall = v.utfall;
+    if (saknas(utfall)) return '';
+    return orddel('utfall', arUtfall(utfall) ? esc(UTFALLORD[utfall]) : esc(OKAND_DEL));
+  },
+  belagg: (v, index, uppslag) => referensdel('belägg', v.belagg, index, uppslag),
+};
+
+/** Hindret: ORSAK · belägg REF. */
+const HINDERDELAR: Vardedelar<NonNullable<AtagandeJson['hinder']>> = {
+  orsak: (h) => textdel(h.orsak),
+  belagg: (h, index, uppslag) => referensdel('belägg', h.belagg, index, uppslag),
+};
+
+/** Resultatet: SAMMANFATTNING · belägg REF; REF · kontrollerat TID. */
+const RESULTATDELAR: Vardedelar<NonNullable<AtagandeJson['resultat']>> = {
+  sammanfattning: (r) => textdel(r.sammanfattning),
+  belagg: (r, index, uppslag) =>
+    saknas(r.belagg) ? '' : `belägg ${listvarde(r.belagg, (ref) => referens(ref, index, uppslag))}`,
+  kontrollerat: (r) => {
+    const kontrollerat = r.kontrollerat;
+    if (saknas(kontrollerat)) return '';
+    const tid = giltigTid(kontrollerat);
+    return orddel('kontrollerat', tid === null ? esc(OKAND_DEL) : esc(datumtid(tid)));
+  },
+};
+
+/** Avslutsskälet: TEXT · grund REF. */
+const AVSLUTSDELAR: Vardedelar<NonNullable<AtagandeJson['avslutsskal']>> = {
+  text: (s) => textdel(s.text),
+  grund: (s, index, uppslag) => referensdel('grund', s.grund, index, uppslag),
+};
+
+/**
+ * Ett objekt som värde: delarna i tabellens ordning och «övrigt» med texten om formen när objektet har en
+ * nyckel som tabellen inte känner. Inget objekt, eller ett objekt utan någon del, är fel form.
+ */
+function objektvarde(
+  varde: unknown,
+  delar: Readonly<Record<string, Vardedel>>,
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): string {
+  if (!arObjekt(varde)) return esc(OKAND_DEL);
+  const objekt = varde;
+  const finns = [
+    ...Object.values(delar).map((del) => del(objekt, index, uppslag)),
+    harOvrigt(objekt, Object.keys(delar)) ? orddel(OVRIGT, esc(OKAND_DEL)) : '',
+  ].filter((del) => del !== '');
+  return finns.length === 0 ? esc(OKAND_DEL) : finns.join(' · ');
+}
+
+/** Ett värde i ändringen, före eller efter, efter sitt slag. null är det lagrade «ingen», som i rutten. */
+function andringsvarde(
+  varde: unknown,
+  slag: Exclude<Andringsslag, 'utforare'>,
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): string {
+  if (varde === null) return 'ingen';
+  switch (slag) {
+    case 'lage':
+      return arOrd(ATAGANDELAGEORD, varde) ? esc(ATAGANDELAGEORD[varde]) : esc(OKAND_DEL);
+    case 'tillhor':
+      return arOrd(TILLHORORD, varde) ? esc(TILLHORORD[varde]) : esc(OKAND_DEL);
+    case 'tid': {
+      const tid = giltigTid(varde);
+      return tid === null ? esc(OKAND_DEL) : esc(datumtid(tid));
+    }
+    case 'text':
+      return typeof varde === 'string' ? esc(varde) : esc(OKAND_DEL);
+    case 'referenser':
+      return listvarde(varde, (ref) => referens(ref, index, uppslag));
+    case 'nasta':
+      return objektvarde(varde, NASTADELAR, index, uppslag);
+    case 'villkor':
+      return listvarde(varde, (villkor) => objektvarde(villkor, VILLKORSDELAR, index, uppslag));
+    case 'hinder':
+      return objektvarde(varde, HINDERDELAR, index, uppslag);
+    case 'resultat':
+      return objektvarde(varde, RESULTATDELAR, index, uppslag);
+    case 'avslutsskal':
+      return objektvarde(varde, AVSLUTSDELAR, index, uppslag);
+    default: {
+      const okant: never = slag;
+      throw new Error(`okänt slag i ändringen: ${String(okant)}`);
+    }
+  }
+}
+
+/** Samma lagrade värde: lika jsonb-värden, oberoende av nycklarnas ordning. */
+function lika(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const forsta: readonly unknown[] = a;
+    const andra: readonly unknown[] = b;
+    return forsta.length === andra.length && forsta.every((v, i) => lika(v, andra[i]));
+  }
+  if (!arObjekt(a) || !arObjekt(b)) return false;
+  const forsta = a;
+  const andra = b;
+  const nycklar = Object.keys(forsta);
+  return (
+    nycklar.length === Object.keys(andra).length &&
+    nycklar.every((nyckel) => Object.hasOwn(andra, nyckel) && lika(forsta[nyckel], andra[nyckel]))
+  );
+}
+
+/**
+ * Ett byte på en rad, «FÖRE → EFTER», och den enda vägen dit. Skriver de två sidorna samma markup fast de
+ * lagrade värdena skiljer sig (två privata referenser, två tider i samma minut, två värden i fel form), står
+ * raden om formen i stället: ett byte ser aldrig ut som om ingenting ändrades. Två lika lagrade värden står
+ * som de är lagrade.
+ */
+function byterad(rubrik: string, fran: unknown, till: unknown, fore: string, efter: string): string {
+  return fore === efter && !lika(fran, till) ? felform(rubrik) : textrad(rubrik, `${fore} → ${efter}`);
+}
+
+/**
+ * Utföraren i ändringen, på en rad för typen och namnet. För varje sida är typen ändringens värde när
+ * nyckeln står i ändringen, annars payloadens (oförändrad, alltså samma på båda sidor), och namnet likadant.
+ * Två strängar skrivs med proveniens, två null är «ingen», och allt annat är texten om formen: payloadens
+ * nycklar finns bara på tog_over_atagande, och ett namn gissas aldrig.
+ */
+function utforarbyte(
+  rubrik: string,
+  andring: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): string {
+  const typ = egetFalt(andring, 'utforare_typ');
+  const namn = egetFalt(andring, 'utforare_namn');
+  if ((typ !== undefined && !arByte(typ)) || (namn !== undefined && !arByte(namn))) return felform(rubrik);
+  const sida = (s: 'fran' | 'till'): [typ: unknown, namn: unknown] => [
+    arByte(typ) ? typ[s] : egetFalt(payload, 'utforare_typ'),
+    arByte(namn) ? namn[s] : egetFalt(payload, 'utforare_namn'),
+  ];
+  const markup = ([t, n]: [unknown, unknown]): string => {
+    if (typeof t === 'string' && typeof n === 'string') return proveniens(t, n);
+    return t === null && n === null ? 'ingen' : esc(OKAND_DEL);
+  };
+  const fran = sida('fran');
+  const till = sida('till');
+  return byterad(rubrik, fran, till, markup(fran), markup(till));
+}
+
+/**
+ * Ändringen (Story 5.2): en rad per fält i ANDRINGSDEL:s ordning som står i ändringen, «Ändring, ETIKETT:
+ * FÖRE → EFTER». Ett fält vars värde inte är ett byte, och en nyckel som tabellen inte känner, står med raden
+ * om formen, så att ingen ändring tappas i tysthet.
+ */
+function andringsrader(
+  etikett: string,
+  andring: unknown,
+  payload: Record<string, unknown>,
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): string {
+  if (!arObjekt(andring)) return felform(etikett);
+  const rader: string[] = [];
+  let utforaren = false;
+  for (const [nyckel, del] of Object.entries(ANDRINGSDEL)) {
+    if (!Object.hasOwn(andring, nyckel)) continue;
+    const rubrik = `${etikett}, ${del.etikett}`;
+    const slag = del.slag;
+    if (slag === 'utforare') {
+      // Typen och namnet står på en rad, på den första nyckelns plats.
+      if (!utforaren) rader.push(utforarbyte(rubrik, andring, payload));
+      utforaren = true;
+      continue;
+    }
+    const byte = andring[nyckel];
+    if (!arByte(byte)) {
+      rader.push(felform(rubrik));
+      continue;
+    }
+    const fore = andringsvarde(byte.fran, slag, index, uppslag);
+    const efter = andringsvarde(byte.till, slag, index, uppslag);
+    rader.push(byterad(rubrik, byte.fran, byte.till, fore, efter));
+  }
+  for (const nyckel of Object.keys(andring)) {
+    if (!Object.hasOwn(ANDRINGSDEL, nyckel)) rader.push(felform(`${etikett}, ${nyckel}`));
+  }
+  return rader.join('');
+}
+
+/**
+ * Det tidigare (Tidigare i src/services/atagande.ts), en post per fält: ordet efter etiketten och värdets
+ * delar. Den mappade typen gör att tsc fäller ett fält utan post.
+ */
+const TIDIGAREDELAR: {
+  readonly [K in keyof Tidigare]-?: { readonly ord: string; readonly delar: Readonly<Record<string, Vardedel>> };
+} = {
+  resultat: { ord: 'resultat', delar: RESULTATDELAR },
+  avslutsskal: { ord: 'avslutsskäl', delar: AVSLUTSDELAR },
+};
+
+/**
+ * Det som återöppningen tog bort (Story 5.2 AK 4): det tidigare resultatet och avslutsskälet som finns, och
+ * raden om formen för det som står där utöver dem.
+ */
+function tidigarerader(etikett: string, tidigare: unknown, index: Dokumentindex, uppslag: Uppslag): string {
+  if (!arObjekt(tidigare)) return felform(etikett);
+  const objekt = tidigare;
+  const rader = Object.entries(TIDIGAREDELAR).map(([nyckel, { ord, delar }]) => {
+    const varde = egetFalt(objekt, nyckel);
+    return saknas(varde) ? '' : textrad(`${etikett} ${ord}`, objektvarde(varde, delar, index, uppslag));
+  });
+  if (harOvrigt(objekt, Object.keys(TIDIGAREDELAR))) rader.push(felform(`${etikett}, ${OVRIGT}`));
+  return rader.join('');
+}
+
+/** Handlingskontraktets fyra delar, i den ordning de står. */
+const KONTRAKTSDELAR = ['system', 'kommando', 'objekt', 'underlag'] as const;
+/** Kontraktets nycklar: delarna och märket för det härledda och det lagrade underlaget (Story 11.3). */
+const KONTRAKTSNYCKLAR: readonly string[] = [...KONTRAKTSDELAR, 'underlag_harlett', 'underlag_lagrat'];
+
+/**
+ * Handlingskontraktet på en besvarad insats, med fyra delar: system, kommando, objekt och underlaget, som för
+ * en insats på ett ärende är ärendets adress (Story 11.3). Samma regler som handlingskontraktrad: en privat
+ * del ger bara den fasta meningen, inga delar ingen rad, och en del som inte är en text raden om formen.
+ * Underlaget är text i code och ingen länk, och märket för det härledda och det lagrade underlaget visas inte
+ * (Dev Notes → Tolkningar, punkt 4). Det som står i kontraktet utöver de sex nycklarna står som «övrigt» med
+ * raden om formen.
+ */
+function kontraktsrad(etikett: string, kontrakt: unknown): string {
+  if (!arObjekt(kontrakt)) return felform(etikett);
+  const objekt = kontrakt;
+  const ovrigt = harOvrigt(objekt, KONTRAKTSNYCKLAR) ? felform(`${etikett}, ${OVRIGT}`) : '';
+  const finns = KONTRAKTSDELAR.map((del) => egetFalt(objekt, del)).filter((del) => !saknas(del));
+  if (finns.length === 0) return ovrigt;
+  const delar = finns.filter((del): del is string => typeof del === 'string');
+  if (delar.length !== finns.length) return felform(etikett) + ovrigt;
+  if (delar.some((del) => privatKalla(del))) return faltrad(etikett, esc(PRIVAT_TEXT)) + ovrigt;
+  return faltrad(etikett, delar.map((del) => `<code>${esc(del)}</code>`).join(' · ')) + ovrigt;
+}
+
+/** Källreferensens fält (Kallreferens i src/services/insats.ts); tsc fäller ett fält utan post. */
+const KALLFALT: { readonly [K in keyof Kallreferens]-?: true } = {
+  system: true,
+  objekttyp: true,
+  objekt_id: true,
+  objekt_version: true,
+  lank: true,
+};
+
+/** En valfri del av en källa: en sträng, null eller utan. */
+function arValfriText(varde: unknown): varde is string | null | undefined {
+  return varde === undefined || varde === null || typeof varde === 'string';
+}
+
+/** En krock i källreferensens form, så som kallrad tar den, eller null för en krock i annan form. */
+function somKalla(krock: unknown): Kortkalla | null {
+  if (!arObjekt(krock)) return null;
+  const { system, objekttyp, objekt_id: objektId, objekt_version: version, lank } = krock;
+  if (typeof system !== 'string' || typeof objekttyp !== 'string' || typeof objektId !== 'string') return null;
+  if (!arValfriText(version) || !arValfriText(lank)) return null;
+  return { system, objekttyp, objekt_id: objektId, objekt_version: version ?? null, lank: lank ?? null };
+}
+
+/**
+ * Krockarna på en registrerad insats: antalet, och varje krock som källa genom kallrad (R5), med raden om
+ * formen för det som står i krocken utöver källreferensens fält.
+ */
+function krockrader(etikett: string, krockar: unknown, uppslag: Uppslag): string {
+  if (!Array.isArray(krockar)) return felform(etikett);
+  if (krockar.length === 0) return faltrad(etikett, 'inga');
+  const rader = krockar.map((krock: unknown) => {
+    const kalla = somKalla(krock);
+    if (kalla === null || !arObjekt(krock)) return felform('Krock');
+    return kallrad(kalla, uppslag) + (harOvrigt(krock, Object.keys(KALLFALT)) ? felform(`Krock, ${OVRIGT}`) : '');
+  });
+  return faltrad(etikett, esc(krockar.length)) + rader.join('');
+}
+
+/**
+ * Det som nastaSteg inte skriver om nästa steg under en historikrad: slaget när handlingen saknas (annars står
+ * slaget i handlingens etikett) och raden om formen för det som står där utöver fälten i Nasta. Fältet
+ * Åtagande skriver nästa steg som förut.
+ */
+function nastaRester(etikett: string, varde: unknown): string {
+  if (!arObjekt(varde)) return '';
+  const slag = varde.slag;
+  return (
+    (arSlag(slag) && saknas(varde.handling) ? faltrad('Nästa stegs slag', esc(SLAGORD[slag])) : '') +
+    (harOvrigt(varde, Object.keys(NASTADELAR)) ? felform(`${etikett}, ${OVRIGT}`) : '')
+  );
+}
+
+/** Ett fält under raden efter sitt slag, eller inget när fältet saknas. */
+function detaljfalt(
+  falt: Detaljfalt,
+  h: Pick<Handelse, 'aktor_typ' | 'aktor_namn'>,
+  payload: Record<string, unknown>,
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): string {
+  const { nyckel, etikett, slag } = falt;
+  const v = egetFalt(payload, nyckel);
+  // Slaget utforare läses ur <nyckel>_typ och <nyckel>_namn och prövar själv om fältet saknas.
+  if (slag !== 'utforare' && saknas(v)) return '';
+  switch (slag) {
+    case 'text':
+      return fritext(etikett, v);
+    case 'svar':
+      // Svarsaktören är händelsens aktör: bara en människa svarar, och svaret skrivs med nyckelns aktör.
+      return typeof v === 'string'
+        ? `${fritext(etikett, v)}<p>Svarat av ${proveniens(h.aktor_typ, h.aktor_namn)}</p>`
+        : felform(etikett);
+    case 'tal':
+      return typeof v === 'number' && Number.isFinite(v) ? faltrad(etikett, esc(v)) : felform(etikett);
+    case 'tid': {
+      const tid = giltigTid(v);
+      return tid === null ? felform(etikett) : faltrad(etikett, esc(datumtid(tid)));
+    }
+    case 'lage':
+      return arOrd(ATAGANDELAGEORD, v) ? faltrad(etikett, esc(ATAGANDELAGEORD[v])) : felform(etikett);
+    case 'tillhor':
+      return arOrd(TILLHORORD, v) ? faltrad(etikett, esc(TILLHORORD[v])) : felform(etikett);
+    case 'insatstyp':
+      return arOrd(INSATSTYPORD, v) ? faltrad(etikett, esc(INSATSTYPORD[v])) : felform(etikett);
+    case 'moment':
+      return arOrd(MOMENTORD, v) ? faltrad(etikett, esc(MOMENTORD[v])) : felform(etikett);
+    case 'janej':
+      return typeof v === 'boolean' ? faltrad(etikett, v ? 'ja' : 'nej') : felform(etikett);
+    case 'kod':
+      return typeof v === 'string' ? faltrad(etikett, `<code>${esc(v)}</code>`) : felform(etikett);
+    case 'beslut':
+      return typeof v === 'number' && Number.isInteger(v) && v > 0
+        ? faltrad(etikett, `#${esc(v)}`)
+        : felform(etikett);
+    case 'referens':
+      return referensrad(etikett, v, index, uppslag);
+    case 'referenser':
+      return referenslistrad(etikett, v, index, uppslag);
+    case 'nasta':
+      return nastaSteg(etikett, v, index, uppslag) + nastaRester(etikett, v);
+    case 'utforare': {
+      const typ = egetFalt(payload, `${nyckel}_typ`);
+      const namn = egetFalt(payload, `${nyckel}_namn`);
+      if (saknas(typ) && saknas(namn)) return '';
+      return typeof typ === 'string' && typeof namn === 'string'
+        ? faltrad(etikett, proveniens(typ, namn))
+        : felform(etikett);
+    }
+    case 'handlingskontrakt':
+      return kontraktsrad(etikett, v);
+    case 'krockar':
+      return krockrader(etikett, v, uppslag);
+    case 'andring':
+      return andringsrader(etikett, v, payload, index, uppslag);
+    case 'tidigare':
+      return tidigarerader(etikett, v, index, uppslag);
+    default: {
+      const okant: never = slag;
+      throw new Error(`okänt slag i historikens detaljer: ${String(okant)}`);
+    }
+  }
+}
+
+/**
+ * AK 1–6: historikradens detaljer, och den enda vägen från en händelse till dem. Ett verb som inte står i
+ * DETALJFALT, eller en payload som inte är ett objekt, ger tom sträng, och ärenderutten visar då raden som
+ * förut. Annars fälten i tabellens ordning och efter dem källan; ger inget fält någon markup blir svaret tom
+ * sträng, utan källa. Ärenderutten kör funktionen också under insamlingen av kandidater, så att varje ärende
+ * som en referens i detaljerna länkar slås upp.
+ */
+export function handelsensDetaljer(
+  h: Pick<Handelse, 'id' | 'verb' | 'payload' | 'aktor_typ' | 'aktor_namn'>,
+  index: Dokumentindex,
+  uppslag: Uppslag,
+): string {
+  // Object.hasOwn: bara en egen nyckel är ett verb i tabellen, aldrig ett ärvt namn som constructor.
+  const falten = Object.hasOwn(DETALJFALT, h.verb) ? DETALJFALT[h.verb] : undefined;
+  const payload = h.payload;
+  if (falten === undefined || !arObjekt(payload)) return '';
+  const markup = falten.map((falt) => detaljfalt(falt, h, payload, index, uppslag)).join('');
+  return markup === '' ? '' : `${markup}<p>Källa: händelse #${esc(h.id)}</p>`;
 }
 
 // ---- Kortet -------------------------------------------------------------------------------------------

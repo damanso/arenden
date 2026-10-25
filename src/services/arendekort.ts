@@ -21,7 +21,8 @@
 // hade missat de nummer som renderaren delar upp eller normaliserar. Anroparen lämnar därför renderingen
 // som funktionen `kandidater`, som anropas exakt en gång, och tjänstelagret importerar aldrig vylagret.
 // Sedan Story 11.5 får renderingen också åtagandet och insatserna, eftersom deras referenser och källor
-// kan länka till ett ärende; uppslaget står därför efter frågorna som hämtar dem.
+// kan länka till ett ärende; uppslaget står därför efter frågorna som hämtar dem. Sedan Story 11.6 får den
+// också händelserna, eftersom historikens detaljer kan länka till ett ärende.
 import type { PoolClient } from 'pg';
 import type { Befintliga } from '../lib/arendelank.js';
 import {
@@ -76,6 +77,8 @@ export interface Korttexter {
   bilagor: readonly Bilaga[];
   atagande: Kortatagande | null;
   insatser: readonly Kortinsats[];
+  /** D-3 (Story 11.6): historikens detaljer, vars referenser kan länka till ett ärende. */
+  handelser: readonly Handelse[];
 }
 
 /** Åtagandets fält som kortet visar. `Arende` bär bara läget; resten läser åtagandefrågan. */
@@ -311,7 +314,7 @@ export async function hamtaArendekort(
   const befintliga = await befintligaArenden(
     client,
     tenantId,
-    kandidater({ arende, kommentarer, bilagor, atagande, insatser }),
+    kandidater({ arende, kommentarer, bilagor, atagande, insatser, handelser }),
   );
 
   // «Nämns i» är sökningens fråga med ärendets nummer (Story 11.1), aldrig en egen fulltextfråga.
