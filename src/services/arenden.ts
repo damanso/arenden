@@ -369,22 +369,28 @@ export async function skapaArende(
   input: SkapaArendeInput,
 ): Promise<Arende> {
   const team = await kravTeam(client, tenantId, input.team_key);
+
+  // Beslut #27: projektet slås upp, aldrig skapas. Ett okänt namn är ett fel
+  // i anropet, inte en ny rad i registret (K-10, samma skäl som sokProjekt).
+  // Uppslaget står FÖRE nextval: en sekvens rullas inte tillbaka med
+  // transaktionen, så ett avvisat anrop hade annars förbrukat ett LOC-nummer
+  // (FR-6, Story 8.1 AK 3). Felkoden är snake_case, så att gatewayen för den
+  // vidare till sessionen; namnet står bara i meddelandet, som aldrig når
+  // klienten.
+  let projectId: string | null = null;
+  if (input.projekt) {
+    projectId = await sokProjekt(client, tenantId, input.projekt);
+    if (!projectId) {
+      throw new BadRequestError('projektet_finns_inte', `projektet finns inte: ${input.projekt}`);
+    }
+  }
+
   const stateId = (await stateAvTyp(client, team.id, 'backlog')).id;
 
   const seq = await client.query<{ n: string }>('SELECT nextval($1::regclass)::text AS n', [
     team.sekvensnamn,
   ]);
   const nummer = Number(seq.rows[0]!.n);
-
-  // Beslut #27: projektet slås upp, aldrig skapas. Ett okänt namn är ett fel
-  // i anropet, inte en ny rad i registret (K-10, samma skäl som sokProjekt).
-  let projectId: string | null = null;
-  if (input.projekt) {
-    projectId = await sokProjekt(client, tenantId, input.projekt);
-    if (!projectId) {
-      throw new BadRequestError(`projektet finns inte: ${input.projekt}`);
-    }
-  }
 
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO issues (tenant_id, team_id, state_id, sequence_number,
