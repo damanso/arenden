@@ -15,18 +15,42 @@
 // märkningar (AK 5); K16 aktörerna på sexton kort och arkivärendets egna fält, och plockningens tre fall
 // (AK 8); K17 taket för Nämns i, fyra antal × fyra platser för ärendet självt och 200/201 i databasen
 // (AK 5); K18 tio skrivsätt för ett omnämnande, exemplen i fältets text och Nämns i:s tre former (AK 5).
+// D-3, D-4 (Story 11.5): K19 läsmodellens nya delar för fyra ärenden (AK 2–4 och 9); K20 1 mot 10 insatser,
+// beslut och villkor med samma antal frågor (AK 9); K21 mätningen av referenstyperna som delta och som
+// barnprocess (AK 1); K22 sex privata poster i tretton former och sex motexempel (AK 6); K23 en referens per
+// typ i REFERENSLANK, den okända typen, tre felformade, en privat och sex källor (AK 1, 4 och 6); K24 tio
+// texter genom autolänkarens egen rendering och den statiska läsningen av markdown.ts (AK 5); K25 åtagandets
+// fem lägen och ärendet utan (AK 2); K26 två ärenden med och utan beslut, och en version för ett okopplat
+// beslut (AK 3); K27 fyra insatslägen och ärendet utan, med svaret ordagrant (AK 4); K28 de fula tecknen i
+// åtagandet och insatserna och tre visningar utan skrivning (AK 9); K29 tre referensformer och två spegelfall
+// (AK 5); K30 sex privata sökvägar i fyra bärare på kortet (AK 6); K31 två mailbärare, ärendet utan och två
+// privata mailreferenser (AK 7); K32 kortets och läsmodellens källtext och konfigurationens nycklar (AK 8).
+// Ur code-review (Story 11.5): K22 också de former som en läsare, URL-tolken eller Obsidian läser som en privat
+// sökväg (lastaFormer, 23 per post) och motexemplen i nio av dem; K23 sju referenser och fem källor i sådana
+// former; K30 åtta bärare till på kortet (PRIVATA_TRASIGA); K34 varje väg in som frågar privatKalla, 21 bärare
+// (AK 6); K35 mailens rubrik i sex former (AK 7); K36 beslutstexten i fyra fall (AK 3); K37 delar i fel form i
+// åtagandet och insatsen (AK 2 och 4); K38 den slutna listan REFERENSBARARE mot Åtagande, Mail och mätningen
+// (AK 1, 2 och 7).
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
 import type { PoolClient } from 'pg';
 import request from 'supertest';
+import { EnvSchema } from '../src/config.js';
 import { withTransaction } from '../src/db/tx.js';
 import { createApp } from '../src/http/app.js';
 import { crmAnrop, nollstallCrmCache } from '../src/http/vy/crm.js';
 import type { Dokumentindex } from '../src/http/vy/dokument.js';
+// Story 11.5: namnrymder för det som berättelsen lägger till i vylagret (se importen av läsmodellen nedan).
+import * as dokumentet from '../src/http/vy/dokument.js';
+import * as kortmodulen from '../src/http/vy/kort.js';
+import * as markdownen from '../src/http/vy/markdown.js';
 import {
   agareLage,
   delarendenLage,
@@ -39,7 +63,7 @@ import {
   tomt,
   varde,
 } from '../src/http/vy/kort.js';
-import { datumtid, esc, proveniens } from '../src/http/vy/mall.js';
+import { datumtid, esc, proveniens, sakerUrl } from '../src/http/vy/mall.js';
 import { arendekandidater, renderaArendetext } from '../src/http/vy/markdown.js';
 import { importeraArkiv } from '../src/import/importeraArkiv.js';
 import { hamtaArende, hamtaEllerSkapaProjekt, importeraArende, skapaArende } from '../src/services/arenden.js';
@@ -50,9 +74,12 @@ import {
   TAK_NAMNS_I,
   type Markning,
 } from '../src/services/arendekort.js';
+// Story 11.5: namnrymd och inga namngivna importer för det som berättelsen lägger till, så att ett fall
+// som behöver en export som ännu saknas blir rött med «är inte en funktion» och inte fäller hela filen.
+import * as arendekortet from '../src/services/arendekort.js';
 import { hamtaKundkoppling, sattKundkoppling } from '../src/services/kundkoppling.js';
 import { kravTeam, stateAvTyp } from '../src/services/team.js';
-import { TEST_CRM_KONF } from './env.js';
+import { TEST_CRM_KONF, TEST_VAULT } from './env.js';
 import { kor, nyNyckel, raknaRader, TENANT_ID } from './helpers.js';
 
 const FIXTURER = fileURLToPath(new URL('./fixtures/arkiv/', import.meta.url));
@@ -73,9 +100,29 @@ const FRIST_I2 = new Date(NU + 20 * DAG).toISOString();
 const VACKNING_I2 = new Date(NU + 5 * DAG).toISOString();
 const FRIST_I3 = new Date(NU + 30 * DAG).toISOString();
 const DEADLINE = '2026-12-01';
+// Story 11.5: J1:s frist och J3:s väckningstid på ärendet med fyra insatser.
+const FRIST_J1 = new Date(NU + 15 * DAG).toISOString();
+const VACKNING_J3 = new Date(NU + 7 * DAG).toISOString();
 
 const GRUND = { typ: 'beslut', id: '153', version: '1' };
 const INTERNT = { handling: 'Bygg klart', slag: 'internt', grund: GRUND };
+
+// Story 11.5: svarsversionernas hashar, gemen hex med 16–64 tecken som registrera_svarsversion kräver, och
+// med olika första tolv tecken, som kortet visar för en version utan löpnummer.
+const HASH_54_V1 = '5401aaaaaaaaaaaaaaaa';
+const HASH_54 = '5402bbbbbbbbbbbbbbbb';
+const HASH_61 = '6101cccccccccccccccc';
+
+/** Villkor med utfallet okänt, som inte kräver belägg (VillkorSchema i src/actions/registry.ts). */
+function villkoren(antal: number): Record<string, unknown>[] {
+  return Array.from({ length: antal }, (_, i) => ({
+    text: `K villkor ${i + 1}`,
+    kalla: GRUND,
+    galler: 'K gäller tills vidare',
+    kontroll: 'K kontrolleras vid uppföljningen',
+    utfall: 'okant',
+  }));
+}
 
 // AK 8: tecknen <script>, " och & i varje bärare.
 const FULT = '<script>alert(1)</script> "citat" & co';
@@ -86,6 +133,8 @@ const FULT_FORALDER = `K fult förälder ${FULT}`;
 const FULT_DEL = `K fult delärende ${FULT}`;
 const FULT_MOTPART = `K fult motpart ${FULT}`;
 const FULT_NAMNARE = `K fult nämnare ${FULT}`;
+/** Story 11.5 AK 4: svaret på J2, med tecknen och en radbrytning som ska stå kvar ordagrant. */
+const SVARET = `${FULT}\nandra raden`;
 
 /**
  * Vad fältet Nämns i påstår om ett skrivsätt, och inget annat (review-fynd 4 och kedjans körning): 'hittas'
@@ -140,7 +189,10 @@ const SKRIVSATTEN: {
 
 /** Fixturens ärenden, lästa ur svaren. Inget nummer skrivs in i förväg utom det importerade LOC-316. */
 const A: Record<string, string> = {};
-/** Insatserna på huvudärendet: I1 väntande, I2 uppskjuten och I3 återkallad. */
+/**
+ * Insatserna på huvudärendet: I1 väntande, I2 uppskjuten och I3 återkallad. Story 11.5: J1 väntande, J2
+ * besvarad, J3 uppskjuten och J4 återkallad på ärendet med fyra insatser.
+ */
 const I: Record<string, string> = {};
 
 let app: Express;
@@ -232,7 +284,27 @@ const TEXT = {
     'en relationstyp för dubbletter i link_issues.',
   kommentarer: 'Ingen har kommenterat det här ärendet ännu.',
   historik: 'Ärendet har inte ändrats sedan det kom in.',
+  // Story 11.5 (Dev Notes → Texterna). beslutstext står sist i Besluts värde, inte som lägestext.
+  atagande: 'Inga — inget åtagande registrerat (registrera_atagande).',
+  beslut: 'Inga — inget beslut kopplat (koppla_beslut).',
+  beslutstext:
+    'Finns inte i plattformen — texten finns i beslutskön. Föreslagen källa: Story 11.9 (David har valt att ' +
+    'Beslutskön skickar texten med svarsversionen och att kortet länkar till beslutet).',
+  insatser: 'Inga — ingen insats registrerad på ärendet (registrera_insats).',
+  // ingaDokument står i dokumentdelen och mailrad sist i Mails värde, inte som lägestexter.
+  ingaDokument: 'Inget dokument i dokumentområdet nämns i beskrivningen eller i de synliga kommentarerna.',
+  mail:
+    'Finns inte i plattformen — plattformen bär inga mail. Föreslagen källa: redovisningens mailtrådar för ' +
+    'projektets kund (David har sagt ja till kopplingen, som byggs i Story 11.8).',
+  mailrad:
+    'Länk och rubrik ur mailen kräver kopplingen till redovisningens mailtrådar — David har sagt ja till den, ' +
+    'och den byggs i Story 11.8.',
 };
+
+/** Dokument och underlag utan spegel (Story 11.5); LOC-N är ärendets eget nummer. */
+function spegeltext(identifier: string): string {
+  return `Saknas — spegeln (arenden_arkiv.py) har inte skrivit ${identifier}.md än.`;
+}
 
 /**
  * Vad «Nämns i» räknar (review-fynd 4): sökningens träffar. Fältet påstår att numret som eget ord hittas och
@@ -279,7 +351,15 @@ const FALLEN: Record<string, Fall> = {
   uppdrag: { varde: null, tomt: () => [A.h!, TEXT.uppdrag] },
   ursprung: { varde: () => [A.tom!, '<p>skapat i plattformen</p>'], tomt: () => [A.utan!, TEXT.ursprung] },
   beskrivning: { varde: () => [A.h!, 'Hänger ihop med'], tomt: () => [A.tom!, TEXT.beskrivning] },
-  bilagor: { varde: () => [A.h!, 'K bilaga'], tomt: () => [A.tom!, TEXT.bilagor] },
+  atagande: { varde: () => [A.h!, '<p>Läge: övertaget · tillhör Hermes</p>'], tomt: () => [A.tom!, TEXT.atagande] },
+  beslut: { varde: () => [A.beslut!, '<p>beslut #54 · kopplat '], tomt: () => [A.tom!, TEXT.beslut] },
+  insatser: {
+    varde: () => [A.h!, '<h3>ägarbeslut · väntande · tillhör ägaren</h3>'],
+    tomt: () => [A.tom!, TEXT.insatser],
+  },
+  // Story 11.5: Bilagor står under Dokument och underlag, och Dokument och underlag saknas utan spegel.
+  dokument: { varde: () => [A.dok!, 'Spegeln i valvet'], tomt: () => [A.tom!, spegeltext(A.tom!)] },
+  mail: { varde: () => [A.mail!, 'mail · <code>k-mail-1</code> · i åtagandet'], tomt: () => [A.tom!, TEXT.mail] },
   foralder: { varde: () => [A.h!, `${A.p}</a> — K föräldern`], tomt: () => [A.tom!, TEXT.foralder] },
   delarenden: { varde: () => [A.h!, `${A.c1} — K delärende ett`], tomt: () => [A.tom!, TEXT.delarenden] },
   relationer: { varde: () => [A.h!, '<span>blockeras av</span>'], tomt: () => [A.tom!, TEXT.relationer] },
@@ -526,6 +606,232 @@ beforeAll(async () => {
   A.formadress = await nytt('K nämner i en adress');
   const adress = SKRIVSATTEN.find((s) => s.namn === 'Linear-adress')!;
   await steg(hermes, 'add_comment', { identifier: A.formadress, body: adress.text(A.formtom) });
+
+  // Story 11.5, Uppgift 1: läsmodellens nya delar. Varje insats har ett eget stopp och varje källa ett eget
+  // objekt-id, eftersom källan är unik i tenanten. Besluten har nummer som inget annat fall använder:
+  // koppla_beslut lämnar ett beslut som redan är kopplat där det var, utan fel.
+  A.p1 = await nytt('K ett av varje');
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.p1,
+    grund: [GRUND],
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+    villkor: villkoren(1),
+  });
+  await steg(hermes, 'koppla_beslut', { beslut_id: 5101, identifier: A.p1 });
+  await insats('k-p1-1', A.p1, {});
+  A.p10 = await nytt('K tio av varje');
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.p10,
+    grund: [GRUND],
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+    villkor: villkoren(10),
+  });
+  for (let n = 0; n < 5; n++) await steg(hermes, 'koppla_beslut', { beslut_id: 5102 + n, identifier: A.p10 });
+  for (let n = 1; n <= 10; n++) await insats(`k-p10-${n}`, A.p10, {});
+  // #54 och #60 kopplade, två svarsversioner för #54 (registrerade utan ärende, så de nås genom kopplingen)
+  // och en för #61, som registreras på ärendet utan att #61 kopplas dit.
+  A.beslut = await nytt('K beslut och svar');
+  await atagande(A.beslut);
+  await steg(hermes, 'koppla_beslut', { beslut_id: 54, identifier: A.beslut });
+  await steg(hermes, 'koppla_beslut', { beslut_id: 60, identifier: A.beslut });
+  await steg(hermes, 'registrera_svarsversion', { beslut_id: 54, svar_hash: HASH_54_V1, version: 1 });
+  await steg(hermes, 'registrera_svarsversion', { beslut_id: 54, svar_hash: HASH_54 });
+  await steg(hermes, 'registrera_svarsversion', { beslut_id: 61, svar_hash: HASH_61, identifier: A.beslut });
+
+  // Story 11.5, Uppgift 3: åtagandets lägen (A.h är det övertagna), insatsernas fyra lägen, det fulla kortet
+  // och de fula tecknen. Varje ändring av ett åtagande skickar revisionen ur get_atagande just före, och ett
+  // oavslutat åtagande har alltid nästa steg och uppföljning.
+  const revisionen = async (identifier: string): Promise<number> =>
+    (await steg(hermes, 'get_atagande', { identifier })).revision as number;
+  // En grund länkar till ett befintligt ärende och en till ett nummer som inte finns. Referenserna står inte
+  // i sökindexet, så A.n1:s Nämns i ändras inte.
+  A.ag_reg = await nytt('K registrerat åtagande');
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.ag_reg,
+    grund: [
+      { typ: 'arende', id: A.n1 },
+      { typ: 'arende', id: 'LOC-99998' },
+    ],
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+    utfall_precisering: 'K preciseringen av utfallet',
+    villkor: [
+      {
+        text: 'K villkoret som är okänt',
+        kalla: { typ: 'beslut', id: '9301' },
+        galler: 'K gäller hela året',
+        kontroll: 'K kontrolleras i december',
+        utfall: 'okant',
+      },
+      {
+        text: 'K villkoret som är uppfyllt',
+        kalla: { typ: 'beslut', id: '9302' },
+        galler: 'K gäller till hösten',
+        kontroll: 'K kontrolleras i augusti',
+        utfall: 'uppfyllt',
+        belagg: { typ: 'prov', id: 'k-villkor-belagg' },
+      },
+    ],
+  });
+  A.ag_hind = await nytt('K hindrat åtagande');
+  await atagande(A.ag_hind);
+  await steg(hermes, 'hindra_atagande', {
+    identifier: A.ag_hind,
+    orsak: 'K orsaken till hindret',
+    belagg: { typ: 'beslut', id: '9303' },
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+    forvantad_revision: await revisionen(A.ag_hind),
+  });
+  // Registrerat → genomfört är ingen tillåten övergång, så övertagandet kommer först.
+  A.ag_genom = await nytt('K genomfört åtagande');
+  await atagande(A.ag_genom);
+  await steg(david, 'ta_over_atagande', {
+    identifier: A.ag_genom,
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+    forvantad_revision: await revisionen(A.ag_genom),
+  });
+  await steg(hermes, 'redovisa_resultat', {
+    identifier: A.ag_genom,
+    sammanfattning: 'K sammanfattningen av resultatet',
+    belagg: [
+      { typ: 'prov', id: 'k-resultat-prov' },
+      { typ: 'commit', id: 'k-resultat-commit' },
+    ],
+    forvantad_revision: await revisionen(A.ag_genom),
+  });
+  A.ag_avsl = await nytt('K avslutat åtagande');
+  await atagande(A.ag_avsl);
+  await steg(hermes, 'avsluta_atagande', {
+    identifier: A.ag_avsl,
+    text: 'K skälet till avslutet',
+    grund: { typ: 'beslut', id: '9304' },
+    forvantad_revision: await revisionen(A.ag_avsl),
+  });
+
+  // Fyra insatser: J1 väntande med frist, belägg och källornas fem former (utan länk, en https-adress, en
+  // Linear-adress med numret A.n1, en javascript:-adress och objekttypen mail); J2 besvarad av en
+  // människa; J3 uppskjuten av en människa; J4 återkallad.
+  A.ins = await nytt('K fyra insatser');
+  I.j1 = await insats('k-ins-j1', A.ins, {
+    frist: FRIST_J1,
+    belagg: [{ typ: 'beslut', id: '9401' }],
+    kallor: [
+      { system: 'arenden', objekttyp: 'atagande', objekt_id: 'k-ins-k1' },
+      { system: 'arenden', objekttyp: 'atagande', objekt_id: 'k-ins-k2', lank: 'https://example.com/k-kalla' },
+      {
+        system: 'arenden',
+        objekttyp: 'atagande',
+        objekt_id: 'k-ins-k3',
+        lank: `https://linear.app/locollabs/issue/${A.n1}/k-kalla`,
+      },
+      { system: 'arenden', objekttyp: 'atagande', objekt_id: 'k-ins-k4', lank: 'javascript:alert(1)' },
+      { system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-ins-k5', lank: 'https://example.com/k-mail' },
+    ],
+  });
+  I.j2 = await insats('k-ins-j2', A.ins, {});
+  await steg(david, 'besvara_insats', { id: I.j2, svar: SVARET });
+  I.j3 = await insats('k-ins-j3', A.ins, {});
+  await steg(david, 'skjut_upp_insats', { id: I.j3, till: VACKNING_J3, skal: 'K väntar på underlaget' });
+  I.j4 = await insats('k-ins-j4', A.ins, {});
+  await steg(hermes, 'aterkalla_insats', { id: I.j4, skal: 'K inte längre aktuell' });
+
+  // Story 11.4 AK 6: det fulla kortet får ett eget beslut och en insats, så att Beslut och Insatser har värden.
+  await steg(hermes, 'koppla_beslut', { beslut_id: 5107, identifier: A.full });
+  await insats('k-full', A.full, {});
+
+  // AK 9: tecknen <script>, " och & i nästa steg, i ett villkor, i en insats utfall och i en källas objekt-id.
+  A.fultkort = await nytt('K fult kort');
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.fultkort,
+    grund: [GRUND],
+    nasta: { ...INTERNT, handling: FULT },
+    foljs_upp: UPPFOLJNING,
+    villkor: [{ text: FULT, kalla: GRUND, galler: 'K gäller', kontroll: 'K kontroll', utfall: 'okant' }],
+  });
+  await insats('k-fult', A.fultkort, {
+    utfall: FULT,
+    kallor: [{ system: 'arenden', objekttyp: 'atagande', objekt_id: FULT }],
+  });
+
+  // Story 11.5, Uppgift 4: dokumenten, R5 på kortet och mailen. Beskrivningen nämner avtalet som wikilänk,
+  // planen som sökväg och kunddokumentets originalnamn; kommentaren nämner avtalet igen med full sökväg.
+  // Planen ligger under 02-Områden/ledningsgrupp: ingen text i tilläggen innehåller ett aktörsnamn ur
+  // fixturen, och en sökväg under 02-Områden/hermes hade gjort det (K16).
+  A.dok = await nytt('K dokument och underlag', {
+    description:
+      'Avtalet: [[01-Projekt/k-kort/avtal]]. Planen: 02-Områden/ledningsgrupp/k-kort-plan.md. ' +
+      'Kundens original: K_avtal.docx.',
+  });
+  await steg(hermes, 'add_comment', { identifier: A.dok, body: 'Avtalet igen: 01-Projekt/k-kort/avtal.md.' });
+  await steg(hermes, 'add_attachment', { identifier: A.dok, titel: 'K dokumentbilaga ett', url: 'https://example.com/k-dok-1' });
+  await steg(hermes, 'add_attachment', { identifier: A.dok, titel: 'K dokumentbilaga två', url: 'https://example.com/k-dok-2' });
+  A.dok2 = await nytt('K dokument utan spegel', { description: 'Samma avtal: [[01-Projekt/k-kort/avtal]].' });
+
+  // De sex privata sökvägarna (PRIVATA_FALL) i en kommentar, i åtagandets grund, i tolv insatskällor (https-
+  // formen med /fil/ och obsidian-formen) och i sex bilagor. Ingen av dem är mail. Granskningsfynd 2 och 3:
+  // därtill bärarna i PRIVATA_TRASIGA, tre i grunden, tre källor och två bilagor, i former som URL-tolken
+  // eller en läsare läser som en privat sökväg fast texten inte är den.
+  const privata = Object.values(PRIVATA_FALL);
+  A.privat = await nytt('K privata källor');
+  await steg(hermes, 'add_comment', { identifier: A.privat, body: `Privata sökvägar: ${privata.join(', ')}.` });
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.privat,
+    grund: [...privata.map((rel) => ({ typ: 'dokument', id: rel })), ...PRIVATA_TRASIGA.grund],
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+  });
+  await insats('k-privat', A.privat, {
+    kallor: [
+      ...privata.flatMap((rel, i) => [
+        { system: 'valv', objekttyp: 'fil', objekt_id: `k-privat-${2 * i + 1}`, lank: `https://example.com/fil/${ledvis(rel)}` },
+        { system: 'valv', objekttyp: 'fil', objekt_id: `k-privat-${2 * i + 2}`, lank: obsidianform(rel) },
+      ]),
+      ...PRIVATA_TRASIGA.lankar.map((lank, i) => ({
+        system: 'valv',
+        objekttyp: 'fil',
+        objekt_id: `k-privat-${2 * privata.length + i + 1}`,
+        lank,
+      })),
+    ],
+  });
+  for (const [i, url] of [...privata.map((rel) => `https://example.com/fil/${ledvis(rel)}`), ...PRIVATA_TRASIGA.bilagor].entries()) {
+    await steg(hermes, 'add_attachment', { identifier: A.privat, titel: `K privat bilaga ${i + 1}`, url });
+  }
+
+  // Mail: en mailreferens i åtagandets grund och en mailkälla på en insats.
+  A.mail = await nytt('K mailreferenser');
+  await steg(hermes, 'registrera_atagande', {
+    identifier: A.mail,
+    grund: [{ typ: 'mail', id: 'k-mail-1' }],
+    nasta: INTERNT,
+    foljs_upp: UPPFOLJNING,
+  });
+  await insats('k-mail', A.mail, { kallor: [{ system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-mail-2' }] });
+
+  // Story 11.4 AK 6: det fulla kortet får en mailkälla, så att Mail har ett värde (spegeln skrivs nedan).
+  await insats('k-full-mail', A.full, {
+    kallor: [{ system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-full-mail' }],
+  });
+
+  // Testvalvet, aldrig den riktiga vaulten: dokumenten och speglarna för A.dok och A.full. Ingen sida har
+  // hämtats än, så dokumentindexet byggs ur det här valvet vid första sidan.
+  await rm(TEST_VAULT, { recursive: true, force: true });
+  for (const rel of [
+    '01-Projekt/k-kort/avtal.md',
+    '02-Områden/ledningsgrupp/k-kort-plan.md',
+    '03-Resurser/kunddokument/K Kund/K_avtal.md',
+    `02-Områden/linear-arkiv/${A.dok}.md`,
+    `02-Områden/linear-arkiv/${A.full}.md`,
+  ]) {
+    const abs = path.join(TEST_VAULT, rel);
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, '# K testvalvets dokument\n', 'utf8');
+  }
+  dokumentet.nollstallIndex();
 });
 
 describe('D-3/Story 11.4 AK 7: läsmodellen ställer ett fast antal frågor', () => {
@@ -644,13 +950,14 @@ describe('D-3/Story 11.4 AK 1: den slutna listan och de fem lägena', () => {
     expect(() => tomt('saknas', 'x', '<p>y</p>')).not.toThrow();
 
     const beskrivning = KORTFALT.find((f) => f.id === 'beskrivning')!;
-    const bilagor = KORTFALT.find((f) => f.id === 'bilagor')!;
+    // Story 11.5: Bilagor står inte längre i KORTFALT; Kommentarer är ett räknat fält med h2 som förut.
+    const kommentarer = KORTFALT.find((f) => f.id === 'kommentarer')!;
     expect(renderaFalt(beskrivning, varde('<p>värdet</p>'), 0)).toBe(
       '<section id="falt-beskrivning"><h2>Beskrivning</h2><p>värdet</p></section>',
     );
     for (const lage of ['inga', 'saknas', 'finns_inte', 'kunde_inte'] as const) {
-      expect(renderaFalt(bilagor, tomt(lage, 'a < b & "c"'), 3), lage).toBe(
-        '<section id="falt-bilagor"><h2>Bilagor (3)</h2><p class=notis>a &lt; b &amp; &quot;c&quot;</p></section>',
+      expect(renderaFalt(kommentarer, tomt(lage, 'a < b & "c"'), 3), lage).toBe(
+        '<section id="falt-kommentarer"><h2>Kommentarer (3)</h2><p class=notis>a &lt; b &amp; &quot;c&quot;</p></section>',
       );
     }
     // Det som ändå lästes står före notisen.
@@ -700,8 +1007,9 @@ describe('D-3/Story 11.4 AK 5 och 6: ramens fält med och utan poster', () => {
 
     expect(falt(h, 'beskrivning')).toContain('<h2>Beskrivning</h2><div class=text>');
     expect(falt(h, 'beskrivning')).toContain('Hänger ihop med');
-    expect(falt(h, 'bilagor')).toContain('<h2>Bilagor (1)</h2><ul class=lista role=list>');
-    expect(falt(h, 'bilagor')).toContain('K bilaga');
+    // Story 11.5: bilagorna står under Dokument och underlag, med rubriken som h3.
+    expect(falt(h, 'dokument')).toContain('<h3>Bilagor (1)</h3><ul class=lista role=list>');
+    expect(falt(h, 'dokument')).toContain('K bilaga');
     expect(falt(h, 'foralder')).toContain(`<p><a href="/vy/arende/${A.p}">${A.p}</a> — K föräldern</p>`);
     const delarenden = falt(h, 'delarenden');
     expect(delarenden).toContain('<h3>Delärenden (2)</h3>');
@@ -716,18 +1024,18 @@ describe('D-3/Story 11.4 AK 5 och 6: ramens fält med och utan poster', () => {
 
     expect({
       beskrivning: lagestext(falt(tom, 'beskrivning')),
-      bilagor: lagestext(falt(tom, 'bilagor')),
       foralder: lagestext(falt(tom, 'foralder')),
       delarenden: lagestext(falt(tom, 'delarenden')),
       relationer: lagestext(falt(tom, 'relationer')),
     }).toEqual({
       beskrivning: TEXT.beskrivning,
-      bilagor: TEXT.bilagor,
       foralder: TEXT.foralder,
       delarenden: TEXT.delarenden,
       relationer: TEXT.relationer,
     });
-    expect(tom).toContain('<h2>Bilagor (0)</h2>');
+    // Bilagornas mening står under Dokument och underlag, före fältets egen lägestext.
+    expect(falt(tom, 'dokument')).toContain(`<h3>Bilagor (0)</h3><p>${TEXT.bilagor}</p>`);
+    expect(tom).toContain('<h3>Bilagor (0)</h3>');
     expect(tom).toContain('<h3>Delärenden (0)</h3>');
     expect(tom).toContain('<h3>Relationer (0)</h3>');
     expect(tom).not.toContain('Ingen beskrivning.');
@@ -995,10 +1303,11 @@ describe('D-3/Story 11.4 AK 5: kopplade ärenden åt båda hållen', () => {
   });
 });
 
-/** KORTFALT efter Story 11.4, ordagrant och i ordning. */
-const SEXTON = [
-  'frist', 'agare', 'projekt', 'kund', 'uppdrag', 'ursprung', 'beskrivning', 'bilagor',
-  'foralder', 'delarenden', 'relationer', 'namner', 'namns-i', 'dubbletter', 'kommentarer', 'historik',
+/** KORTFALT efter Story 11.5, ordagrant och i ordning: tjugo fält, och Bilagor under Dokument och underlag. */
+const KORTFALTEN = [
+  'frist', 'agare', 'projekt', 'kund', 'uppdrag', 'ursprung', 'beskrivning', 'atagande', 'beslut', 'insatser',
+  'dokument', 'mail', 'foralder', 'delarenden', 'relationer', 'namner', 'namns-i', 'dubbletter', 'kommentarer',
+  'historik',
 ];
 
 /** De fem tomma formerna på en sida (Dev Notes → Avgränsade kriterier, AK 6). Tom lista = inga. */
@@ -1016,7 +1325,7 @@ function tommaFormer(html: string): string[] {
 
 describe('D-3/Story 11.4 AK 6 och AK 1: tomt mot fullt ärende', () => {
   it('K11 (AK 6 och AK 1) (R): varje fält i KORTFALT står på båda korten, med värde eller med sin lägestext', async () => {
-    expect(KORTFALT.map((f) => f.id)).toEqual(SEXTON);
+    expect(KORTFALT.map((f) => f.id)).toEqual(KORTFALTEN);
     // Motkontroll först: sidorna svarar 200 med rubriken för ärendet.
     const tom = await sida(A.tom!);
     const full = await sida(A.full!);
@@ -1027,11 +1336,12 @@ describe('D-3/Story 11.4 AK 6 och AK 1: tomt mot fullt ärende', () => {
       ...Object.entries(TEXT).filter(([nyckel]) => nyckel !== 'kundInternt').map(([, text]) => text),
       namnsIInga(A.tom!),
       namnsIInga(A.full!),
+      spegeltext(A.tom!),
     ]);
     const fynd: string[] = [];
     const tommaPaFull: string[] = [];
     for (const [namn, html] of [['tom', tom], ['full', full]] as const) {
-      for (const id of SEXTON) {
+      for (const id of KORTFALTEN) {
         const avsnitt = falt(html, id);
         const text = lagestext(avsnitt);
         if (text !== null && !lagestexter.has(text)) fynd.push(`${namn} ${id}: okänd lägestext ${text}`);
@@ -1043,7 +1353,7 @@ describe('D-3/Story 11.4 AK 6 och AK 1: tomt mot fullt ärende', () => {
     // Det fulla kortet visar varje fält med värde utom de två luckorna.
     expect(tommaPaFull.sort()).toEqual(['dubbletter', 'uppdrag']);
     // Det tomma kortet säger något i varje fält: lägestext, eller ett värde som Historik och Ursprung.
-    expect(SEXTON.filter((id) => lagestext(falt(tom, id)) === null).sort()).toEqual(['historik', 'ursprung']);
+    expect(KORTFALTEN.filter((id) => lagestext(falt(tom, id)) === null).sort()).toEqual(['historik', 'ursprung']);
 
     // Kontroll: en påhittad sida med ett avsnitt utan innehåll och ett tomt ul ger två fynd.
     expect(
@@ -1151,7 +1461,9 @@ describe('D-3/Story 11.4 AK 9: det befintliga står kvar', () => {
     expect(kallan).not.toContain('<style');
     expect(kallan).not.toContain('<form');
     const klasser = [...kallan.matchAll(/class=("?)([^\s">]+)/g)].map((m) => m[2]!);
-    expect([...new Set(klasser)].sort()).toEqual(['lista', 'notis', 'summering']);
+    // Story 11.5: div.text är den befintliga komponenten för fri text med radbrytningar, och den privata
+    // bilageraden skriver de befintliga li.rad och div.huvud.
+    expect([...new Set(klasser)].sort()).toEqual(['huvud', 'lista', 'notis', 'rad', 'summering', 'text']);
 
     // Kontroll: ordningsprövningen fäller en påhittad sida där Läget står före summeringsraden.
     const fel = ordningsfel(
@@ -1327,9 +1639,13 @@ const AKTORER = ['hermes', 'david', 'linear-import'];
 /** Ett proveniensmärke som proveniens() i src/http/vy/mall.ts skriver det. */
 const PROVENIENSMARKE = /<span class="prov [^"]*" title="[^"]*"><span aria-hidden=true>[^<]*<\/span>[^<]*<\/span>/g;
 
-/** Aktörsnamnen som står utanför ett proveniensmärke. Tom lista = varje aktör bär sitt märke. */
+/**
+ * Aktörsnamnen som står utanför ett proveniensmärke. Tom lista = varje aktör bär sitt märke. Story 11.5:
+ * maskinnamn i code (handlingskontraktets och källornas system, kommandon och id:n) är data och inga
+ * aktörer, så de tas bort innan namnen söks (Dev Notes → Tolkningar, punkt 7).
+ */
 function aktorerUtanMarke(html: string): string[] {
-  const utan = html.replace(PROVENIENSMARKE, '');
+  const utan = html.replace(PROVENIENSMARKE, '').replace(/<code>[^<]*<\/code>/g, '');
   return [...utan.matchAll(new RegExp(`\\b(?:${AKTORER.join('|')})\\b`, 'g'))].map((m) => m[0]);
 }
 
@@ -1357,6 +1673,8 @@ describe('D-3/Story 11.4 AK 8: varje aktör på kortet bär sitt proveniensmärk
     const korten = [
       A.h, A.tom, A.claim, A.insats, A.uppfoljning, A.deadline, A.full, A.fult, A.utan, A.extern,
       A.k_kopplat, A.k_internt, A.mh, A.mh0, A.c1, A.m,
+      // Story 11.5: insatserna med svaret, åtagandet med utföraren och dokumenten med kommentarens skribent.
+      A.ins, A.ag_genom, A.dok,
     ];
     for (const identifier of korten) {
       for (const namn of aktorerUtanMarke(kortdelen(await sida(identifier!)))) fynd.push(`${identifier}: ${namn}`);
@@ -1389,6 +1707,8 @@ describe('D-3/Story 11.4 AK 8: varje aktör på kortet bär sitt proveniensmärk
     // tar bort delärendenas kort men inte fältens egna rader.
     expect(aktorerUtanMarke('<p>plockat av hermes</p><p>utförare david</p>')).toEqual(['hermes', 'david']);
     expect(aktorerUtanMarke(`<p>plockat av ${proveniens('agent', 'hermes')}</p>`)).toEqual([]);
+    // Story 11.5: ett maskinnamn i code räknas inte, men samma namn utanför code fälls fortfarande.
+    expect(aktorerUtanMarke('<p>Källa: <code>hermes</code> · hermes</p>')).toEqual(['hermes']);
     expect(
       aktorerUtanMarke(kortdelen('<h2>Läget</h2><a class=kort href="#">plockat av hermes</a><p>david</p></main>')),
     ).toEqual(['david']);
@@ -1537,5 +1857,1567 @@ describe('D-3/Story 11.4 AK 5: Nämns i säger vilka skrivsätt som räknas', ()
     expect(skrivsattsfel(A.formmal!, allaListade, namnerPer)).toHaveLength(2);
     expect(skrivsattsfel(A.formmal!, '', namnerPer)).toHaveLength(7);
     expect(skrivsattsfel(A.formmal!, namnsI, SKRIVSATTEN.map(() => ''))).toHaveLength(antal((s) => s.i !== 'titel'));
+  });
+});
+
+// ---- Story 11.5, Uppgift 1: läsmodellen och mätningen av referenstyperna ----------------------------------
+
+describe('D-3/Story 11.5 AK 2–4 och 9: läsmodellen hämtar åtagandet, besluten och alla insatser', () => {
+  it('K19 (AK 2–4 och 9): åtagandets data, alla insatser med sina källor, besluten och svarsversionerna', async () => {
+    const fore = await raknaRader('events');
+    // Vad kandidaterna fick, per ärende: åtagandet och antalet insatser (sidans rendering behöver båda).
+    const fick: Record<string, { atagande: unknown; insatser: number }> = {};
+    const [h, beslut, p1, tom] = await withTransaction(async (client) => {
+      const kort = [];
+      for (const identifier of [A.h!, A.beslut!, A.p1!, A.tom!]) {
+        kort.push(
+          await hamtaArendekort(client, TENANT_ID, identifier, (t) => {
+            fick[identifier] = { atagande: t.atagande, insatser: t.insatser.length };
+            return [];
+          }),
+        );
+      }
+      return kort;
+    });
+
+    // Huvudärendet: åtagandets revision och data, alla tre insatser i läsmodellens ordning (också den
+    // återkallade), de öppna som förut och den första insatsens källa.
+    expect(typeof h!.atagande?.revision).toBe('number');
+    expect(h!.atagande?.data).toMatchObject({ grund: [GRUND], nasta: INTERNT });
+    expect(h!.insatser.map((i) => [i.id, i.lage, i.version])).toEqual([
+      [I.i1, 'vantande', 1],
+      [I.i2, 'uppskjuten', 2],
+      [I.i3, 'aterkallad', 2],
+    ]);
+    expect(h!.insatser[2]!.blockeringsgrund).toBe('Tidigare besked avgör inte valet\nÅterkallad: Inte längre aktuell');
+    expect(h!.oppnaInsatser.map((i) => i.id)).toEqual([I.i1, I.i2]);
+    expect(h!.insatser[0]!.kallor).toEqual([
+      { system: 'hermes', objekttyp: 'beslut', objekt_id: 'arendekort-i1', objekt_version: null, lank: null },
+    ]);
+    expect(fick[A.h!]).toEqual({ atagande: h!.atagande, insatser: 3 });
+
+    // Besluten: de två kopplade i kopplingens ordning, och svarsversionerna för #54 och för #61, som
+    // registrerats på ärendet utan att vara kopplat dit.
+    expect(beslut!.beslut.map((b) => [b.beslut_id, b.kopplad instanceof Date])).toEqual([
+      [54, true],
+      [60, true],
+    ]);
+    expect(beslut!.svarsversioner.map((v) => [v.beslut_id, v.version, v.svar_hash, v.tillampad instanceof Date])).toEqual([
+      [54, 1, HASH_54_V1, true],
+      [54, null, HASH_54, true],
+      [61, null, HASH_61, true],
+    ]);
+
+    // Ett av varje: en insats med en källa och ett beslut.
+    expect([p1!.insatser.length, p1!.insatser[0]?.kallor.length, p1!.beslut.map((b) => b.beslut_id)]).toEqual([
+      1,
+      1,
+      [5101],
+    ]);
+
+    // Det tomma ärendet: inget av det nya, och kandidaterna fick inget åtagande och inga insatser.
+    expect({ atagande: tom!.atagande, insatser: tom!.insatser, beslut: tom!.beslut, svar: tom!.svarsversioner }).toEqual({
+      atagande: null,
+      insatser: [],
+      beslut: [],
+      svar: [],
+    });
+    expect(fick[A.tom!]).toEqual({ atagande: null, insatser: 0 });
+    expect(await raknaRader('events')).toBe(fore);
+  });
+
+  it('K20 (AK 9): lika många frågor med 1 och 10 insatser, 1 och 5 beslut och 1 och 10 villkor', async () => {
+    const fore = await raknaRader('events');
+    const fragor: Record<string, number> = {};
+    const kort: Record<string, Awaited<ReturnType<typeof hamtaArendekort>>> = {};
+    let medSlinga = 0;
+    await withTransaction(async (client) => {
+      for (const [fall, identifier] of [['tunt', A.tunt!], ['p1', A.p1!], ['p10', A.p10!]]) {
+        const raknare = raknandeKlient(client);
+        kort[fall!] = await hamtaArendekort(raknare.klient, TENANT_ID, identifier!, () => []);
+        fragor[fall!] = raknare.antal();
+      }
+      // Kontroll: en påhittad läsning som ställer en fråga till per insats ger fler frågor, så räkningen
+      // kan slå ut.
+      const raknare = raknandeKlient(client);
+      const tio = await hamtaArendekort(raknare.klient, TENANT_ID, A.p10!, () => []);
+      for (const i of tio.insatser) await raknare.klient.query('SELECT $1::uuid AS id', [i.id]);
+      medSlinga = raknare.antal();
+    });
+
+    // Datat först: tio insatser med en källa var, fem beslut och tio villkor i åtagandets data.
+    const p10 = kort.p10!;
+    expect({
+      insatser: p10.insatser.length,
+      kallor: p10.insatser.map((i) => i.kallor.length),
+      beslut: p10.beslut.length,
+      villkor: (p10.atagande?.data as { villkor?: unknown[] } | undefined)?.villkor?.length,
+    }).toEqual({ insatser: 10, kallor: Array.from({ length: 10 }, () => 1), beslut: 5, villkor: 10 });
+    expect([kort.p1!.insatser.length, kort.p1!.beslut.length]).toEqual([1, 1]);
+
+    // Sedan frågorna: lika många för det tunna ärendet, ett av varje och tio av varje.
+    expect(fragor.p1).toBe(fragor.tunt);
+    expect(fragor.p10).toBe(fragor.tunt);
+    expect(medSlinga).toBeGreaterThan(fragor.p1!);
+    expect(await raknaRader('events')).toBe(fore);
+  });
+});
+
+const korProcess = promisify(execFile);
+
+/**
+ * Skriptet, `tsx src/scripts/matReferenstyper.ts`, som barnprocess i repots rot (mönstret i N18 i
+ * test/delresultat.test.ts). Barnprocessen ärver testmiljöns databasadress, rollen app mot testdatabasen.
+ * DOTENV_CONFIG_PATH pekar på en fil som inte finns, så att ingen .env kan rikta skriptet mot en annan
+ * databas. En avslutningskod kastar inte. Provet läser inte package.json: skriptraden är ett förkrav i drift.
+ */
+async function korMatskriptet(env: Record<string, string> = {}): Promise<{ kod: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await korProcess(
+      path.join(ROT, 'node_modules', '.bin', 'tsx'),
+      ['src/scripts/matReferenstyper.ts'],
+      {
+        cwd: ROT,
+        env: {
+          ...process.env,
+          DOTENV_CONFIG_PATH: path.join(tmpdir(), 'arendekort-finns-inte.env'),
+          ...env,
+        },
+      },
+    );
+    return { kod: 0, stdout, stderr };
+  } catch (e) {
+    const fel = e as { code?: unknown; stdout?: string; stderr?: string };
+    if (typeof fel.code !== 'number') throw e;
+    return { kod: fel.code, stdout: fel.stdout ?? '', stderr: fel.stderr ?? '' };
+  }
+}
+
+type Matning = {
+  referenser: { barare: string; typ: string | null; antal: number }[];
+  kallor: { system: string; objekttyp: string; antal: number }[];
+};
+
+/** Mätningen som karta: en nyckel per post, i samma form som skriptets rader, till antalet. */
+function matkarta(m: Matning): Map<string, number> {
+  const karta = new Map<string, number>();
+  for (const r of m.referenser) karta.set(`referens\t${r.barare}\t${r.typ ?? '(saknas)'}`, r.antal);
+  for (const k of m.kallor) karta.set(`kalla\t${k.system}\t${k.objekttyp}`, k.antal);
+  return karta;
+}
+
+/** Skillnaden mellan två mätningar, bara poster som ändrats. */
+function skillnad(fore: Map<string, number>, efter: Map<string, number>): Record<string, number> {
+  const ut: Record<string, number> = {};
+  for (const nyckel of new Set([...fore.keys(), ...efter.keys()])) {
+    const delta = (efter.get(nyckel) ?? 0) - (fore.get(nyckel) ?? 0);
+    if (delta !== 0) ut[nyckel] = delta;
+  }
+  return ut;
+}
+
+describe('D-4/Story 11.5 AK 1: referenstyperna mäts', () => {
+  it('K21 (AK 1): mätningen listar typerna per bärare och källornas par i en READ ONLY-transaktion och skriver ingenting', async () => {
+    const mat = (): Promise<Matning> =>
+      withTransaction(async (client) => {
+        // Första satsen efter BEGIN, som i skriptet: Postgres avvisar därefter varje skrivning.
+        await client.query('SET TRANSACTION READ ONLY');
+        return arendekortet.matReferenstyper(client, TENANT_ID);
+      });
+    const fore = matkarta(await mat());
+
+    // Fallets eget ärende: ett åtagande med fem kända typer och den okända kvitto i grunden, och en insats
+    // med ett belägg och två källor. Inget av fixturens ärenden ändras, och ärendenumret finns inte.
+    const mal = await nytt('K mätningens ärende');
+    await steg(hermes, 'registrera_atagande', {
+      identifier: mal,
+      grund: [
+        { typ: 'beslut', id: '9201' },
+        { typ: 'arende', id: 'LOC-99997' },
+        { typ: 'dokument', id: '01-Projekt/k-kort/avtal.md' },
+        { typ: 'url', id: 'https://example.com/k-matning' },
+        { typ: 'mail', id: 'k-matning-mail' },
+        { typ: 'kvitto', id: 'K-7' },
+      ],
+      nasta: INTERNT,
+      foljs_upp: UPPFOLJNING,
+    });
+    await insats('k-matning', mal, {
+      belagg: [{ typ: 'prov', id: 'k-matning-prov' }],
+      kallor: [
+        { system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-matning-k1' },
+        { system: 'hermes', objekttyp: 'beslut', objekt_id: 'k-matning-k2' },
+      ],
+    });
+
+    const handelser = await raknaRader('events');
+    const insatser = await raknaRader('insatser');
+    const efter = matkarta(await mat());
+    expect([await raknaRader('events'), await raknaRader('insatser')]).toEqual([handelser, insatser]);
+    // Exakt de tillagda posterna och inga andra: sex typer i grunden, nästa stegs grund (INTERNT har grunden
+    // GRUND av typen beslut), insatsens belägg och de två paren.
+    expect(skillnad(fore, efter)).toEqual({
+      'referens\tgrund\tbeslut': 1,
+      'referens\tgrund\tarende': 1,
+      'referens\tgrund\tdokument': 1,
+      'referens\tgrund\turl': 1,
+      'referens\tgrund\tmail': 1,
+      'referens\tgrund\tkvitto': 1,
+      'referens\tnasta.grund\tbeslut': 1,
+      'referens\tinsats.belagg\tprov': 1,
+      'kalla\tredovisning\tmail': 1,
+      'kalla\thermes\tbeslut': 1,
+    });
+
+    // Skriptet: samma poster som rader, sist antalet rader, kod 0 och ingen skrivning.
+    const { kod, stdout, stderr } = await korMatskriptet();
+    expect(kod, stderr).toBe(0);
+    const rader = stdout.split('\n').filter((r) => r !== '');
+    const poster = rader.filter((r) => r.startsWith('referens\t') || r.startsWith('kalla\t'));
+    expect(poster).toContain(`referens\tgrund\tkvitto\t${efter.get('referens\tgrund\tkvitto')}`);
+    expect(poster).toContain(`kalla\tredovisning\tmail\t${efter.get('kalla\tredovisning\tmail')}`);
+    expect(poster).toHaveLength(efter.size);
+    expect(rader.at(-1)).toBe(`Antal: ${poster.length}`);
+    expect([await raknaRader('events'), await raknaRader('insatser')]).toEqual([handelser, insatser]);
+
+    // Kontroll: en mätning som inte kunde göras ser aldrig ut som noll referenser.
+    const finnsInte = new URL(process.env.DATABASE_URL!);
+    finnsInte.pathname = '/arenden_finns_inte';
+    const fel = await korMatskriptet({ DATABASE_URL: finnsInte.toString() });
+    expect(fel.kod, fel.stderr).toBe(1);
+    expect(fel.stderr).toMatch(/^FATAL:/);
+    expect(fel.stdout).not.toContain('Antal:');
+  });
+});
+
+// ---- Story 11.5, Uppgift 2: R5 och referenserna på funktionsnivå ------------------------------------------
+
+/** En exempelsökväg per post i PRIVATA (R5, PRD §5). Nycklarna ska vara exakt PRIVATA:s poster. */
+const PRIVATA_FALL: Record<string, string> = {
+  'jag.md': 'jag.md',
+  'journal/': 'journal/2026-10-01.md',
+  '02-Områden/hälsa/': '02-Områden/hälsa/x.md',
+  '05-Dagligt/': '05-Dagligt/2026-10-01-morgonbrief.md',
+  '.git/': '.git/config',
+  '.obsidian/': '.obsidian/workspace.json',
+};
+
+/** Sökvägen ledvis kodad, som dokumentsidans adress (dokUrl i src/http/vy/markdown.ts). */
+function ledvis(rel: string): string {
+  return rel.split('/').map(encodeURIComponent).join('/');
+}
+
+/** Obsidian-formen: file-värdet utan .md och kodat, som dokumentsidans länk till Obsidian. */
+function obsidianform(rel: string): string {
+  return `obsidian://open?vault=brain&file=${encodeURIComponent(rel.replace(/\.md$/, ''))}`;
+}
+
+/**
+ * De tretton formerna av en sökväg (Dev Notes → Testmönster, K22). Den trasiga procentföljden står sist,
+ * efter den kodade sökvägen: `%E2` går inte att avkoda och står kvar.
+ */
+function privataFormer(rel: string): [string, string][] {
+  return [
+    ['som den är', rel],
+    ['./ före', `./${rel}`],
+    ['/fil/ före', `/fil/${rel}`],
+    ['/katalog/ före', `/katalog/${rel}`],
+    ['/vy/dok/ före', `/vy/dok/${ledvis(rel)}`],
+    ['https-adress', `https://example.com/fil/${ledvis(rel)}`],
+    ['absolut sökväg i testvalvet', path.join(TEST_VAULT, rel)],
+    ['obsidian-form', obsidianform(rel)],
+    ['procentkodad', encodeURIComponent(rel)],
+    ['dubbelkodad', encodeURIComponent(encodeURIComponent(rel))],
+    ['NFD', rel.normalize('NFD')],
+    ['versaler', rel.toUpperCase()],
+    ['trasig procentföljd sist', `${encodeURIComponent(rel)}%E2%8`],
+  ];
+}
+
+/** Sökvägen utan .md, som wikilänken och obsidian-formen skriver den. */
+function utanAndelse(rel: string): string {
+  return rel.replace(/\.md$/, '');
+}
+
+/** Sökvägen med `tecken` efter det första tecknet, alltså inne i det första ledet. */
+function inneIForstaLedet(rel: string, tecken: string): string {
+  return `${rel.slice(0, 1)}${tecken}${rel.slice(1)}`;
+}
+
+/** ASCII-tecknen i fullbredd (U+FF01–U+FF5E), som NFKC läser som de vanliga. */
+function fullbredd(text: string): string {
+  return text.replace(/[!-~]/g, (t) => String.fromCodePoint(t.codePointAt(0)! + 0xfee0));
+}
+
+/**
+ * Granskningsfynd 2 och 3 (Story 11.5): formerna som en läsare, URL-tolken, Obsidian eller autolänkaren läser
+ * som sökvägen fast texten inte är den. Varje grupp är en klass: tecken som URL-tolken tar bort (tabb,
+ * radbrytning, vagnretur, blanksteg först och sist), tecken som inte syns, tecken intill sökvägen (blanksteg,
+ * skiljetecken, citattecken, parenteser), länkformerna (wikilänk, markdownlänk, målet utan ändelse),
+ * punktleden och fullbreddstecknen, som text och som adress.
+ */
+function lastaFormer(rel: string): [string, string][] {
+  const adress = `https://example.com/fil/${ledvis(rel)}`;
+  return [
+    ['tabb inne i ett led', inneIForstaLedet(rel, '\t')],
+    ['radbrytning inne i ett led', inneIForstaLedet(rel, '\n')],
+    ['vagnretur inne i ett led', inneIForstaLedet(rel, '\r')],
+    ['nollbrett mellanrum inne i ett led', inneIForstaLedet(rel, '​')],
+    ['mjukt bindestreck inne i ett led', inneIForstaLedet(rel, '­')],
+    ['blanksteg sist', `${rel} `],
+    ['blanksteg först', ` ${rel}`],
+    ['i en mening', `Källa: ${rel}, se där.`],
+    ['med punkt sist', `Se ${rel}.`],
+    ['inom citattecken', `"${rel}"`],
+    ['inom parentes', `(${rel})`],
+    ['wikilänk', `[[${utanAndelse(rel)}]]`],
+    ['wikilänk med rubrik och alias', `[[${utanAndelse(rel)}#Rubrik|alias]]`],
+    ['markdownlänk', `[se här](${ledvis(rel)})`],
+    ['utan ändelse', utanAndelse(rel)],
+    ['punktled', rel.replace('/', '/./')],
+    ['tillbakaled', rel.replace('/', '/k-led/../')],
+    ['fullbredd', fullbredd(rel)],
+    ['https-adress med tabb', `https://example.com/fil/${inneIForstaLedet(ledvis(rel), '\t')}`],
+    ['https-adress med radbrytning', `https://example.com/fil/${inneIForstaLedet(ledvis(rel), '\n')}`],
+    ['https-adress med blanksteg sist', `${adress} `],
+    ['https-adress med tillbakaled', `https://example.com/fil/k-led/../${ledvis(rel)}`],
+    ['obsidian-form med blanksteg sist', `${obsidianform(rel)} `],
+  ];
+}
+
+/** Formerna ur lastaFormer som också prövas på motexemplen, som ska förbli inte privata. */
+const MOTFORMER = [
+  'tabb inne i ett led',
+  'blanksteg sist',
+  'i en mening',
+  'med punkt sist',
+  'wikilänk',
+  'utan ändelse',
+  'tillbakaled',
+  'fullbredd',
+  'https-adress med tabb',
+];
+
+/**
+ * Granskningsfynd 2 och 3 på kortet (K30): bärarna på A.privat som URL-tolken eller en läsare läser som en
+ * privat sökväg fast texten inte är den. Tabb och radbrytning inne i ett led tar URL-tolken bort, ett blanksteg
+ * sist tar den bort och en läsare ser det inte, och wikilänken är Obsidians egen form.
+ */
+const PRIVATA_TRASIGA = {
+  grund: [
+    { typ: 'url', id: 'https://example.com/fil/jo\turnal/2026-10-01.md' },
+    { typ: 'url', id: 'https://example.com/fil/jag.md ' },
+    { typ: 'dokument', id: '[[journal/2026-10-01]]' },
+  ],
+  lankar: [
+    'https://example.com/fil/jo\turnal/2026-10-01.md',
+    'https://example.com/fil/05-Dag\nligt/2026-10-01-morgonbrief.md',
+    'https://example.com/fil/jag.md ',
+  ],
+  bilagor: ['https://example.com/fil/jag.md ', 'https://example.com/fil/jo\turnal/2026-10-01.md'],
+};
+/** Det som en läcka av bärarna ovan skriver i klartext: texten som den står och wikilänkens mål. */
+const TRASIGA_DELAR = ['jo\turnal', '05-Dag\nligt', 'journal/2026-10-01'];
+
+/** Två vitlistade dokument, spegelfilen och tre namn som bara liknar en privat post. */
+const INTE_PRIVATA = [
+  '01-Projekt/k-kort/avtal.md',
+  '02-Områden/hermes/k-kort-plan.md',
+  '02-Områden/linear-arkiv/LOC-1.md',
+  'journalist/x.md',
+  '05-Dagligtvis/x.md',
+  '02-Områden/hälsning/x.md',
+];
+/** Fri text i en bärare som prövas (titlar och undertitlar) där inget led är en privat post. */
+const INTE_PRIVAT_TEXT = ['K dokumentbilaga ett', 'Jag skrev sist', 'Journalisten ringde om hälsningen', 'Plan för 05-Dagligtvis'];
+
+/** Delningen före granskningsfynd 3: bara vid / \ ? & = # : %, utan avkodning. Kontrollen i K22 läser den. */
+function gammalDelning(ref: string): boolean {
+  const led = ref.normalize('NFC').toLowerCase().split(/[/\\?&=#:%]/).filter((d) => d !== '');
+  return Object.keys(PRIVATA_FALL).some((post) => {
+    const delar = post.normalize('NFC').toLowerCase().split('/').filter((d) => d !== '');
+    return led.some((_, start) => delar.every((d, i) => led[start + i] === d));
+  });
+}
+
+/** De fyra .md-exemplen och det katalognamn som 404-svaret aldrig får nämna. */
+const PRIVATA_DOKUMENT: [string, string][] = [
+  ['jag.md', 'jag.md'],
+  ['journal/2026-10-01.md', 'journal'],
+  ['02-Områden/hälsa/x.md', 'hälsa'],
+  ['05-Dagligt/2026-10-01-morgonbrief.md', 'Dagligt'],
+];
+
+describe('D-4/Story 11.5 AK 6: R5 på funktionsnivå', () => {
+  it('K22 (AK 6): privatKalla känner igen varje post i PRIVATA i varje form som en läsare, URL-tolken eller Obsidian läser som sökvägen, och släpper det som inte är privat', async () => {
+    // Varje post i PRIVATA har ett exempel: en post utan fall fäller provet.
+    expect(Object.keys(PRIVATA_FALL).sort()).toEqual([...dokumentet.PRIVATA].sort());
+    const missade: string[] = [];
+    for (const rel of Object.values(PRIVATA_FALL)) {
+      // De tretton formerna och, ur granskningsfynd 2 och 3, de former som en läsare eller URL-tolken läser
+      // som sökvägen fast texten inte är den.
+      for (const [form, ref] of [...privataFormer(rel), ...lastaFormer(rel)]) {
+        if (dokumentet.privatKalla(ref) !== true) missade.push(`${rel} (${form}): ${JSON.stringify(ref)}`);
+      }
+    }
+    expect(missade).toEqual([]);
+
+    // Motexemplen, som de är, de två dokumenten som https-adress, motexemplen i formerna ur granskningsfynd 2
+    // och 3, och fri text där inget led är en privat post.
+    const motformer = INTE_PRIVATA.flatMap((rel) =>
+      lastaFormer(rel)
+        .filter(([form]) => MOTFORMER.includes(form))
+        .map(([, ref]) => ref),
+    );
+    const motexempel = [
+      ...INTE_PRIVATA,
+      ...INTE_PRIVATA.slice(0, 2).map((rel) => `https://example.com/fil/${ledvis(rel)}`),
+      ...motformer,
+      ...INTE_PRIVAT_TEXT,
+    ];
+    expect(motformer).toHaveLength(INTE_PRIVATA.length * MOTFORMER.length);
+    expect(motexempel.filter((ref) => dokumentet.privatKalla(ref) !== false).map((ref) => JSON.stringify(ref))).toEqual([]);
+
+    // Kontroll för granskningsfynd 2 och 3: delningen före rättelsen missar tabben, blanksteget sist och
+    // wikilänken, som privatKalla känner igen, och URL-tolken lägger den privata sökvägen i ett href.
+    for (const ref of ['https://example.com/fil/jo\turnal/2026-10-01.md', 'jag.md ', '[[journal/2026-10-01]]']) {
+      expect([gammalDelning(ref), dokumentet.privatKalla(ref)], JSON.stringify(ref)).toEqual([false, true]);
+    }
+    expect(sakerUrl('https://example.com/fil/jo\turnal/2026-10-01.md')).toBe('https://example.com/fil/journal/2026-10-01.md');
+
+    // VITLISTA är de fem katalogerna som förut, och /vy/dok svarar samma innehållslösa 404 för de privata.
+    expect([...dokumentet.VITLISTA].map((k) => k.normalize('NFC'))).toEqual(
+      ['01-Projekt', '02-Områden/ledningsgrupp', '02-Områden/hermes', '02-Områden/linear-arkiv', '03-Resurser'].map(
+        (k) => k.normalize('NFC'),
+      ),
+    );
+    for (const [rel, katalog] of PRIVATA_DOKUMENT) {
+      const svar = await request(app).get(`/vy/dok/${ledvis(rel)}`);
+      expect(svar.status, rel).toBe(404);
+      expect(svar.text, rel).toContain('utanför vyns dokumentområde');
+      expect(svar.text, rel).not.toContain(katalog);
+    }
+
+    // Kontroll: en jämförelse som inte avkodar missar den dubbelkodade formen, som privatKalla känner igen.
+    const rak = (ref: string): boolean => Object.values(PRIVATA_FALL).some((rel) => ref.includes(rel));
+    const dubbelkodad = encodeURIComponent(encodeURIComponent(PRIVATA_FALL['journal/']!));
+    expect([rak(dubbelkodad), dokumentet.privatKalla(dubbelkodad)]).toEqual([false, true]);
+  });
+});
+
+/** K23:s index i minnet: ett dokument med ett unikt filnamn. */
+const REFINDEX: Dokumentindex = { filnamn: new Map([['avtal.md', ['01-Projekt/k-kort/avtal.md']]]) };
+/** K23:s befintliga nummer: ett ärende som finns och teamet LOC. */
+const REFBEFINTLIGA = { team: new Set(['LOC']), arenden: new Set(['LOC-5']) };
+const LINEARADRESS = 'https://linear.app/locollabs/issue/LOC-5/k-adress';
+const PRIVAT = 'Källa i ett privat område — visas inte på kortet.';
+const OKAND_FORM = 'Referens i en form som kortet inte läser — visas inte på kortet.';
+
+/**
+ * Ett fall per typ i REFERENSLANK, referensen och den väntade markupen. Nycklarna ska vara exakt tabellens:
+ * en typ utan fall fäller provet.
+ */
+const REFERENSFALL: Record<string, [unknown, string][]> = {
+  arende: [
+    [{ typ: 'arende', id: 'LOC-5' }, '<code>arende</code> · <a href="/vy/arende/LOC-5">LOC-5</a>'],
+    [
+      { typ: 'arende', id: 'LOC-99998' },
+      '<code>arende</code> · <a href="/vy/sok?q=LOC-99998">LOC-99998</a> (finns inte)',
+    ],
+    [{ typ: 'arende', id: 'ABC-1' }, '<code>arende</code> · <code>ABC-1</code>'],
+  ],
+  dokument: [
+    [
+      { typ: 'dokument', id: '01-Projekt/k-kort/avtal.md' },
+      '<code>dokument</code> · <a href="/vy/dok/01-Projekt/k-kort/avtal.md">01-Projekt/k-kort/avtal.md</a>',
+    ],
+    [{ typ: 'dokument', id: 'avtal.md' }, '<code>dokument</code> · <a href="/vy/dok/01-Projekt/k-kort/avtal.md">avtal.md</a>'],
+    [{ typ: 'dokument', id: 'docs/k-spec.md' }, '<code>dokument</code> · <code>docs/k-spec.md</code>'],
+  ],
+  url: [
+    [
+      { typ: 'url', id: 'https://example.com/k-kalla' },
+      '<code>url</code> · <a href="https://example.com/k-kalla" rel="noreferrer noopener">https://example.com/k-kalla</a>',
+    ],
+    [{ typ: 'url', id: LINEARADRESS }, '<code>url</code> · <a href="/vy/arende/LOC-5">LOC-5</a> (tidigare Linear-länk)'],
+    [
+      { typ: 'url', id: 'https://linear.app/locollabs/project/k-projekt' },
+      '<code>url</code> · Linear-länk — Linear är avvecklat',
+    ],
+    [{ typ: 'url', id: 'javascript:alert(1)' }, '<code>url</code> · <code>javascript:alert(1)</code>'],
+  ],
+  mail: [[{ typ: 'mail', id: 'k-mail-1' }, '<code>mail</code> · <code>k-mail-1</code>']],
+  beslut: [[{ typ: 'beslut', id: '153', version: '1' }, '<code>beslut</code> · <code>153</code> · version <code>1</code>']],
+  prov: [[{ typ: 'prov', id: 'k-prov' }, '<code>prov</code> · <code>k-prov</code>']],
+  commit: [[{ typ: 'commit', id: 'k-commit' }, '<code>commit</code> · <code>k-commit</code>']],
+};
+
+/** En källa med standardvärden för det som fallet inte anger. */
+function kalla(falt: Record<string, unknown>): Record<string, unknown> {
+  return { system: 'arenden', objekttyp: 'atagande', objekt_id: 'k-kalla', objekt_version: null, lank: null, ...falt };
+}
+
+/** Källornas fem former på J1 (AK 4) och en privat, med den väntade markupen. */
+const KALLFALL: [Record<string, unknown>, string][] = [
+  [kalla({ objekt_id: 'k-k1' }), '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-k1</code></p>'],
+  [
+    kalla({ objekt_id: 'k-k2', objekt_version: '2', lank: 'https://example.com/k-kalla' }),
+    '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-k2</code> · version <code>2</code> · ' +
+      '<a href="https://example.com/k-kalla" rel="noreferrer noopener">länk</a></p>',
+  ],
+  [
+    kalla({ objekt_id: 'k-k3', lank: LINEARADRESS }),
+    '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-k3</code> · ' +
+      '<a href="/vy/arende/LOC-5">LOC-5</a> (tidigare Linear-länk)</p>',
+  ],
+  [
+    kalla({ objekt_id: 'k-k4', lank: 'javascript:alert(1)' }),
+    '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-k4</code> · <code>javascript:alert(1)</code></p>',
+  ],
+  [
+    kalla({ system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-k5', lank: 'https://example.com/k-mail' }),
+    '<p>Källa: <code>redovisning</code> · <code>mail</code> · <code>k-k5</code></p>',
+  ],
+  [kalla({ system: 'valv', objekttyp: 'fil', objekt_id: 'k-k6', lank: 'https://example.com/fil/jag.md' }), `<p>Källa: ${PRIVAT}</p>`],
+];
+
+describe('D-4/Story 11.5 AK 1, 4 och 6: REFERENSLANK, referens och kallrad', () => {
+  it('K23 (AK 1, AK 4, AK 6): varje typ i tabellen har ett fall, en okänd typ blir text, och en privat referens ersätts', () => {
+    // Tabellen är sluten och har ett fall per typ.
+    expect(Object.keys(REFERENSFALL).sort()).toEqual(Object.keys(kortmodulen.REFERENSLANK).sort());
+    expect(kortmodulen.REFERENSLANK).toEqual({
+      arende: 'arende',
+      dokument: 'dokument',
+      url: 'url',
+      mail: 'mail',
+      beslut: 'text',
+      prov: 'text',
+      commit: 'text',
+    });
+    expect(Object.isFrozen(kortmodulen.REFERENSLANK)).toBe(true);
+    expect([kortmodulen.PRIVAT_TEXT, [...kortmodulen.MAILTYPER]]).toEqual([PRIVAT, ['mail']]);
+
+    const fynd: string[] = [];
+    for (const [typ, fall] of Object.entries(REFERENSFALL)) {
+      for (const [ref, vantat] of fall) {
+        const html = kortmodulen.referens(ref, REFINDEX, REFBEFINTLIGA);
+        if (html !== vantat) fynd.push(`${typ}: ${JSON.stringify(ref)} gav ${html}`);
+      }
+    }
+    expect(fynd).toEqual([]);
+
+    // En okänd typ visas som text och utelämnas aldrig; tre felformade referenser säger att formen inte läses.
+    const okand = kortmodulen.referens({ typ: 'kvitto', id: 'K-7' }, REFINDEX, REFBEFINTLIGA);
+    expect(okand).toBe('<code>kvitto</code> · <code>K-7</code>');
+    expect(okand).not.toContain('<a');
+    for (const ref of ['en sträng', { typ: 'beslut' }, null]) {
+      expect(kortmodulen.referens(ref, REFINDEX, REFBEFINTLIGA), JSON.stringify(ref)).toBe(OKAND_FORM);
+    }
+    // En privat referens, i id:t och i en adress, ersätts med den fasta meningen.
+    for (const ref of [
+      { typ: 'dokument', id: 'jag.md' },
+      { typ: 'url', id: 'https://example.com/fil/journal/2026-10-01.md' },
+      { typ: 'arende', id: 'LOC-5', version: '05-Dagligt/x.md' },
+    ]) {
+      expect(kortmodulen.referens(ref, REFINDEX, REFBEFINTLIGA), JSON.stringify(ref)).toBe(PRIVAT);
+    }
+    // Granskningsfynd 2 och 3: adresser som URL-tolken gör till en privat adress (tabb, radbrytning,
+    // blanksteg sist, punktled) och referenser i Obsidians och en läsares form. Ingen ger ett href.
+    for (const ref of [
+      { typ: 'url', id: 'https://example.com/fil/jo\turnal/2026-10-01.md' },
+      { typ: 'url', id: 'https://example.com/fil/05-Dag\nligt/x.md' },
+      { typ: 'url', id: 'https://example.com/fil/jag.md ' },
+      { typ: 'url', id: 'https://example.com/fil/k-led/../.git/config' },
+      { typ: 'dokument', id: '[[journal/2026-10-01]]' },
+      { typ: 'dokument', id: 'jag' },
+      { typ: 'dokument', id: 'Källa: jag.md' },
+    ]) {
+      expect(kortmodulen.referens(ref, REFINDEX, REFBEFINTLIGA), JSON.stringify(ref)).toBe(PRIVAT);
+    }
+    for (const lank of [
+      'https://example.com/fil/jo\turnal/2026-10-01.md',
+      'https://example.com/fil/05-Dag\nligt/x.md',
+      'https://example.com/fil/jag.md ',
+      ' https://example.com/fil/.obsidian/workspace.json',
+      'https://example.com/fil/k-led/../02-Omr%C3%A5den/h%C3%A4lsa/x.md',
+    ]) {
+      expect(kortmodulen.kallrad(kalla({ lank }), REFBEFINTLIGA), JSON.stringify(lank)).toBe(`<p>Källa: ${PRIVAT}</p>`);
+    }
+    // Kontroll: URL-tolken tar bort blanksteget sist och löser upp punktledet, så ett href hade gått dit.
+    expect(sakerUrl('https://example.com/fil/jag.md ')).toBe('https://example.com/fil/jag.md');
+    expect(sakerUrl('https://example.com/fil/k-led/../.git/config')).toBe('https://example.com/fil/.git/config');
+
+    // Källorna: länk bara för en http(s)-adress som inte går till Linear, numret för Linear, aldrig för mail.
+    const kallfynd: string[] = [];
+    for (const [k, vantat] of KALLFALL) {
+      const html = kortmodulen.kallrad(k, REFBEFINTLIGA);
+      if (html !== vantat) kallfynd.push(`${String(k.objekt_id)} gav ${html}`);
+      if (/href="javascript:/i.test(html)) kallfynd.push(`${String(k.objekt_id)}: href med javascript:`);
+    }
+    expect(kallfynd).toEqual([]);
+
+    // Under insamlingen samlas numret ur en ärendereferens och en Linear-källa, men inte ur en privat.
+    const kandidater = arendekandidater((u) => {
+      kortmodulen.referens({ typ: 'arende', id: 'LOC-77' }, REFINDEX, u);
+      kortmodulen.referens({ typ: 'arende', id: 'journal/LOC-78' }, REFINDEX, u);
+      kortmodulen.kallrad(kalla({ lank: 'https://linear.app/locollabs/issue/LOC-79/k' }), u);
+    });
+    expect(kandidater).toEqual(['LOC-77', 'LOC-79']);
+  });
+});
+
+/** K24:s index i minnet: tre unika filnamn, kunddokumentets spegel och ett tvetydigt namn. */
+const DOKINDEX: Dokumentindex = {
+  filnamn: new Map<string, string[]>([
+    ['avtal.md', ['01-Projekt/k-kort/avtal.md']],
+    ['k-unik.md', ['01-Projekt/k-kort/k-unik.md']],
+    ['k_avtal.md', ['03-Resurser/kunddokument/K Kund/K_avtal.md']],
+    ['k-dubbel.md', ['01-Projekt/k-dubbel.md', '03-Resurser/k-dubbel.md']],
+  ]),
+};
+/** Inget ärende finns, men teamet gör det: ett nummer blir aldrig en ärendelänk i K24. */
+const INGA_BEFINTLIGA = { team: new Set(['LOC']), arenden: new Set<string>() };
+
+/** De tio texterna och antalet dokumentposter som var och en ger. */
+const DOKTEXTER: [string, string, number][] = [
+  ['wikilänk', 'Se [[01-Projekt/k-kort/avtal]].', 1],
+  ['wikilänk med alias', 'Se [[02-Områden/ledningsgrupp/k-kort-plan|planen]].', 1],
+  ['full sökväg', 'Se 01-Projekt/k-kort/avtal.md här.', 1],
+  ['rent filnamn med en träff', 'Se k-unik.md här.', 1],
+  ['kunddokumentets originalnamn med spegel', 'Se K_avtal.docx här.', 1],
+  ['tvetydigt filnamn', 'Se k-dubbel.md här.', 0],
+  ['ej vitlistad sökväg', 'Se docs/k-spec.md här.', 0],
+  ['privat sökväg', 'Se journal/2026-10-01.md här.', 0],
+  ['sökväg i kod inline', 'Se `01-Projekt/k-kort/avtal.md` här.', 1],
+  ['sökväg i kursiv med understreck', 'Se _01-Projekt/k-kort/avtal.md_ här.', 1],
+];
+
+/** Dokumentsidans adresser i en markup, sorterade och utan dubbletter. */
+function dokumentlankarI(html: string): string[] {
+  return [...new Set([...html.matchAll(/href="(\/vy\/dok\/[^"]*)"/g)].map((m) => m[1]!))].sort();
+}
+
+/** Dokumentposternas adresser, sorterade, som renderaren skriver dem. */
+function postlankar(poster: { slag: string; rel?: string }[]): string[] {
+  return poster.flatMap((p) => (p.slag === 'dokument' ? [esc(markdownen.dokUrl(p.rel!))] : [])).sort();
+}
+
+/** Läsningen av markdown.ts: kroppen från funktionens rad till nästa rad som börjar med `}`. */
+function funktionskroppen(text: string, namn: string): string | null {
+  const rader = text.split('\n');
+  const start = rader.findIndex((r) => r.startsWith(`export function ${namn}(`));
+  if (start === -1) return null;
+  const slut = rader.findIndex((r, i) => i > start && r.startsWith('}'));
+  return rader.slice(start, slut === -1 ? rader.length : slut + 1).join('\n');
+}
+
+/** Fynden i dokumentreferensernas kropp: ett eget mönster, eller ingen körning av renderingen. */
+function egetMonster(kropp: string): string[] {
+  const fynd: string[] = [];
+  if (kropp.includes('RegExp')) fynd.push('RegExp');
+  const kod = kropp
+    .split('\n')
+    .filter((r) => !/^\s*(\/\/|\/\*|\*)/.test(r))
+    .join('\n');
+  if (/(^|[=(,:!&|?;{}\s])\/(?![/*\s])(?:\\.|[^/\\\n])+\/[dgimsuy]*/.test(kod)) fynd.push('reguljärt uttryck');
+  if (!kropp.includes('rendera(')) fynd.push('anropar inte rendera(');
+  return fynd;
+}
+
+describe('D-3/Story 11.5 AK 5: dokumentreferenserna är autolänkarens egna', () => {
+  it('K24 (AK 5): varje dokumentlänk i renderarens utdata är en post, och tvärtom, för tio texter', () => {
+    const fynd: string[] = [];
+    for (const [namn, text, antal] of DOKTEXTER) {
+      const html = renderaArendetext(text, DOKINDEX, INGA_BEFINTLIGA);
+      const poster = markdownen.dokumentreferenser((u) => renderaArendetext(text, DOKINDEX, u));
+      const lankar = dokumentlankarI(html);
+      if (JSON.stringify(lankar) !== JSON.stringify(postlankar(poster))) {
+        fynd.push(`${namn}: länkarna ${JSON.stringify(lankar)}, posterna ${JSON.stringify(poster)}`);
+      }
+      if (postlankar(poster).length !== antal) fynd.push(`${namn}: ${postlankar(poster).length} dokumentposter`);
+    }
+    expect(fynd).toEqual([]);
+
+    // Den privata texten ger en privat post och ingen dokumentpost; samma dokument två gånger ger en post.
+    const privat = DOKTEXTER.find(([namn]) => namn === 'privat sökväg')![1];
+    expect(markdownen.dokumentreferenser((u) => renderaArendetext(privat, DOKINDEX, u))).toEqual([{ slag: 'privat' }]);
+    const tvaGanger = 'Se 01-Projekt/k-kort/avtal.md och [[01-Projekt/k-kort/avtal]].';
+    expect(markdownen.dokumentreferenser((u) => renderaArendetext(tvaGanger, DOKINDEX, u))).toEqual([
+      { slag: 'dokument', rel: '01-Projekt/k-kort/avtal.md' },
+    ]);
+    // Spegeln är kunddokumentets sökväg, och renderaren länkar dit.
+    const spegel = DOKTEXTER.find(([namn]) => namn === 'kunddokumentets originalnamn med spegel')![1];
+    expect(markdownen.dokumentreferenser((u) => renderaArendetext(spegel, DOKINDEX, u))).toEqual([
+      { slag: 'dokument', rel: '03-Resurser/kunddokument/K Kund/K_avtal.md' },
+    ]);
+
+    // Statiskt: mönsterkonstanterna står en gång, och dokumentreferensernas kropp har inget eget mönster.
+    const kallan = readFileSync(path.join(ROT, 'src/http/vy/markdown.ts'), 'utf8');
+    expect(['WIKI', 'SOKVAG', 'FILNAMN'].map((namn) => kallan.split(`const ${namn} `).length - 1)).toEqual([1, 1, 1]);
+    const kropp = funktionskroppen(kallan, 'dokumentreferenser');
+    expect(kropp, 'dokumentreferenser finns').not.toBeNull();
+    expect(egetMonster(kropp!)).toEqual([]);
+
+    // Kontroll: likhetsprövningen fäller en påhittad lista utan wikilänkens dokument, och läsningen fäller en
+    // påhittad kropp med ett eget mönster.
+    const wiki = renderaArendetext(DOKTEXTER[0]![1], DOKINDEX, INGA_BEFINTLIGA);
+    expect(dokumentlankarI(wiki)).not.toEqual(postlankar([]));
+    expect(
+      egetMonster(['export function dokumentreferenser(text) {', '  return [...text.matchAll(/\\[\\[x\\]\\]/g)];', '}'].join('\n')),
+    ).toEqual(['reguljärt uttryck', 'anropar inte rendera(']);
+    expect(egetMonster('export function dokumentreferenser(rendera) {\n  rendera(new RegExp(WIKI));\n}')).toEqual(['RegExp']);
+  });
+});
+
+// ---- Story 11.5, Uppgift 3: Åtagande, Beslut och Insatser på kortet ---------------------------------------
+
+/** Ärendena i K25 med sina titlar, i lägenas ordning och sist ärendet utan åtagande. */
+const ATAGANDEKORT: [string, string][] = [
+  ['ag_reg', 'K registrerat åtagande'],
+  ['h', 'K huvudärendet'],
+  ['ag_hind', 'K hindrat åtagande'],
+  ['ag_genom', 'K genomfört åtagande'],
+  ['ag_avsl', 'K avslutat åtagande'],
+  ['tom', 'K tomt ärende'],
+];
+
+/** Åtagandet som get_atagande ger det: tiderna som ISO-text och jsonb-datan. */
+type Atagandesvar = {
+  revision: number;
+  foljs_upp: string | null;
+  overtaget_nar: string | null;
+  data: { resultat?: { kontrollerat: string } };
+};
+
+describe('D-3/Story 11.5 AK 2: åtagandet på kortet', () => {
+  it('K25 (AK 2): åtagandets fem lägen och ärendet utan, med varje delfält ordagrant', async () => {
+    const fore = await raknaRader('events');
+    // Motkontroll först: sidorna svarar 200 med rubriken för ärendet, före och efter koden.
+    const falten: Record<string, string> = {};
+    for (const [namn, titel] of ATAGANDEKORT) {
+      const html = await sida(A[namn]!);
+      expect(html).toContain(`<h1>${A[namn]} — ${titel}</h1>`);
+      falten[namn] = falt(html, 'atagande');
+    }
+    const svar = async (namn: string): Promise<Atagandesvar> =>
+      (await steg(hermes, 'get_atagande', { identifier: A[namn] })) as Atagandesvar;
+
+    // Registrerat: läget och tillhörigheten, uppföljningen och revisionen, utfallet och preciseringen,
+    // grunden med ärendelänken och nummeruppslaget, nästa steg och båda villkoren med sina fem delar.
+    const reg = await svar('ag_reg');
+    const nasta =
+      '<div class=text><b>Nästa steg (internt):</b> Bygg klart</div>' +
+      '<p>Nästa stegs grund: <code>beslut</code> · <code>153</code> · version <code>1</code></p>';
+    for (const rad of [
+      '<p>Läge: registrerat · tillhör Hermes</p>',
+      `<p>Följs upp: ${datumtid(new Date(reg.foljs_upp!))}</p><p>Revision: ${reg.revision}</p>`,
+      '<div class=text><b>Utfall:</b> K registrerat åtagande</div>',
+      '<div class=text><b>Precisering:</b> K preciseringen av utfallet</div>',
+      `<p>Grund: <code>arende</code> · <a href="/vy/arende/${A.n1}">${A.n1}</a>; ` +
+        '<code>arende</code> · <a href="/vy/sok?q=LOC-99998">LOC-99998</a> (finns inte)</p>',
+      nasta,
+      '<div class=text><b>Villkor 1:</b> K villkoret som är okänt</div>' +
+        '<p>Villkorets källa: <code>beslut</code> · <code>9301</code></p>' +
+        '<div class=text><b>Gäller:</b> K gäller hela året</div>' +
+        '<div class=text><b>Kontroll:</b> K kontrolleras i december</div><p>Utfall: okänt</p>',
+      '<div class=text><b>Villkor 2:</b> K villkoret som är uppfyllt</div>' +
+        '<p>Villkorets källa: <code>beslut</code> · <code>9302</code></p>' +
+        '<div class=text><b>Gäller:</b> K gäller till hösten</div>' +
+        '<div class=text><b>Kontroll:</b> K kontrolleras i augusti</div><p>Utfall: uppfyllt</p>' +
+        '<p>Villkorets belägg: <code>prov</code> · <code>k-villkor-belagg</code></p>',
+    ]) {
+      expect(falten.ag_reg, rad).toContain(rad);
+    }
+    expect(falten.ag_reg).not.toContain('Utförare:');
+    expect(lagestext(falten.ag_reg!)).toBeNull();
+
+    // Övertaget: utföraren med proveniens och när den tog över, och grunden av typen beslut.
+    const h = await svar('h');
+    expect(falten.h).toContain('<p>Läge: övertaget · tillhör Hermes</p>');
+    expect(falten.h).toContain(
+      `<p>Utförare: ${proveniens('manniska', 'david')} · tog över ${datumtid(new Date(h.overtaget_nar!))}</p>`,
+    );
+    expect(falten.h).toContain(`<p>Följs upp: ${datumtid(new Date(h.foljs_upp!))}</p><p>Revision: ${h.revision}</p>`);
+    expect(falten.h).toContain('<p>Grund: <code>beslut</code> · <code>153</code> · version <code>1</code></p>');
+    expect(falten.h).toContain(nasta);
+
+    // Hindrat: orsaken och hindrets belägg.
+    expect(falten.ag_hind).toContain('<p>Läge: hindrat · tillhör Hermes</p>');
+    expect(falten.ag_hind).toContain(
+      '<div class=text><b>Hinder:</b> K orsaken till hindret</div>' +
+        '<p>Hindrets belägg: <code>beslut</code> · <code>9303</code></p>',
+    );
+
+    // Genomfört: utföraren, resultatet med båda beläggen och kontrolltiden ordagrant, ingen uppföljning.
+    const genom = await svar('ag_genom');
+    expect(falten.ag_genom).toContain('<p>Läge: genomfört · tillhör Hermes</p>');
+    expect(falten.ag_genom).toContain(`<p>Utförare: ${proveniens('manniska', 'david')} · tog över `);
+    expect(falten.ag_genom).toContain(
+      '<div class=text><b>Resultat:</b> K sammanfattningen av resultatet</div>' +
+        '<p>Resultatets belägg: <code>prov</code> · <code>k-resultat-prov</code>; ' +
+        '<code>commit</code> · <code>k-resultat-commit</code></p>' +
+        `<p>Kontrollerat: ${genom.data.resultat!.kontrollerat}</p>`,
+    );
+    expect(falten.ag_genom).not.toContain('Följs upp:');
+
+    // Avslutat: avslutsskälet och dess grund.
+    expect(falten.ag_avsl).toContain('<p>Läge: avslutat · tillhör Hermes</p>');
+    expect(falten.ag_avsl).toContain(
+      '<div class=text><b>Avslutsskäl:</b> K skälet till avslutet</div>' +
+        '<p>Avslutsskälets grund: <code>beslut</code> · <code>9304</code></p>',
+    );
+
+    // Utan åtagande: lägestexten.
+    expect(lagestext(falten.tom!)).toBe(TEXT.atagande);
+
+    // Länken till det befintliga ärendet och nummeruppslaget svarar.
+    for (const lank of [`/vy/arende/${A.n1}`, '/vy/sok?q=LOC-99998']) {
+      expect((await request(app).get(lank)).status, lank).toBe(200);
+    }
+    expect(await raknaRader('events')).toBe(fore);
+  });
+});
+
+describe('D-3/Story 11.5 AK 3: besluten på kortet', () => {
+  it('K26 (AK 3): kopplade beslut med svarsversionerna, en version för ett okopplat beslut, och beslutstexten som lucka', async () => {
+    // Motkontroll först: sidorna svarar 200 med rubriken för ärendet.
+    const html = await sida(A.beslut!);
+    expect(html).toContain(`<h1>${A.beslut} — K beslut och svar</h1>`);
+    const tom = await sida(A.tom!);
+    expect(tom).toContain(`<h1>${A.tom} — K tomt ärende</h1>`);
+
+    const kd = await withTransaction((client) => hamtaArendekort(client, TENANT_ID, A.beslut!, () => []));
+    const kopplad = (id: number): string => datumtid(kd.beslut.find((b) => b.beslut_id === id)!.kopplad);
+    const tillampad = (hash: string): string => datumtid(kd.svarsversioner.find((v) => v.svar_hash === hash)!.tillampad);
+    const beslut = falt(html, 'beslut');
+    expect(beslut).toContain(
+      '<h2>Beslut (2)</h2>' +
+        `<p>beslut #54 · kopplat ${kopplad(54)}</p>` +
+        `<p>svarsversion 1 · tillämpad ${tillampad(HASH_54_V1)}</p>` +
+        `<p>svarsversion med hashen <code>${HASH_54.slice(0, 12)}</code> · tillämpad ${tillampad(HASH_54)}</p>` +
+        `<p>beslut #60 · kopplat ${kopplad(60)}</p>` +
+        '<p>beslut #61 · inte kopplat till ärendet (koppla_beslut)</p>' +
+        `<p>svarsversion med hashen <code>${HASH_61.slice(0, 12)}</code> · tillämpad ${tillampad(HASH_61)}</p>` +
+        `<p class=summering>${TEXT.beslutstext}</p></section>`,
+    );
+    expect(lagestext(beslut)).toBeNull();
+
+    // Utan beslut: lägestexten och antalet noll.
+    const ingen = falt(tom, 'beslut');
+    expect(ingen).toContain('<h2>Beslut (0)</h2>');
+    expect(lagestext(ingen)).toBe(TEXT.beslut);
+
+    // Funktionsnivå: utan kopplat beslut men med en version står versionen som det som ändå lästes, och efter
+    // den raden om beslutets text och Davids svar (granskningsfynd 6; K36 prövar klassen).
+    const utanKoppling = kortmodulen.beslutLage([], [{ beslut_id: 61, version: null, svar_hash: HASH_61, tillampad: new Date(NU) }]);
+    expect(utanKoppling).toEqual({
+      lage: 'inga',
+      text: TEXT.beslut,
+      delvis:
+        '<p>beslut #61 · inte kopplat till ärendet (koppla_beslut)</p>' +
+        `<p>svarsversion med hashen <code>${HASH_61.slice(0, 12)}</code> · tillämpad ${datumtid(new Date(NU))}</p>` +
+        `<p class=summering>${TEXT.beslutstext}</p>`,
+    });
+  });
+});
+
+describe('D-3/Story 11.5 AK 4: insatserna och svaret på kortet', () => {
+  it('K27 (AK 4): fyra insatser i sina lägen med källorna, och svaret ordagrant med den som svarade', async () => {
+    // Motkontroll först: sidan svarar 200 med rubriken för ärendet.
+    const html = await sida(A.ins!);
+    expect(html).toContain(`<h1>${A.ins} — K fyra insatser</h1>`);
+    const kd = await withTransaction((client) => hamtaArendekort(client, TENANT_ID, A.ins!, () => []));
+    const j2 = kd.insatser.find((i) => i.id === I.j2)!;
+    const insatser = falt(html, 'insatser');
+    expect(insatser).toContain('<h2>Insatser (4)</h2>');
+    for (const rad of [
+      '<h3>ägarbeslut · väntande · tillhör ägaren</h3>',
+      '<h3>ägarbeslut · svar mottaget · tillhör ägaren</h3>',
+      '<h3>ägarbeslut · uppskjuten · tillhör ägaren</h3>',
+      '<h3>ägarbeslut · återkallad · tillhör ägaren</h3>',
+      `<p>Insats <code>${I.j1}</code> · registrerad `,
+      '<div class=text><b>Utfall:</b> Riktningen är vald och arbetet kan fortsätta</div>',
+      '<div class=text><b>Begärd handling:</b> Välj mellan A och B</div>',
+      '<div class=text><b>Blockeringsgrund:</b> Tidigare besked avgör inte valet</div>',
+      '<div class=text><b>Blockeringsgrund:</b> Tidigare besked avgör inte valet\nUppskjuten: K väntar på underlaget</div>',
+      '<div class=text><b>Blockeringsgrund:</b> Tidigare besked avgör inte valet\nÅterkallad: K inte längre aktuell</div>',
+      `<p>Frist: ${datumtid(new Date(FRIST_J1))}</p>`,
+      `<p>Väckningstid: ${datumtid(new Date(VACKNING_J3))}</p>`,
+      '<p>Belägg: <code>beslut</code> · <code>9401</code></p>',
+      '<p>Handlingskontrakt: <code>hermes</code> · <code>beslutskoe --besvara</code> · <code>#153</code></p>',
+      '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-ins-k1</code></p>',
+      '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-ins-k2</code> · ' +
+        '<a href="https://example.com/k-kalla" rel="noreferrer noopener">länk</a></p>',
+      '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-ins-k3</code> · ' +
+        `<a href="/vy/arende/${A.n1}">${A.n1}</a> (tidigare Linear-länk)</p>`,
+      '<p>Källa: <code>arenden</code> · <code>atagande</code> · <code>k-ins-k4</code> · <code>javascript:alert(1)</code></p>',
+      '<p>Källa: <code>redovisning</code> · <code>mail</code> · <code>k-ins-k5</code></p>',
+      `<div class=text><b>Svar:</b> ${esc(SVARET)}</div>`,
+      `<p>Svarat av ${proveniens('manniska', 'david')} ${datumtid(j2.svar_nar!)} · ` +
+        `källa: svar på insats ${I.j2}, version 2</p>`,
+    ]) {
+      expect(insatser, rad).toContain(rad);
+    }
+    // Svaret står escapat med radbrytningen kvar, och inget skript och ingen javascript:-länk uppstår.
+    expect(esc(SVARET)).toContain('\nandra raden');
+    expect(insatser).not.toContain('<script');
+    expect(insatser).not.toMatch(/href\s*=\s*["']?\s*javascript:/i);
+    expect(lagestext(insatser)).toBeNull();
+
+    // Utan insatser: lägestexten och antalet noll.
+    const tom = falt(await sida(A.tom!), 'insatser');
+    expect(tom).toContain('<h2>Insatser (0)</h2>');
+    expect(lagestext(tom)).toBe(TEXT.insatser);
+  });
+});
+
+describe('D-3/Story 11.5 AK 9: escaping och läsning', () => {
+  it('K28 (AK 9): tecknen <script>, " och & står escapade i åtagandet och insatserna, och ingen visning skriver', async () => {
+    // Motkontroll först: sidan svarar 200 med rubriken för ärendet.
+    const html = await sida(A.fultkort!);
+    expect(html).toContain(`<h1>${A.fultkort} — K fult kort</h1>`);
+    expect(oescapat(html)).toEqual([]);
+    expect(html).not.toContain('<script');
+    const atagandet = falt(html, 'atagande');
+    expect(atagandet).toContain(`<div class=text><b>Nästa steg (internt):</b> ${esc(FULT)}</div>`);
+    expect(atagandet).toContain(`<div class=text><b>Villkor 1:</b> ${esc(FULT)}</div>`);
+    const insatserna = falt(html, 'insatser');
+    expect(insatserna).toContain(`<div class=text><b>Utfall:</b> ${esc(FULT)}</div>`);
+    expect(insatserna).toContain(`<code>${esc(FULT)}</code>`);
+
+    // Ingen GET skriver: tre sidor visade två gånger var.
+    const fore = await raknaRader('events');
+    for (const identifier of [A.ag_reg!, A.beslut!, A.ins!]) {
+      for (let n = 0; n < 2; n++) expect((await request(app).get(`/vy/arende/${identifier}`)).status, identifier).toBe(200);
+    }
+    expect(await raknaRader('events')).toBe(fore);
+  });
+});
+
+// ---- Story 11.5, Uppgift 4: Dokument och underlag, Mail och R5 på kortet -----------------------------------
+
+/** Länken till dokumentsidan som kortet skriver den: adressen ur dokUrl och sökvägen som länktext. */
+function dokumentlank(rel: string, text = rel): string {
+  return `<a href="${esc(markdownen.dokUrl(rel))}">${esc(text)}</a>`;
+}
+
+describe('D-3/Story 11.5 AK 5: dokument och underlag på kortet', () => {
+  it('K29 (AK 5): dokumenten i texterna en gång var med platserna, bilagorna och spegeln, eller saknas-texten', async () => {
+    const fore = await raknaRader('events');
+    // Motkontroll först: sidorna svarar 200 med rubriken för ärendet.
+    const html = await sida(A.dok!);
+    expect(html).toContain(`<h1>${A.dok} — K dokument och underlag</h1>`);
+    const dok2 = await sida(A.dok2!);
+    expect(dok2).toContain(`<h1>${A.dok2} — K dokument utan spegel</h1>`);
+
+    // Avtalet en gång, nämnt i beskrivningen och i kommentaren med skribentens proveniens; planen och
+    // kunddokumentets spegel ur beskrivningen; två bilagor; spegeln i valvet.
+    const kd = await withTransaction((client) => hamtaArendekort(client, TENANT_ID, A.dok!, () => []));
+    const kommentaren = kd.kommentarer[0]!;
+    const avtal = '01-Projekt/k-kort/avtal.md';
+    const spegel = `02-Områden/linear-arkiv/${A.dok}.md`;
+    const falten = falt(html, 'dokument');
+    expect(falten).toContain('<h2>Dokument och underlag</h2>');
+    for (const rad of [
+      `<p>${dokumentlank(avtal)} · nämns i beskrivningen · i kommentar ${datumtid(kommentaren.skapad)} av ` +
+        `${proveniens('agent', 'hermes')}</p>`,
+      `<p>${dokumentlank('02-Områden/ledningsgrupp/k-kort-plan.md')} · nämns i beskrivningen</p>`,
+      `<p>${dokumentlank('03-Resurser/kunddokument/K Kund/K_avtal.md')} · nämns i beskrivningen</p>`,
+      '<h3>Bilagor (2)</h3><ul class=lista role=list>',
+      `<p>${dokumentlank(spegel, 'Spegeln i valvet')} · ${spegel}</p>`,
+    ]) {
+      expect(falten, rad).toContain(rad);
+    }
+    expect(falten.split(esc(markdownen.dokUrl(avtal))).length - 1).toBe(1);
+    expect(falten.split('<li class=rad>').length - 1).toBe(2);
+    expect(lagestext(falten)).toBeNull();
+    // Varje länk till dokumentsidan i fältet svarar 200.
+    const lankar = [...falten.matchAll(/href="(\/vy\/dok\/[^"]*)"/g)].map((m) => m[1]!);
+    expect(lankar).toHaveLength(4);
+    for (const lank of lankar) expect((await request(app).get(lank)).status, lank).toBe(200);
+
+    // Utan spegel: det som ändå lästes, avtalets rad, står före notisen med ärendets eget nummer.
+    const utanSpegel = falt(dok2, 'dokument');
+    expect(utanSpegel).toContain(`<p>${dokumentlank(avtal)} · nämns i beskrivningen</p>`);
+    expect(lagestext(utanSpegel)).toBe(spegeltext(A.dok2!));
+    expect(utanSpegel.indexOf(avtal)).toBeLessThan(utanSpegel.indexOf('<p class=notis>'));
+
+    // Utan något: dokumentdelens mening, bilagornas mening och spegeltexten.
+    const tom = falt(await sida(A.tom!), 'dokument');
+    expect(tom).toContain(
+      `<p>${TEXT.ingaDokument}</p><h3>Bilagor (0)</h3><p>${TEXT.bilagor}</p>` +
+        `<p class=notis>${spegeltext(A.tom!)}</p></section>`,
+    );
+    expect(await raknaRader('events')).toBe(fore);
+  });
+});
+
+/**
+ * K30: var en privat sökväg står i en markup, i klartext, kodad, ledvis kodad eller som obsidian-formens
+ * kodade värde. Tom lista = ingen av sökvägarna står där.
+ */
+function privataTraffar(html: string): string[] {
+  const fynd: string[] = [];
+  for (const rel of Object.values(PRIVATA_FALL)) {
+    const former: [string, string][] = [
+      ['klartext', rel],
+      ['kodad', encodeURIComponent(rel)],
+      ['ledvis kodad', ledvis(rel)],
+      ['obsidian-formens värde', `file=${encodeURIComponent(rel.replace(/\.md$/, ''))}`],
+    ];
+    for (const [form, text] of former) if (html.includes(text)) fynd.push(`${rel} (${form})`);
+  }
+  // Granskningsfynd 2 och 3: bärarna i PRIVATA_TRASIGA som de står, och wikilänkens mål.
+  for (const del of TRASIGA_DELAR) if (html.includes(del)) fynd.push(`${JSON.stringify(del)} (som bäraren står)`);
+  return fynd;
+}
+
+describe('D-4/Story 11.5 AK 6: R5 på kortet', () => {
+  it('K30 (AK 6): inget fält utom kommentarens egen text nämner eller länkar en privat sökväg', async () => {
+    const fore = await raknaRader('events');
+    // Motkontroll först: sidan svarar 200, och kommentarens text står kvar med sökvägarna som text, utan
+    // länk till dokumentsidan.
+    const html = await sida(A.privat!);
+    expect(html).toContain(`<h1>${A.privat} — K privata källor</h1>`);
+    const kommentarer = falt(html, 'kommentarer');
+    for (const rel of Object.values(PRIVATA_FALL)) expect(kommentarer, rel).toContain(rel);
+    expect(kommentarer).not.toContain('/vy/dok/');
+
+    // Den fasta meningen: sex gånger i åtagandets grund och tre för PRIVATA_TRASIGA, tolv och tre i insatsens
+    // källor, och i Dokument och underlag för kommentaren, de sex bilagorna och två ur PRIVATA_TRASIGA. Mail har
+    // ingen referens på ärendet.
+    const antal = (avsnitt: string): number => avsnitt.split(PRIVAT).length - 1;
+    expect({
+      atagande: antal(falt(html, 'atagande')),
+      insatser: antal(falt(html, 'insatser')),
+      dokument: antal(falt(html, 'dokument')),
+      mail: lagestext(falt(html, 'mail')),
+    }).toEqual({
+      atagande: 6 + PRIVATA_TRASIGA.grund.length,
+      insatser: 12 + PRIVATA_TRASIGA.lankar.length,
+      dokument: 7 + PRIVATA_TRASIGA.bilagor.length,
+      mail: TEXT.mail,
+    });
+
+    // Kortet utom fältet Kommentarer nämner ingen av sökvägarna i någon form, och dokumentsidan svarar 404.
+    const kortet = kortdelen(html).replace(kommentarer, '');
+    expect(privataTraffar(kortet)).toEqual([]);
+    for (const [rel] of PRIVATA_DOKUMENT) {
+      expect((await request(app).get(`/vy/dok/${ledvis(rel)}`)).status, rel).toBe(404);
+    }
+
+    // Kontroll: samma sökning i hela sidan, med Kommentarer kvar, hittar varje sökväg, och sökningen hittar
+    // varje bärare ur PRIVATA_TRASIGA som den står.
+    const hela = privataTraffar(html);
+    for (const rel of Object.values(PRIVATA_FALL)) {
+      expect(hela.some((t) => t.startsWith(`${rel} (`)), rel).toBe(true);
+    }
+    for (const del of TRASIGA_DELAR) expect(privataTraffar(`<code>x ${del} y</code>`), JSON.stringify(del)).not.toEqual([]);
+    expect(await raknaRader('events')).toBe(fore);
+  });
+});
+
+/** Står en länk i markupen? Mail får aldrig någon. */
+function harLank(html: string): boolean {
+  return html.includes('<a');
+}
+
+describe('D-4/Story 11.5 AK 7: mail bara som referens', () => {
+  it('K31 (AK 7): mailreferenserna som «mail · id» utan länk, luckan utan referenser, och privata mailreferenser ersätts', async () => {
+    // Motkontroll först: sidan svarar 200 med rubriken för ärendet.
+    const html = await sida(A.mail!);
+    expect(html).toContain(`<h1>${A.mail} — K mailreferenser</h1>`);
+    const kd = await withTransaction((client) => hamtaArendekort(client, TENANT_ID, A.mail!, () => []));
+    const insatsen = kd.insatser[0]!.id;
+    const mail = falt(html, 'mail');
+    expect(mail).toContain(
+      '<h2>Mail</h2><p>mail · <code>k-mail-1</code> · i åtagandet</p>' +
+        `<p>mail · <code>k-mail-2</code> · på insats <code>${insatsen}</code></p>` +
+        `<p class=summering>${TEXT.mailrad}</p></section>`,
+    );
+    expect(harLank(mail)).toBe(false);
+
+    // Utan mailreferenser: luckan, utan länk.
+    const tom = falt(await sida(A.tom!), 'mail');
+    expect(lagestext(tom)).toBe(TEXT.mail);
+    expect(harLank(tom)).toBe(false);
+
+    // Funktionsnivå: en privat mailreferens i åtagandets grund och en mailkälla med ett privat objekt-id.
+    const lage = kortmodulen.mailLage(
+      {
+        lage: 'registrerat',
+        tillhor: 'hermes',
+        utforare_typ: null,
+        utforare_namn: null,
+        overtaget_nar: null,
+        foljs_upp: null,
+        revision: 1,
+        data: { grund: [{ typ: 'mail', id: 'journal/2026-10-01.md' }], nasta: INTERNT, villkor: [] },
+      },
+      [
+        {
+          id: 'k-mailinsats',
+          belagg: [],
+          kallor: [{ system: 'redovisning', objekttyp: 'mail', objekt_id: 'jag.md', objekt_version: null, lank: null }],
+        },
+      ],
+    );
+    expect(lage.lage).toBe('varde');
+    const innehall = lage.lage === 'varde' ? lage.html : '';
+    expect(innehall).toContain(`<p>${PRIVAT} · i åtagandet</p>`);
+    expect(innehall).toContain(`<p>${PRIVAT} · på insats <code>k-mailinsats</code></p>`);
+    expect(harLank(innehall)).toBe(false);
+    expect([innehall.includes('journal/2026-10-01.md'), innehall.includes('jag.md')]).toEqual([false, false]);
+
+    // Kontroll: länkprövningen fäller en påhittad mailrad med en länk.
+    expect(harLank('<p>mail · <a href="https://example.com/k-mail">k-mail-1</a> · i åtagandet</p>')).toBe(true);
+  });
+});
+
+// ---- Story 11.5, Uppgift 5: inga nya åtkomster ----------------------------------------------------------
+
+/** Det som kortets modul och läsmodellen aldrig gör: hämtar, läser en fil eller läser miljön. Kommentarer räknas. */
+const ATKOMSTER: [string, RegExp][] = [
+  ['fetch(', /\bfetch\(/],
+  ['readFile', /readFile/],
+  ['process.env', /process\.env/],
+];
+
+/** Fynden i en källtext: en av formerna ovan, eller en importsats ur konfigurationen eller ett node:-paket. */
+function atkomstfel(text: string): string[] {
+  const fel = ATKOMSTER.filter(([, monster]) => monster.test(text)).map(([namn]) => namn);
+  for (const sats of text.match(/^import\b[^;]+;/gm) ?? []) {
+    const kalla = /['"]([^'"]+)['"];$/.exec(sats)?.[1] ?? '';
+    if (kalla.startsWith('node:') || /(^|\/)config\.js$/.test(kalla)) fel.push(`importerar ${kalla}`);
+  }
+  return fel;
+}
+
+/** EnvSchema:s nycklar, avskrivna när provet skrevs: berättelsen lägger ingen konfigurationsvariabel. */
+const MILJONYCKLAR = [
+  'NODE_ENV',
+  'PORT',
+  'HOST',
+  'DATABASE_URL',
+  'DATABASE_ADMIN_URL',
+  'RATE_LIMIT_PER_MINUTE',
+  'VAULT_PATH',
+  'CRM_KONF_PATH',
+  'VY_PUBLIK_URL',
+  'ARENDEN_API_URL',
+  'ARENDEN_API_KEY',
+];
+
+describe('D-4/Story 11.5 AK 8: inga nya åtkomster', () => {
+  it('K32 (AK 8) (R): kortet och läsmodellen hämtar inget, läser ingen fil och ingen miljö, och konfigurationen är oförändrad', () => {
+    for (const fil of ['src/http/vy/kort.ts', 'src/services/arendekort.ts']) {
+      expect(atkomstfel(readFileSync(path.join(ROT, fil), 'utf8')), fil).toEqual([]);
+    }
+    expect(Object.keys(EnvSchema.shape).sort()).toEqual([...MILJONYCKLAR].sort());
+
+    // Kontroll: hjälparen fäller en påhittad hämtning, en import ur node:fs/promises och en ur konfigurationen.
+    expect(atkomstfel('const svar = await fetch(adress);')).toEqual(['fetch(']);
+    expect(atkomstfel("import { readFile } from 'node:fs/promises';\n")).toEqual([
+      'readFile',
+      'importerar node:fs/promises',
+    ]);
+    expect(atkomstfel("import { config } from '../../config.js';\n")).toEqual(['importerar ../../config.js']);
+  });
+});
+
+// ---- Story 11.5, ur code-review: varje väg in, mailens rubrik, beslutstexten, delar i fel form och bärarna ----
+
+/** Ett fälts markup i varje läge: värdet, eller det som ändå lästes och lägestexten. */
+function lagesmarkup(lage: { lage: string; html?: string; text?: string; delvis?: string | null }): string {
+  return lage.lage === 'varde' ? (lage.html ?? '') : `${lage.delvis ?? ''}<p class=notis>${esc(lage.text)}</p>`;
+}
+
+/** Ett åtagande på funktionsnivå med jsonb-datan `data`. */
+function atagandeobjekt(data: unknown): Record<string, unknown> {
+  return {
+    lage: 'registrerat',
+    tillhor: 'hermes',
+    utforare_typ: null,
+    utforare_namn: null,
+    overtaget_nar: null,
+    foljs_upp: null,
+    revision: 1,
+    data,
+  };
+}
+
+/** En insats på funktionsnivå med standardvärden för det som fallet inte anger. */
+function insatsobjekt(falt: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: 'k-funktionsinsats',
+    typ: 'agarbeslut',
+    tillhor: 'agare',
+    lage: 'vantande',
+    frist: null,
+    vackningstid: null,
+    utfall: 'K utfallet',
+    begard_handling: 'K den begärda handlingen',
+    blockeringsgrund: 'K blockeringsgrunden',
+    belagg: [],
+    version: 1,
+    handlingskontrakt: { system: 'arenden', kommando: 'beslutskoe --besvara', objekt: '#153' },
+    svar_text: null,
+    svar_aktor: null,
+    svar_nar: null,
+    skapad: new Date(NU),
+    kallor: [],
+    ...falt,
+  };
+}
+
+/** K34:s privata sökväg och ett vitlistat dokument vars sökväg har ett privat led. */
+const BARARPRIVAT = 'journal/2026-10-01.md';
+const HEMLIGT_INDEX: Dokumentindex = { filnamn: new Map([['k-hemlig.md', ['01-Projekt/journal/k-hemlig.md']]]) };
+
+/** Fynden för en bärare: den fasta meningen saknas, eller sökvägen står kvar. Tom lista = rätt. */
+function bararfynd(namn: string, html: string): string[] {
+  const fynd: string[] = [];
+  if (!html.includes(PRIVAT)) fynd.push(`${namn}: ingen fast mening`);
+  if (/journal|k-hemlig/.test(html)) fynd.push(`${namn}: sökvägen står kvar`);
+  return fynd;
+}
+
+describe('D-4/Story 11.5 AK 6: varje väg in frågar privatKalla', () => {
+  it('K34 (AK 6): varje bärare som visar en referens, en källa, ett kontrakt, en bilaga, en mailreferens eller ett dokument ersätter en privat sökväg', () => {
+    const fall: [string, string][] = [];
+    // referens(): typen, id:t, versionen och dokumentmålet som id:t slås upp till.
+    for (const [namn, ref] of [
+      ['referensens typ', { typ: BARARPRIVAT, id: 'k-1' }],
+      ['referensens id', { typ: 'beslut', id: BARARPRIVAT }],
+      ['referensens version', { typ: 'beslut', id: 'k-1', version: BARARPRIVAT }],
+      ['referensens dokumentmål', { typ: 'dokument', id: 'k-hemlig.md' }],
+    ] as const) {
+      fall.push([namn, kortmodulen.referens(ref, HEMLIGT_INDEX, REFBEFINTLIGA)]);
+    }
+    // kallrad(): vart och ett av källans fem fält.
+    for (const f of ['system', 'objekttyp', 'objekt_id', 'objekt_version', 'lank']) {
+      fall.push([`källans ${f}`, kortmodulen.kallrad(kalla({ [f]: BARARPRIVAT }), REFBEFINTLIGA)]);
+    }
+    // Handlingskontraktets rad i insatserLage(): system, kommando och objekt, var för sig.
+    for (const d of ['system', 'kommando', 'objekt']) {
+      const kontrakt = { system: 'arenden', kommando: 'beslutskoe --besvara', objekt: '#153', [d]: BARARPRIVAT };
+      const html = lagesmarkup(kortmodulen.insatserLage([insatsobjekt({ handlingskontrakt: kontrakt })], INDEX, REFBEFINTLIGA));
+      fall.push([`handlingskontraktets ${d}`, html]);
+      expect(html, d).toContain(`<p>Handlingskontrakt: ${PRIVAT}</p>`);
+    }
+    // Bilageraden i dokumentLage(): adressen, titeln och undertiteln, var för sig med neutrala andra fält.
+    // Ruttens rad bär bilagans fält, så att en rad som inte ersätts syns i fynden.
+    for (const [f, bilaga] of [
+      ['adress', { url: `https://example.com/fil/${BARARPRIVAT}`, titel: 'K neutral bilaga', undertitel: null }],
+      ['titel', { url: 'https://example.com/k-neutral', titel: `Ur ${BARARPRIVAT}`, undertitel: null }],
+      ['undertitel', { url: 'https://example.com/k-neutral', titel: 'K neutral bilaga', undertitel: BARARPRIVAT }],
+    ] as const) {
+      const rad = `<li class=rad><div class=huvud>${esc(bilaga.titel)} ${esc(bilaga.url)}</div><div class=text>${esc(bilaga.undertitel)}</div></li>`;
+      const html = lagesmarkup(kortmodulen.dokumentLage({ identifier: 'LOC-1', description: '' }, [], [bilaga], [rad], INDEX));
+      fall.push([`bilagans ${f}`, html]);
+      expect(html, f).toContain(`<li class=rad><div class=huvud><span>${PRIVAT}</span></div></li>`);
+    }
+    // mailrad() i mailLage(): mailreferensens id och rubrik i åtagandet, ett mailbelägg och en mailkällas objekt-id.
+    fall.push([
+      'mailreferensens id',
+      lagesmarkup(kortmodulen.mailLage(atagandeobjekt({ grund: [{ typ: 'mail', id: BARARPRIVAT }] }), [])),
+    ]);
+    fall.push([
+      'mailreferensens rubrik',
+      lagesmarkup(
+        kortmodulen.mailLage(atagandeobjekt({ grund: [{ typ: 'mail', id: 'k-mail-r', rubrik: `Ur ${BARARPRIVAT}` }] }), []),
+      ),
+    ]);
+    fall.push([
+      'mailbelägget på en insats',
+      lagesmarkup(kortmodulen.mailLage(null, [insatsobjekt({ belagg: [{ typ: 'mail', id: BARARPRIVAT }] })])),
+    ]);
+    fall.push([
+      'mailkällans objekt-id',
+      lagesmarkup(kortmodulen.mailLage(null, [insatsobjekt({ kallor: [kalla({ objekttyp: 'mail', objekt_id: BARARPRIVAT })] })])),
+    ]);
+    // dokumentreferenser() genom dokumentLage(): ett mål som är privat, och ett vitlistat mål vars sökväg har
+    // ett privat led.
+    for (const [namn, beskrivning] of [
+      ['dokumentets mål', `Se ${BARARPRIVAT} här.`],
+      ['dokumentets sökväg', 'Se k-hemlig.md här.'],
+    ] as const) {
+      fall.push([
+        namn,
+        lagesmarkup(kortmodulen.dokumentLage({ identifier: 'LOC-1', description: beskrivning }, [], [], [], HEMLIGT_INDEX)),
+      ]);
+    }
+
+    expect(fall).toHaveLength(4 + 5 + 3 + 3 + 4 + 2);
+    expect(fall.flatMap(([namn, html]) => bararfynd(namn, html))).toEqual([]);
+
+    // Kontroll: fynden fäller en rad där sökvägen står kvar och en rad utan den fasta meningen.
+    expect(bararfynd('påhittad', `<p>${PRIVAT}</p><p>${BARARPRIVAT}</p>`)).toEqual(['påhittad: sökvägen står kvar']);
+    expect(bararfynd('påhittad', '<p>Källa: <code>valv</code></p>')).toEqual(['påhittad: ingen fast mening']);
+  });
+});
+
+describe('D-4/Story 11.5 AK 7: mailens rubrik', () => {
+  it('K35 (AK 7): en mailreferens som själv bär en rubrik visar den escapad och utan länk, och utan rubrik står raden som förut', () => {
+    const lage = kortmodulen.mailLage(
+      atagandeobjekt({
+        grund: [
+          { typ: 'mail', id: 'k-mail-r1', rubrik: `K offerten ${FULT}` },
+          { typ: 'mail', id: 'k-mail-r2', rubrik: 7 },
+          { typ: 'mail', id: 'k-mail-r3', rubrik: '  ' },
+          { typ: 'mail', id: 'k-mail-r4' },
+        ],
+      }),
+      [
+        insatsobjekt({
+          id: 'k-mailinsats',
+          belagg: [{ typ: 'mail', id: 'k-mail-r5', rubrik: 'K svaret på offerten' }],
+          kallor: [kalla({ system: 'redovisning', objekttyp: 'mail', objekt_id: 'k-mail-r6' })],
+        }),
+      ],
+    );
+    expect(lage.lage).toBe('varde');
+    const html = lagesmarkup(lage);
+    for (const rad of [
+      `<p>mail · <code>k-mail-r1</code> · ${esc(`K offerten ${FULT}`)} · i åtagandet</p>`,
+      '<p>mail · <code>k-mail-r2</code> · i åtagandet</p>',
+      '<p>mail · <code>k-mail-r3</code> · i åtagandet</p>',
+      '<p>mail · <code>k-mail-r4</code> · i åtagandet</p>',
+      '<p>mail · <code>k-mail-r5</code> · K svaret på offerten · på insats <code>k-mailinsats</code></p>',
+      '<p>mail · <code>k-mail-r6</code> · på insats <code>k-mailinsats</code></p>',
+      `<p class=summering>${TEXT.mailrad}</p>`,
+    ]) {
+      expect(html, rad).toContain(rad);
+    }
+    expect(harLank(html)).toBe(false);
+    expect(oescapat(html)).toEqual([]);
+    // Kontroll: rubriken står bara där referensen bär en som text.
+    expect(html.split(' · K ').length - 1).toBe(2);
+  });
+});
+
+describe('D-3/Story 11.5 AK 3: beslutstexten står efter varje beslut som visas', () => {
+  it('K36 (AK 3): raden om beslutets text och Davids svar står en gång efter besluten, kopplade eller inte, och inte utan beslut', () => {
+    const tid = new Date(NU);
+    const kopplat = [{ beslut_id: 71, kopplad: tid }];
+    const okopplat = [{ beslut_id: 72, version: 1, svar_hash: HASH_61, tillampad: tid }];
+    const summering = `<p class=summering>${TEXT.beslutstext}</p>`;
+    const fall: [string, ReturnType<typeof kortmodulen.beslutLage>, number][] = [
+      ['ett kopplat beslut', kortmodulen.beslutLage(kopplat, []), 1],
+      ['bara en version för ett okopplat beslut', kortmodulen.beslutLage([], okopplat), 1],
+      ['ett kopplat och ett okopplat', kortmodulen.beslutLage(kopplat, okopplat), 1],
+      ['inget beslut', kortmodulen.beslutLage([], []), 0],
+    ];
+    for (const [namn, lage, antal] of fall) {
+      const html = lagesmarkup(lage);
+      expect(html.split(summering).length - 1, namn).toBe(antal);
+      // Raden står efter det sista beslutet som visas.
+      if (antal > 0) expect(html.indexOf(summering), namn).toBeGreaterThan(html.lastIndexOf('<p>beslut #'));
+    }
+    expect(fall.map(([, lage]) => lage.lage)).toEqual(['varde', 'inga', 'varde', 'inga']);
+  });
+});
+
+/** Raden för en del i fel form (Dev Notes → Texterna har ingen; texten följer OKAND_FORM). */
+const OKAND_DEL = 'Uppgift i en form som kortet inte läser — visas inte på kortet.';
+
+describe('D-3/Story 11.5 AK 2 och 4: en del i fel form tappas aldrig i tysthet', () => {
+  it('K37 (AK 2 och AK 4): varje del av åtagandet och insatsen som finns men har fel form står med sin etikett och raden om formen', () => {
+    const fel = (etikett: string): string => `<p>${etikett}: ${OKAND_DEL}</p>`;
+    const villkor = (n: number): Record<string, unknown> => ({
+      text: `K villkor ${n}`,
+      kalla: GRUND,
+      galler: 'K gäller',
+      kontroll: 'K kontroll',
+      utfall: 'okant',
+    });
+    const fall: [string, unknown, string[]][] = [
+      ['uppgifterna är inget objekt', 'en text', [fel('Åtagandets uppgifter')]],
+      [
+        'varje del i fel form',
+        {
+          utfall_precisering: 42,
+          grund: { typ: 'beslut', id: '1' },
+          nasta: 'i morgon',
+          villkor: [villkor(1), 'inte ett villkor', { ...villkor(3), utfall: 'kanske' }],
+          hinder: ['inte', 'ett', 'objekt'],
+          resultat: { sammanfattning: 'K resultatet', belagg: 'inte en lista', kontrollerat: 7 },
+          avslutsskal: 3,
+        },
+        [
+          fel('Precisering'),
+          fel('Grund'),
+          fel('Nästa steg'),
+          '<div class=text><b>Villkor 1:</b> K villkor 1</div>',
+          fel('Villkor 2'),
+          '<div class=text><b>Villkor 3:</b> K villkor 3</div>',
+          fel('Utfall'),
+          fel('Hinder'),
+          '<div class=text><b>Resultat:</b> K resultatet</div>',
+          fel('Resultatets belägg'),
+          fel('Kontrollerat'),
+          fel('Avslutsskäl'),
+        ],
+      ],
+      [
+        'villkoren är ingen lista och nästa stegs slag är okänt',
+        { nasta: { handling: 'K nästa', slag: 'snart', grund: GRUND }, villkor: { text: 'K ensamt villkor' } },
+        ['<div class=text><b>Nästa steg:</b> K nästa</div>', fel('Nästa stegs slag'), fel('Villkor')],
+      ],
+    ];
+    const fynd: string[] = [];
+    for (const [namn, data, rader] of fall) {
+      const html = lagesmarkup(kortmodulen.atagandeLage({ title: 'K titeln' }, atagandeobjekt(data), INDEX, REFBEFINTLIGA));
+      for (const rad of rader) if (!html.includes(rad)) fynd.push(`${namn}: ${rad}`);
+    }
+    // Insatsen: belägg som inte är en lista, ett kontrakt som inte är ett objekt och ett med en del som inte är text.
+    for (const [namn, falt, rad] of [
+      ['belägg', { belagg: { typ: 'beslut', id: '1' } }, fel('Belägg')],
+      ['kontrakt', { handlingskontrakt: 'beslutskoe --besvara' }, fel('Handlingskontrakt')],
+      ['kontraktets del', { handlingskontrakt: { system: 'arenden', kommando: 5, objekt: '#1' } }, fel('Handlingskontrakt')],
+    ] as const) {
+      const html = lagesmarkup(kortmodulen.insatserLage([insatsobjekt(falt)], INDEX, REFBEFINTLIGA));
+      if (!html.includes(rad)) fynd.push(`insatsens ${namn}: ${rad}`);
+    }
+    expect(fynd).toEqual([]);
+
+    // Kontroll: ett åtagande och en insats i rätt form har ingen rad om formen.
+    const ratt = lagesmarkup(
+      kortmodulen.atagandeLage(
+        { title: 'K titeln' },
+        atagandeobjekt({ grund: [GRUND], nasta: INTERNT, villkor: villkoren(2) }),
+        INDEX,
+        REFBEFINTLIGA,
+      ),
+    );
+    expect(ratt).toContain('<div class=text><b>Villkor 2:</b> K villkor 2</div>');
+    expect(ratt).not.toContain(OKAND_DEL);
+    expect(lagesmarkup(kortmodulen.insatserLage([insatsobjekt({})], INDEX, REFBEFINTLIGA))).not.toContain(OKAND_DEL);
+  });
+});
+
+/** Ett åtagandes jsonb med referensen ref(namn) i varje bärare i REFERENSBARARE, i bärarens form. */
+function dataMedReferenser(ref: (namn: string) => unknown): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const b of arendekortet.REFERENSBARARE) {
+    const namn = arendekortet.bararnamn(b);
+    const varde = b.form === 'lista' ? [ref(namn)] : ref(namn);
+    if (b.del === null) {
+      data[b.nyckel] = varde;
+      continue;
+    }
+    const fore = data[b.del.nyckel] as Record<string, unknown> | Record<string, unknown>[] | undefined;
+    const del = (Array.isArray(fore) ? fore[0] : fore) ?? {};
+    del[b.nyckel] = varde;
+    data[b.del.nyckel] = b.del.form === 'lista' ? [del] : del;
+  }
+  return data;
+}
+
+describe('D-4/Story 11.5 AK 1, 2 och 7: den slutna listan över åtagandets referensbärare', () => {
+  it('K38 (AK 1, AK 2 och AK 7): varje bärare i REFERENSBARARE visas i Åtagande, står i Mail och räknas av mätningen under sitt namn', async () => {
+    const namn = arendekortet.REFERENSBARARE.map((b) => arendekortet.bararnamn(b));
+    expect(namn).toEqual([
+      'grund',
+      'nasta.grund',
+      'villkor.kalla',
+      'villkor.belagg',
+      'hinder.belagg',
+      'resultat.belagg',
+      'avslutsskal.grund',
+    ]);
+
+    // Funktionsnivå: ett åtagande med en mailreferens i varje bärare, byggt ur listan. Åtagande visar var och
+    // en exakt en gång och i rätt form, och Mail listar var och en.
+    const data = dataMedReferenser((n) => ({ typ: 'mail', id: `kb-${n}` }));
+    const atagandet = lagesmarkup(kortmodulen.atagandeLage({ title: 'K titeln' }, atagandeobjekt(data), INDEX, REFBEFINTLIGA));
+    const mail = lagesmarkup(kortmodulen.mailLage(atagandeobjekt(data), []));
+    const fynd: string[] = [];
+    for (const n of namn) {
+      if (atagandet.split(`<code>mail</code> · <code>kb-${n}</code>`).length - 1 !== 1) fynd.push(`Åtagande: ${n}`);
+      if (!mail.includes(`<p>mail · <code>kb-${n}</code> · i åtagandet</p>`)) fynd.push(`Mail: ${n}`);
+    }
+    expect(fynd).toEqual([]);
+    expect([atagandet.includes(OKAND_DEL), atagandet.includes(OKAND_FORM)]).toEqual([false, false]);
+
+    // I databasen: ärenden med en referens av typen kb-<bärare> i varje bärare, genom actions. Mätningen räknar
+    // varje sådan typ under exakt sin bärare, och kortet visar den i fältet Åtagande.
+    const mat = (): Promise<Matning> =>
+      withTransaction(async (client) => {
+        await client.query('SET TRANSACTION READ ONLY');
+        return arendekortet.matReferenstyper(client, TENANT_ID);
+      });
+    const revisionen = async (identifier: string): Promise<number> =>
+      (await steg(hermes, 'get_atagande', { identifier })).revision as number;
+    const ref = (n: string): Record<string, string> => ({ typ: `kb-${n}`, id: `k-${n}` });
+    const fore = matkarta(await mat());
+
+    const reg = await nytt('K bärarna i registreringen');
+    await steg(hermes, 'registrera_atagande', {
+      identifier: reg,
+      grund: [ref('grund')],
+      nasta: { handling: 'K nästa steg', slag: 'internt', grund: ref('nasta.grund') },
+      foljs_upp: UPPFOLJNING,
+      villkor: [
+        {
+          text: 'K villkoret',
+          kalla: ref('villkor.kalla'),
+          galler: 'K gäller',
+          kontroll: 'K kontroll',
+          utfall: 'uppfyllt',
+          belagg: ref('villkor.belagg'),
+        },
+      ],
+    });
+    const hind = await nytt('K bäraren i hindret');
+    await atagande(hind);
+    await steg(hermes, 'hindra_atagande', {
+      identifier: hind,
+      orsak: 'K orsaken',
+      belagg: ref('hinder.belagg'),
+      nasta: INTERNT,
+      foljs_upp: UPPFOLJNING,
+      forvantad_revision: await revisionen(hind),
+    });
+    const genom = await nytt('K bäraren i resultatet');
+    await atagande(genom);
+    await steg(david, 'ta_over_atagande', {
+      identifier: genom,
+      nasta: INTERNT,
+      foljs_upp: UPPFOLJNING,
+      forvantad_revision: await revisionen(genom),
+    });
+    await steg(hermes, 'redovisa_resultat', {
+      identifier: genom,
+      sammanfattning: 'K sammanfattningen',
+      belagg: [ref('resultat.belagg')],
+      forvantad_revision: await revisionen(genom),
+    });
+    const avsl = await nytt('K bäraren i avslutet');
+    await atagande(avsl);
+    await steg(hermes, 'avsluta_atagande', {
+      identifier: avsl,
+      text: 'K skälet',
+      grund: ref('avslutsskal.grund'),
+      forvantad_revision: await revisionen(avsl),
+    });
+
+    const delta = skillnad(fore, matkarta(await mat()));
+    const kb = Object.fromEntries(Object.entries(delta).filter(([nyckel]) => nyckel.split('\t')[2]?.startsWith('kb-')));
+    expect(kb).toEqual(Object.fromEntries(namn.map((n) => [`referens\t${n}\tkb-${n}`, 1])));
+
+    const pa: Record<string, string> = {
+      grund: reg,
+      'nasta.grund': reg,
+      'villkor.kalla': reg,
+      'villkor.belagg': reg,
+      'hinder.belagg': hind,
+      'resultat.belagg': genom,
+      'avslutsskal.grund': avsl,
+    };
+    expect(Object.keys(pa).sort()).toEqual([...namn].sort());
+    for (const n of namn) {
+      expect(falt(await sida(pa[n]!), 'atagande'), n).toContain(`<code>kb-${n}</code> · <code>k-${n}</code>`);
+    }
   });
 });

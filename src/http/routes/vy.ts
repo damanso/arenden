@@ -51,7 +51,7 @@ import {
 import type { Kommentar } from '../../services/kommentarer.js';
 import { crmKort, hamtaCrm } from '../vy/crm.js';
 import { hamtaIndex, lasDokument, sakerSokvag, type Dokumentindex } from '../vy/dokument.js';
-import { kortet } from '../vy/kort.js';
+import { atagandeLage, insatserLage, kortet } from '../vy/kort.js';
 import {
   arendekandidater,
   arendereferens,
@@ -978,10 +978,16 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // D-3, D-5, B-23 (Story 11.4): all kortets data hämtas av läsmodellen hamtaArendekort, i en
   // transaktion och med ett antal frågor som inte beror på antalet poster. D-2 (Story 11.2):
   // varje ärendenummer på sidan slås upp i ETT anrop, och kandidaterna är de nummer som sidans
-  // egen rendering slår upp; läsmodellen anropar renderingen en gång.
+  // egen rendering slår upp; läsmodellen anropar renderingen en gång. D-3, D-4 (Story 11.5):
+  // renderingen omfattar också åtagandets referenser och insatsernas källor, som kan länka till
+  // ett ärende, genom samma lägesfunktioner som kortet sedan visar dem med.
   const kort = await withTransaction((client) =>
     hamtaArendekort(client, TENANT_ID, identifier, (t) =>
-      arendekandidater((uppslag) => arendetexter(t.arende, t.kommentarer, t.bilagor, index, uppslag))),
+      arendekandidater((uppslag) => {
+        arendetexter(t.arende, t.kommentarer, t.bilagor, index, uppslag);
+        atagandeLage(t.arende, t.atagande, index, uppslag);
+        insatserLage(t.insatser, index, uppslag);
+      })),
   ).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
     if (err instanceof NotFoundError) return null;
@@ -1079,6 +1085,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         // AK 3: kundens läge. Utan koppling slås CRM inte upp; ett uppslag utan svar ger null.
         crm: crmSvar === undefined ? 'okopplat' : crmSvar === null ? 'svarade_inte' : 'svarade',
         namnda,
+        // Story 11.5: dokumentindexet ur cachen ovan, för referenserna och dokumenten på kortet.
+        index,
         rader: {
           beskrivning: `<div class=text>${texter.beskrivning}</div>`,
           bilagor: texter.bilagor,

@@ -46,9 +46,12 @@ async function steg(action: string, input: Record<string, unknown>): Promise<Rec
   return svar.body.result as Record<string, unknown>;
 }
 
-/** Bilagornas avsnitt på ärendesidan: från rubriken till första </ul> därefter. */
+/**
+ * Bilagornas avsnitt på ärendesidan: från rubriken till första </ul> därefter. Sedan Story 11.5 står
+ * bilagorna under fältet Dokument och underlag, och rubriken är h3; raderna och länkarna är desamma.
+ */
 function bilagorna(html: string): string {
-  const start = html.indexOf('<h2>Bilagor (');
+  const start = html.indexOf('<h3>Bilagor (');
   if (start === -1) throw new Error('bilagornas rubrik saknas på sidan');
   const slut = html.indexOf('</ul>', start);
   return html.slice(start, slut === -1 ? html.length : slut);

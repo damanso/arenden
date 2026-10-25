@@ -37,9 +37,17 @@
 // arendereferens är den enda funktionen som gör ett nummer till markup, och
 // därför också den enda som samlar kandidaterna: anroparen kör samma rendering
 // först med en insamling (arendekandidater) och sedan med de befintliga numren.
+//
+// D-3, D-4, B-25 (Story 11.5): dokumenten som en text nämner tas fram på samma
+// sätt. dokumentlank och spegellank är de enda som gör ett dokument till en
+// länk, och under en insamling antecknar de varje mål de slår upp, med det de
+// länkar till. dokumentreferenser kör sidans egen rendering med en insamling och
+// har inget eget mönster, så varje dokumentlänk som renderaren skriver är en
+// dokumentpost och tvärtom. Ett mål i ett privat område (privatKalla i
+// dokument.ts) blir en privat post och aldrig en dokumentpost.
 import { arendeSokvag, nummeruppslagSokvag, type Befintliga } from '../../lib/arendelank.js';
 import { kanoniskIdentifier } from '../../lib/validation.js';
-import { vitlistad, type Dokumentindex } from './dokument.js';
+import { privatKalla, vitlistad, type Dokumentindex } from './dokument.js';
 import { esc } from './mall.js';
 
 // Mönstren delas mellan de två lägena och plockas isär via namngivna grupper.
@@ -118,20 +126,34 @@ export function linearAdress(adress: string): LinearAdress | null {
 
 // ---- D-2, B-21 (Story 11.2): en länk till ett ärende bara när det finns ----
 
+/** Ett dokumentmål som renderaren slog upp: referensen och sökvägen den länkar till, eller null. */
+type Dokumentmal = { mal: string; rel: string | null };
+
 /**
  * Insamlingen av kandidater (arendekandidater): arendereferens antecknar varje
- * nummer den får i kanonisk form, i stället för att slå upp det.
+ * nummer den får i kanonisk form, i stället för att slå upp det. Dokumentmålen
+ * (dokumentreferenser, Story 11.5) antecknas av dokumentlank och spegellank, i
+ * den ordning renderaren möter dem.
  */
 class Insamling {
   private readonly nummer = new Set<string>();
+  private readonly dokument: Dokumentmal[] = [];
 
   samla(identifier: string): void {
     const k = kanoniskIdentifier(identifier);
     if (k !== null) this.nummer.add(k);
   }
 
+  samlaDokument(mal: string, rel: string | null): void {
+    this.dokument.push({ mal, rel });
+  }
+
   kandidater(): string[] {
     return [...this.nummer];
+  }
+
+  dokumentmal(): readonly Dokumentmal[] {
+    return this.dokument;
   }
 }
 
@@ -179,6 +201,44 @@ export function arendekandidater(rendera: (uppslag: Uppslag) => unknown): string
   const insamling = new Insamling();
   rendera(insamling);
   return insamling.kandidater();
+}
+
+/** En post bland dokumentreferenserna: ett dokument med sin vaultrelativa sökväg, eller en privat källa. */
+export type Dokumentreferens = { slag: 'dokument'; rel: string } | { slag: 'privat' };
+
+/**
+ * D-3, D-4, B-25 (Story 11.5 AK 5 och AK 6): dokumenten som `rendera` länkar,
+ * en gång var och i den ordning renderingen mötte dem. `rendera` är sidans egen
+ * rendering, och den körs här med en insamling, på samma sätt som
+ * arendekandidater gör för numren; funktionen har inget eget mönster.
+ *
+ * Ett mål är privat när målet eller sökvägen det slogs upp till ligger i ett
+ * privat område (privatKalla): det blir den privata posten, som står högst en
+ * gång, och aldrig en dokumentpost. Ett annat mål med en sökväg är ett
+ * dokument, och dokumenten slås ihop på sökvägen. Ett mål utan sökväg är vanlig
+ * text för renderaren och tas inte med.
+ */
+export function dokumentreferenser(rendera: (uppslag: Uppslag) => unknown): Dokumentreferens[] {
+  const insamling = new Insamling();
+  rendera(insamling);
+  const poster: Dokumentreferens[] = [];
+  const sedda = new Set<string>();
+  let privat = false;
+  for (const { mal, rel } of insamling.dokumentmal()) {
+    if (privatKalla(mal) || (rel !== null && privatKalla(rel))) {
+      if (!privat) poster.push({ slag: 'privat' });
+      privat = true;
+    } else if (rel !== null && !sedda.has(rel)) {
+      sedda.add(rel);
+      poster.push({ slag: 'dokument', rel });
+    }
+  }
+  return poster;
+}
+
+/** Referens → vaultrelativ sökväg, med autolänkarens eget uppslag (losUpp), för kortets referenser. */
+export function dokumentsokvag(ra: string, index: Dokumentindex): string | null {
+  return losUpp(ra, index);
 }
 
 /**
@@ -246,7 +306,7 @@ function ersatt(
   if (g['mal'] !== undefined) {
     const alias = g['alias']?.trim();
     const text = alias === undefined || alias === '' ? g['mal'] : alias;
-    return dokumentlank(avesc(g['mal']), text, hel, index);
+    return dokumentlank(avesc(g['mal']), text, hel, index, uppslag);
   }
   if (g['mdurl'] !== undefined) {
     const url = g['mdurl'];
@@ -259,12 +319,12 @@ function ersatt(
       if (linear !== null) return linearlank(text, linear, uppslag);
       return `<a href="${url}" rel="noreferrer noopener">${text}</a>`;
     }
-    return dokumentlank(avesc(url), text, hel, index);
+    return dokumentlank(avesc(url), text, hel, index, uppslag);
   }
-  if (g['sokvag'] !== undefined) return dokumentlank(g['sokvag'], g['sokvag'], hel, index);
+  if (g['sokvag'] !== undefined) return dokumentlank(g['sokvag'], g['sokvag'], hel, index, uppslag);
   // spegellank() rörs inte: FILNAMN:s teckenklass innehåller inget tecken som
   // esc() rör, så dess egna esc()-anrop är identitet på escapad indata.
-  if (g['filnamn'] !== undefined) return spegellank(g['filnamn'], hel, index);
+  if (g['filnamn'] !== undefined) return spegellank(g['filnamn'], hel, index, uppslag);
   if (g['arende'] !== undefined) {
     // D-2 (Story 11.2): numret slås upp i uppslaget. Texten står kvar som den
     // skrevs (loc-503 visas som loc-503); ARENDE innehåller inget escapat tecken.
@@ -278,8 +338,12 @@ function dokumentlank(
   text: string,
   hel: string,
   index: Dokumentindex,
+  uppslag: Uppslag,
 ): string {
   const rel = losUpp(mal, index);
+  // Story 11.5: under en insamling antecknas målet med exakt det som länkas
+  // nedan (dokumentreferenser). Utdata är densamma.
+  if (uppslag instanceof Insamling) uppslag.samlaDokument(mal, rel);
   // KRAV-3: utanför vitlistan eller tvetydigt → ren text, oskiljaktigt från
   // vilken annan text som helst.
   if (rel === null) return hel;
@@ -316,13 +380,17 @@ const ORIGINALANDELSE = /\.(?:docx|pdf|pptx|xlsx)$/;
  * ospeglat eller tvetydigt originalnamn förblir ren text — ingen markering,
  * ingen titel, och ingen filsystemsåtkomst; bara det redan byggda indexet.
  */
-function spegellank(namn: string, hel: string, index: Dokumentindex): string {
+function spegellank(namn: string, hel: string, index: Dokumentindex, uppslag: Uppslag): string {
   const spegel = `${namn.replace(ORIGINALANDELSE, '')}.md`.normalize('NFC').toLowerCase();
   const traffar = (index.filnamn.get(spegel) ?? []).filter((rel) =>
     rel.normalize('NFC').startsWith(KUNDDOKUMENT),
   );
-  if (traffar.length !== 1) return esc(hel);
-  return `<a href="${esc(dokUrl(traffar[0]!))}">${esc(namn)}</a>`;
+  // Story 11.5: den enda träffen är det som länkas; noll eller fler träffar
+  // länkas inte och antecknas utan sökväg (dokumentreferenser).
+  const rel = traffar.length === 1 ? traffar[0]! : null;
+  if (uppslag instanceof Insamling) uppslag.samlaDokument(namn, rel);
+  if (rel === null) return esc(hel);
+  return `<a href="${esc(dokUrl(rel))}">${esc(namn)}</a>`;
 }
 
 /** Referens → vaultrelativ sökväg, eller null när den inte får länkas. */
