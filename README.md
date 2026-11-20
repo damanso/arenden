@@ -148,6 +148,41 @@ tailscale serve --https=8446 off   # ta bort
 
 ---
 
+## Modul 2 — installera ärendeplattformen för en ny kund (Story 9.5)
+
+Modul 2 är ärendeplattformen fristående enligt Davids svar 2026-10-16 13.21:
+API:t (`/api`), ärendevyn (`/vy`), onboardingen (`ta_emot_tenant`, Story 9.4)
+och MCP-vägen (Story 4.2–4.4). Inga nya npm-beroenden tillkommer.
+
+### Installationsstegen (modul 2)
+
+1. Starta databaserna som i avsnitt 1 ovan, i egna compose-projekt.
+2. Kör `npm ci` på en ren klon.
+3. Sätt `DATABASE_URL`, `DATABASE_ADMIN_URL` och `VY_PUBLIK_URL` i `.env`. `VY_PUBLIK_URL` är obligatorisk för en ny installation: kundens egen https-adress utan sökväg (standardvärdet är driftens adress, Story 11.2).
+4. Kör `npm run migrate` som ägarrollen.
+5. Kör `npm run build` och sedan `npm start`. Raden «Ärende-API lyssnar på» visar att appen är uppe.
+6. Utfärda en systemnyckel med `npm run nyckel -- system "<namn>"` och anropa sedan `ta_emot_tenant` genom `POST /api/actions/ta_emot_tenant` med systemnyckeln som bearer och referensen till Davids ja i fältet `beslut`. Kundens första människonyckel hamnar i en 0600-fil (Story 9.4).
+7. Kör `npm run check` mot testdatabasen.
+8. Starta `npm run mcp` (skriptet kör «node dist/mcp/server.js») med kundens egen klientfil enligt avsnittet för Story 4.4.
+
+Skriptet `mcp` är ett förkrav i drift sedan Story 4.2 och förs in av den som får
+ändra beroendefilen. Klientfilens placering och rättigheter beskrivs i Story 4.4-avsnittet.
+
+### Valfria kopplingar (modul 2)
+
+- Valvet, `VAULT_PATH`, är valfritt. Saknas katalogen säger dokumentsidan «Valvet är inte anslutet i den här installationen, så dokumentet kan inte visas.» Kortets Dokument och underlag säger att valvet inte är anslutet.
+- Redovisningen och CRM, `CRM_KONF_PATH`, är valfria. Saknas konfigurationsfilen säger ärendesidan «CRM är inte anslutet i den här installationen.» för ett projekt kopplat till redovisningen.
+
+### Ingår inte i modul 2
+
+- Linear-importen (npm run import, npm run aterlas) ingår inte i paketets installationssteg.
+- Spegeln till valvet ingår inte i paketet.
+- Nattproven ingår inte i paketet.
+
+| Krav | Mekanism | Kod | Test |
+| --- | --- | --- | --- |
+| Modul 2 (FR-25) | En prövning per valfri koppling, fasta meningar och installationsstegen ovan | `src/http/vy/dokument.ts`, `src/http/vy/crm.ts`, `src/http/vy/kort.ts`, `src/http/routes/vy.ts` | `test/paket.test.ts` (Story 9.5) |
+
 ## Vad som finns
 
 | Del | Var |

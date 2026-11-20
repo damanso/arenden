@@ -182,6 +182,10 @@ const TEXT = {
   kundOavgjord: 'Saknas — kundkopplingen är inte avgjord (set_project_customer).',
   kundUtanProjekt: 'Saknas — ärendet har inget projekt att koppla kunden genom.',
   kundCrmNere: 'Kunde inte läsas just nu — CRM-data ej tillgänglig.',
+  // FR-25, Story 9.5: saknade valfria kopplingar har fasta, egna besked.
+  kundCrmEjAnslutet: 'Kunde inte läsas — CRM är inte anslutet i den här installationen.',
+  valvSaknas:
+    'Kunde inte läsas — valvet är inte anslutet i den här installationen, så dokument och spegel visas inte.',
   kundInternt: 'Internt projekt — ska aldrig kopplas till en kund.',
   uppdrag:
     'Finns inte i plattformen — föreslagen källa: redovisningens uppdrag för projektets kund (David har sagt ja ' +
@@ -412,7 +416,10 @@ const INSATSTYPORD: Record<InsatsTyp, string> = {
  * Hur CRM-uppslaget gick: inget uppslag (projektet är inte kopplat, eller kopplat i en annan källa än
  * redovisningen, B-08), ett svar eller inget svar.
  */
-export type Crmsvar = 'okopplat' | 'svarade' | 'svarade_inte';
+export type Crmsvar = 'okopplat' | 'svarade' | 'svarade_inte' | 'ej_anslutet';
+
+/** FR-25, Story 9.5: rutten prövar valvet, kortet visar det givna läget. */
+export type Valvlage = 'ansluten' | 'saknas';
 
 /**
  * AK 2: varje frist med sin källa — ärendets deadline, åtagandets uppföljning och de öppna insatsernas frist
@@ -498,7 +505,9 @@ export function kundLage(koppling: Kundkoppling | null, crm: Crmsvar): Faltlage 
         koppling.kund_kopplad_at === null ? null : `kopplad ${datum(koppling.kund_kopplad_at)}`,
       ].filter((d): d is string => d !== null);
       const rad = `<p>${esc(delar.join(' · '))}</p>`;
-      return crm === 'svarade_inte' ? tomt('kunde_inte', TEXT.kundCrmNere, rad) : varde(rad);
+      if (crm === 'svarade_inte') return tomt('kunde_inte', TEXT.kundCrmNere, rad);
+      if (crm === 'ej_anslutet') return tomt('kunde_inte', TEXT.kundCrmEjAnslutet, rad);
+      return varde(rad);
     }
     default: {
       const okand: never = koppling.koppling_status;
@@ -958,6 +967,7 @@ export function dokumentLage(
   bilagor: readonly Pick<Bilaga, 'url' | 'titel' | 'undertitel'>[],
   bilagerader: readonly string[],
   index: Dokumentindex,
+  valv: Valvlage = 'ansluten',
 ): Faltlage {
   // Raderna kommer ur bilagor.map i ärenderutten. Avviker antalet hade en bilaga försvunnit i tysthet.
   if (bilagerader.length !== bilagor.length) {
@@ -995,6 +1005,8 @@ export function dokumentLage(
       ? `<p>${esc(TEXT.bilagor)}</p>`
       : `<ul class=lista role=list>${bilagor.map(bilagerad).join('')}</ul>`);
 
+  // FR-25, Story 9.5: dokumentreferenser och bilagor står kvar även utan valvet.
+  if (valv === 'saknas') return tomt('kunde_inte', TEXT.valvSaknas, dokumentdel + bilagedel);
   const spegel = spegelsokvag(arende.identifier, index);
   if (spegel === null) return tomt('saknas', spegeltext(arende.identifier), dokumentdel + bilagedel);
   const spegelrad = `<p><a href="${esc(dokUrl(spegel))}">Spegeln i valvet</a> · ${esc(spegel)}</p>`;
@@ -1768,6 +1780,7 @@ export interface Kortunderlag {
   crm: Crmsvar;
   namnda: readonly string[];
   index: Dokumentindex;
+  valv?: Valvlage;
   rader: {
     beskrivning: string;
     bilagor: readonly string[];
@@ -1797,7 +1810,9 @@ export const FALTLAGE: { readonly [K in FaltId]: (u: Kortunderlag) => Faltlage }
   atagande: (u) => atagandeLage(u.kort.arende, u.kort.atagande, u.index, u.kort.befintliga),
   beslut: (u) => beslutLage(u.kort.beslut, u.kort.svarsversioner),
   insatser: (u) => insatserLage(u.kort.insatser, u.index, u.kort.befintliga),
-  dokument: (u) => dokumentLage(u.kort.arende, u.kort.kommentarer, u.kort.bilagor, u.rader.bilagor, u.index),
+  dokument: (u) => dokumentLage(
+    u.kort.arende, u.kort.kommentarer, u.kort.bilagor, u.rader.bilagor, u.index, u.valv ?? 'ansluten',
+  ),
   mail: (u) => mailLage(u.kort.atagande, u.kort.insatser),
   foralder: (u) => foralderLage(u.kort.arende),
   delarenden: (u) => delarendenLage(u.kort.barn, u.rader.delarenden, u.kort.markningar),

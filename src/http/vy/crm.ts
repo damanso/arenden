@@ -1,7 +1,7 @@
 // CRM-kopplingen i vyn (Davids precisering 19/8). Enda modulen i ärendeplattformen
 // som rör redovisningen — och den LÄSER bara, med två lässignaturer.
 //
-// FYRA invarianter, som granskaren kan läsa av rakt här:
+// FEM invarianter, som granskaren kan läsa av rakt här:
 //   1. TOKENET STANNAR I PROCESSEN. Bas-URL, company-id och agent-token läses
 //      server-side ur SAMMA konfigfil som crm_ingest.py använder
 //      (~/.hermes/redovisning-mcp.json). Tokenet skrivs aldrig i HTML, i en
@@ -15,9 +15,30 @@
 //      läsande. Vyn förblir ren läsyta; kortet är GET-renderat.
 //   4. BARA REDOVISNINGENS ID (B-08). hamtaCrm slår upp en koppling bara när
 //      källan är CRM_KALLA; en annan källa ger inget uppslag och ingen räkning.
-import { readFile } from 'node:fs/promises';
+//   5. En saknad valfri koppling skiljs från ett uppslag utan svar med en
+//      läsrättsprövning utan innehållsläsning (FR-25, Story 9.5).
+import { access, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { config } from '../../config.js';
 import { esc } from './mall.js';
+
+/** FR-25, Story 9.5 AK 2: modul 2 säger öppet när den valfria kopplingen saknas. */
+export const CRM_EJ_ANSLUTET = 'CRM är inte anslutet i den här installationen.';
+
+/** Bara läsrätten prövas; inget innehåll läses, inget räknas och inga fel lämnar modulen. */
+export async function crmKonfigurationFinns(sokvag: string = config.CRM_KONF_PATH): Promise<boolean> {
+  try {
+    await access(sokvag, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** FR-25: ett fast besked för en installation utan kopplingen. */
+export function crmKortEjAnslutet(): string {
+  return `<h2>CRM</h2><p class=notis>${esc(CRM_EJ_ANSLUTET)}</p>`;
+}
 
 // Den hårdkodade tabellen projekt -> organisationsnamn är BORTA härifrån.
 //

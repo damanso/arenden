@@ -49,9 +49,13 @@ import {
   type HandelseIVy,
 } from '../../services/handelser.js';
 import type { Kommentar } from '../../services/kommentarer.js';
-import { crmKort, hamtaCrm } from '../vy/crm.js';
-import { hamtaIndex, lasDokument, sakerSokvag, type Dokumentindex } from '../vy/dokument.js';
-import { atagandeLage, handelsensDetaljer, insatserLage, kortet } from '../vy/kort.js';
+import { crmKort, hamtaCrm, crmKonfigurationFinns, crmKortEjAnslutet } from '../vy/crm.js';
+import {
+  hamtaIndex, lasDokument, sakerSokvag, VALV_SAKNAS, valvetArAnslutet, type Dokumentindex,
+} from '../vy/dokument.js';
+import {
+  atagandeLage, handelsensDetaljer, insatserLage, kortet, type Crmsvar, type Valvlage,
+} from '../vy/kort.js';
 import {
   arendekandidater,
   arendereferens,
@@ -984,6 +988,8 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   const tenant = await vynsTenant(req);
   // Autolänkningen läser bara cachen (KRAV-5) — inga filsystemssökningar här.
   const index = await hamtaIndex();
+  // FR-25, Story 9.5: prövningen gäller bara valvets rot och är ingen sökning.
+  const valv: Valvlage = (await valvetArAnslutet()) ? 'ansluten' : 'saknas';
   // D-3, D-5, B-23 (Story 11.4): all kortets data hämtas av läsmodellen hamtaArendekort, i en
   // transaktion och med ett antal frågor som inte beror på antalet poster. D-2 (Story 11.2):
   // varje ärendenummer på sidan slås upp i ETT anrop, och kandidaterna är de nummer som sidans
@@ -1029,7 +1035,14 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // bara när källan är redovisningen. En koppling i en annan källa ger inget
   // uppslag och inget kort; kundfältet visar den med källa och id.
   const crmSvar = await hamtaCrm(a);
-  const crmHtml = crmSvar === undefined ? '' : crmKort(crmSvar);
+  const crmUtfall: Crmsvar = crmSvar === undefined
+    ? 'okopplat'
+    : crmSvar !== null
+      ? 'svarade'
+      : (await crmKonfigurationFinns()) ? 'svarade_inte' : 'ej_anslutet';
+  const crmHtml = crmSvar === undefined
+    ? ''
+    : crmUtfall === 'ej_anslutet' ? crmKortEjAnslutet() : crmKort(crmSvar);
   const texter = arendetexter(a, kort.kommentarer, kort.bilagor, index, kort.befintliga);
   // AK 5: de nummer som beskrivningen och de synliga kommentarerna nämner, ur samma rendering
   // och utan bilagorna. Ingen fråga ställs: kandidaterna ovan är en övermängd, så
@@ -1104,10 +1117,11 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
       {
         kort,
         // AK 3: kundens läge. Utan koppling slås CRM inte upp; ett uppslag utan svar ger null.
-        crm: crmSvar === undefined ? 'okopplat' : crmSvar === null ? 'svarade_inte' : 'svarade',
+        crm: crmUtfall,
         namnda,
         // Story 11.5: dokumentindexet ur cachen ovan, för referenserna och dokumenten på kortet.
         index,
+        valv,
         rader: {
           beskrivning: `<div class=text>${texter.beskrivning}</div>`,
           bilagor: texter.bilagor,
@@ -1152,12 +1166,25 @@ function utanforOmradet(): string {
   );
 }
 
+function valvetSaknasSida(): string {
+  return sida(
+    'Valvet saknas',
+    '<h1>Dokumentet kan inte visas</h1>' +
+      `<p class=notis>${esc(VALV_SAKNAS)}</p>` +
+      '<p><a href="/vy">Till överblicken</a></p>',
+  );
+}
+
 vyRouter.get('/dok/*sokvag', async (req, res) => {
   // Express 5 ger wildcard-parametern som segmentlista; ta emot båda formerna.
   const ra: unknown = req.params['sokvag'];
   const begard = Array.isArray(ra) ? ra.join('/') : typeof ra === 'string' ? ra : '';
 
   const rel = sakerSokvag(begard);
+  if (rel !== null && !(await valvetArAnslutet())) {
+    res.status(404).type('html').send(valvetSaknasSida());
+    return;
+  }
   const innehall = rel === null ? null : await lasDokument(rel);
   if (rel === null || innehall === null) {
     res.status(404).type('html').send(utanforOmradet());

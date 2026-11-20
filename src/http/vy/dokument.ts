@@ -1,7 +1,7 @@
 // Vaultens läsyta i vyn (Dokumentlänkar). Enda modulen som rör /home/hermes/brain
 // — och den LÄSER bara.
 //
-// FYRA invarianter, som granskaren kan läsa av rakt här:
+// FEM invarianter, som granskaren kan läsa av rakt här:
 //   1. VITLISTA (KRAV-2): endast katalogerna i VITLISTA finns för vyn. Allt
 //      annat — jag.md, journal/, 02-Områden/hälsa/, 05-Dagligt/, .git,
 //      .obsidian — ger samma tomma svar som ett dokument som inte finns. Vyn
@@ -19,9 +19,23 @@
 //      ett led är en följd av namntecken ur en tillåtelselista. Prövningen är ren
 //      text: ingen fil, inget index och ingen miljö, och /vy/dok svarar som förut
 //      ur VITLISTA.
-import { readdir, readFile, realpath } from 'node:fs/promises';
+//   5. Valvets närvaro prövas utan innehållsläsning och utan att kasta; en
+//      saknad valfri koppling får ett fast besked (FR-25, Story 9.5).
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../../config.js';
+
+/** FR-25, Story 9.5 AK 2: valvet är valfritt i modul 2 enligt Davids ja 2026-10-16 13.21. */
+export const VALV_SAKNAS = 'Valvet är inte anslutet i den här installationen, så dokumentet kan inte visas.';
+
+/** Sidan säger i en mening när valvet saknas; prövningen läser inget innehåll och kastar aldrig. */
+export async function valvetArAnslutet(rot: string = config.VAULT_PATH): Promise<boolean> {
+  try {
+    return (await stat(await realpath(rot))).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 /** KRAV-2: hela dokumentområdet. Ändras bara medvetet — det här ÄR R5-gränsen. */
 export const VITLISTA = [
