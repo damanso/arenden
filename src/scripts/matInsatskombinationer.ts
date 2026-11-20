@@ -28,10 +28,10 @@ const falt = (varde: string): string => varde.replace(/[\t\r\n]/g, ' ');
 
 try {
   const fynd = await withTransaction(async (client) => {
-    // Första satsen efter BEGIN; därefter avvisar Postgres varje skrivning i transaktionen.
+    // Första satsen efter tenantens inställning (B-27); därefter avvisar Postgres varje skrivning i transaktionen.
     await client.query('SET TRANSACTION READ ONLY');
     return matInsatskombinationer(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   for (const f of fynd) {
     console.log([f.stopp_id, f.typ, f.lage, f.kommando ?? '(saknas)'].map(falt).join('\t'));
   }

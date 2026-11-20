@@ -18,7 +18,7 @@ try {
   const avvikelser = await withTransaction(async (client) => {
     await client.query('SET TRANSACTION READ ONLY');
     return matStatusavvikelser(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   for (const a of avvikelser) console.log(`${a.identifier} ${a.lage} ${a.state_typ} ska vara ${a.mal}`);
   console.log(`Antal: ${avvikelser.length}`);
 } catch (err) {

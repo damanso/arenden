@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { ClientBase, Pool, PoolClient } from 'pg';
 import type { Aktor } from '../lib/aktor.js';
 import { NotFoundError } from '../lib/errors.js';
@@ -21,20 +21,18 @@ export function slumpaNyckel(): string {
  * Slår upp aktören bakom en bearer-nyckel. Returnerar null om nyckeln är okänd
  * eller inaktiverad — anroparen svarar 401 och ingen rad skrivs.
  *
- * Jämförelsen görs på hashen i databasen (index), och verifieras sedan
- * konstanttidsmässigt så att en träff/miss inte kan tidsmätas.
+ * B-27, Story 9.2: uppslaget går genom funktionen, enda läsvägen till api_keys
+ * utan tenant. Databasen prövar likheten på hashen, så en tidsskillnad säger
+ * inget om nyckeln. Funktionen lämnar aldrig ut hashen.
  */
 export async function slaUppAktor(db: Pool, nyckel: string): Promise<Aktor | null> {
   const hash = hashaNyckel(nyckel);
-  const { rows } = await db.query<{ nyckelhash: string; aktor_typ: AktorTyp; aktor_namn: string }>(
-    'SELECT nyckelhash, aktor_typ, aktor_namn FROM api_keys WHERE nyckelhash = $1 AND aktiv',
+  const { rows } = await db.query<{ aktor_typ: AktorTyp; aktor_namn: string }>(
+    'SELECT aktor_typ, aktor_namn FROM nyckelns_aktor($1)',
     [hash],
   );
   const rad = rows[0];
   if (!rad) return null;
-  const a = Buffer.from(rad.nyckelhash, 'utf8');
-  const b = Buffer.from(hash, 'utf8');
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   return { typ: rad.aktor_typ, namn: rad.aktor_namn };
 }
 
@@ -45,6 +43,17 @@ export async function skapaNyckel(
   tenantId: string,
   aktor: Aktor,
 ): Promise<{ nyckel: string; id: string }> {
+  // B-27, Story 9.2 AK 3: nyckelskriptet ansluter som app och anropar tjänsten
+  // först i sin transaktion. Den måste vara öppen, eftersom inställningen är lokal.
+  const { rows: tenanter } = await db.query<{ tenant: string | null }>(
+    "SELECT NULLIF(current_setting('app.tenant_id', true), '') AS tenant",
+  );
+  const tenant = tenanter[0]?.tenant;
+  if (tenant == null) {
+    await db.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+  } else if (tenant !== tenantId) {
+    throw new Error('Transaktionen har redan en annan tenant och nyckeln skrivs inte.');
+  }
   const nyckel = slumpaNyckel();
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO api_keys (tenant_id, nyckelhash, aktor_typ, aktor_namn)

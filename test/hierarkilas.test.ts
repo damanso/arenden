@@ -375,10 +375,13 @@ function funktionsskillnad(fore: Funktion[], efter: Funktion[]): string[] {
 
 describe('FR-28/Story 6.4 AK 1: migrationen tar hierarkilåset per tenant före vandringen, utan att ändra någon tabell', () => {
   it('HL1 (AK 1): migrationsfilen har nästa nummer, kommentaren först, låsnyckeln en gång och orörda föregångare', async () => {
-    const filer = migrationsfiler();
+    // Nummerkontrollen räknar högsta övriga nummer plus ett: 0020 hade gett
+    // «numret är 0019, väntat 0021». Senare migrationer prövas av sina egna prov.
+    const filer = migrationsfiler().filter((f) => migrationsnummer(f.fil) <= migrationsnummer(NY_MIGRATION));
     expect(filer.map((f) => f.fil), 'hittade inga migrationer').toContain('0007_arendehierarki.sql');
     // sha256 här är samma värde som migrationsverktygets checksumma.
-    expect(filer.map((f) => sha256(f.text))).toEqual((await loadMigrations()).map((m) => m.checksum));
+    expect(filer.map((f) => sha256(f.text))).toEqual((await loadMigrations())
+      .filter((m) => m.version <= migrationsnummer(NY_MIGRATION)).map((m) => m.checksum));
     expect(migrationsfel(filer)).toEqual([]);
 
     // Kontroll: fyra påhittade uppsättningar byggda ur katalogens filer ger exakt sina fynd.
@@ -409,28 +412,37 @@ describe('FR-28/Story 6.4 AK 1: migrationen tar hierarkilåset per tenant före 
       const schemaFore = await schemaform(klient);
       const funktionerFore = await funktionsform(klient);
 
-      const andra = await migrate(adress);
-      expect(andra.applied).toEqual([NY_MIGRATION]);
-      expect(await schemaform(klient)).toEqual(schemaFore);
-      expect(funktionsskillnad(funktionerFore, await funktionsform(klient))).toEqual([
-        'ny: issues_ta_hierarkilas(p_tenant uuid)',
-        'ändrad md5: issues_vagra_foralderscykel()',
-      ]);
-      // acldefault ersätter en tom proacl, som annars hade dolt PUBLIC:s standardrätt att anropa funktionen.
-      const ratt = await klient.query<{ app: boolean; publik: number }>(
-        `SELECT has_function_privilege('app', 'issues_ta_hierarkilas(uuid)', 'EXECUTE') AS app,
-                (SELECT count(*)::int
-                   FROM pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) AS a
-                  WHERE p.oid = 'issues_ta_hierarkilas(uuid)'::regprocedure AND a.grantee = 0) AS publik`,
-      );
-      expect(ratt.rows).toEqual([{ app: true, publik: 0 }]);
+      // Begränsa till Story 6.4:s migration, så att senare migrationer inte räknas in.
+      const senareDir = mkdtempSync(path.join(tmpdir(), 'hierarkilas-hl2-avslut-'));
+      try {
+        for (const fil of [...TIDIGARE_MIGRATIONER.map((m) => m.fil), NY_MIGRATION]) {
+          copyFileSync(path.join(MIGRATIONER_64, fil), path.join(senareDir, fil));
+        }
+        const andra = await migrate(adress, { dir: senareDir });
+        expect(andra.applied).toEqual([NY_MIGRATION]);
+        expect(await schemaform(klient)).toEqual(schemaFore);
+        expect(funktionsskillnad(funktionerFore, await funktionsform(klient))).toEqual([
+          'ny: issues_ta_hierarkilas(p_tenant uuid)',
+          'ändrad md5: issues_vagra_foralderscykel()',
+        ]);
+        // acldefault ersätter en tom proacl, som annars hade dolt PUBLIC:s standardrätt att anropa funktionen.
+        const ratt = await klient.query<{ app: boolean; publik: number }>(
+          `SELECT has_function_privilege('app', 'issues_ta_hierarkilas(uuid)', 'EXECUTE') AS app,
+                  (SELECT count(*)::int
+                     FROM pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) AS a
+                    WHERE p.oid = 'issues_ta_hierarkilas(uuid)'::regprocedure AND a.grantee = 0) AS publik`,
+        );
+        expect(ratt.rows).toEqual([{ app: true, publik: 0 }]);
 
-      const ledgerSql = 'SELECT version, name, checksum, applied_at, tenant_id FROM schema_migrations ORDER BY version';
-      const ledger = (await klient.query(ledgerSql)).rows;
-      expect(ledger).toHaveLength(TIDIGARE_MIGRATIONER.length + 1);
-      const tredje = await migrate(adress);
-      expect(tredje.applied).toEqual([]);
-      expect((await klient.query(ledgerSql)).rows).toEqual(ledger);
+        const ledgerSql = 'SELECT version, name, checksum, applied_at, tenant_id FROM schema_migrations ORDER BY version';
+        const ledger = (await klient.query(ledgerSql)).rows;
+        expect(ledger).toHaveLength(TIDIGARE_MIGRATIONER.length + 1);
+        const tredje = await migrate(adress, { dir: senareDir });
+        expect(tredje.applied).toEqual([]);
+        expect((await klient.query(ledgerSql)).rows).toEqual(ledger);
+      } finally {
+        rmSync(senareDir, { recursive: true, force: true });
+      }
 
       // Kontroll: en tillagd kolumn syns i formen, så jämförelsen kan slå ut.
       await klient.query('BEGIN');

@@ -776,7 +776,7 @@ export function monteraSkrivrutter(router: Router): void {
       projekt: await listaProjektnamn(client, TENANT_ID),
       etiketter: await listaEtikettnamn(client, TENANT_ID),
       nycklar: await listaNycklar(client, TENANT_ID),
-    }));
+    }), TENANT_ID);
 
     const namnform = (vag: string, sort: string, namn: string, nr: number): string =>
       `<li class=rad><form class=namnform method=post action="${esc(vag)}">` +

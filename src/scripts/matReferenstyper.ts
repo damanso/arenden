@@ -35,10 +35,10 @@ const falt = (varde: string): string => varde.replace(/[\t\r\n]/g, ' ');
 
 try {
   const matning = await withTransaction(async (client) => {
-    // Första satsen efter BEGIN; därefter avvisar Postgres varje skrivning i transaktionen.
+    // Första satsen efter tenantens inställning (B-27); därefter avvisar Postgres varje skrivning i transaktionen.
     await client.query('SET TRANSACTION READ ONLY');
     return matReferenstyper(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   const rader = [
     ...matning.referenser.map((r) => ['referens', r.barare, r.typ ?? '(saknas)', String(r.antal)]),
     ...matning.kallor.map((k) => ['kalla', k.system, k.objekttyp, String(k.antal)]),

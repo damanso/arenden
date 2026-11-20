@@ -25,10 +25,10 @@ import { matAtagandebrott } from '../services/atagande.js';
 
 try {
   const brott = await withTransaction(async (client) => {
-    // Första satsen efter BEGIN; därefter avvisar Postgres varje skrivning i transaktionen.
+    // Första satsen efter tenantens inställning (B-27); därefter avvisar Postgres varje skrivning i transaktionen.
     await client.query('SET TRANSACTION READ ONLY');
     return matAtagandebrott(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   for (const b of brott) console.log(`${b.identifier} ${b.lage} saknar ${b.saknas.join(', ')}`);
   // Sist, och först när mätningen returnerat: ett fel ovan når aldrig hit.
   console.log(`Antal: ${brott.length}`);

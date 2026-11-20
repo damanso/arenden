@@ -24,6 +24,10 @@ import { skapaArende } from '../src/services/arenden.js';
 import { laggTillKommentar } from '../src/services/kommentarer.js';
 import { skrivHandelse } from '../src/services/handelser.js';
 import { glomAllaSessioner } from '../src/http/vy/session.js';
+import { utanProvetsTenant } from './env.js';
+
+// Tenantgränsen prövas som i drift; N2 kräver en transaktion utan inställning.
+utanProvetsTenant();
 
 const TENANT_B = '00000000-0000-0000-0000-000000000091';
 let app: ReturnType<typeof createApp>;
@@ -63,7 +67,7 @@ async function avtryck(): Promise<Record<'issues' | 'comments' | 'events', Tabel
 beforeAll(async () => {
   await seedaTeam();
   await agare((c) => c.query("INSERT INTO tenants (id, namn) VALUES ($1, 'Tenant B (Story 9.1)')", [TENANT_B]));
-  await withTransaction((c) => hamtaEllerSkapaTeam(c, TENANT_B, 'TB', 'Tenant B'));
+  await withTransaction((c) => hamtaEllerSkapaTeam(c, TENANT_B, 'TB', 'Tenant B'), TENANT_B);
   agentA = await nyNyckel({ typ: 'agent', namn: 'n91 agent A' });
   manniskaA = await nyNyckel({ typ: 'manniska', namn: 'n91 människa A' });
   deladAgent = await nyNyckel({ typ: 'agent', namn: 'n91 delat namn' });
@@ -222,7 +226,7 @@ beforeAll(async () => {
       issueId: arende.id, verb: 'kommenterade',
       payload: { identifier: arende.identifier, kommentar_id: kommentar.id },
     });
-  });
+  }, TENANT_B);
 });
 
 describe('FR-25/Story 9.1 AK 1: transaktionens tenant via /api och vyn', () => {

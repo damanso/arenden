@@ -420,6 +420,7 @@ function gruppera(arenden: Arende[]): Grupp[] {
 vyRouter.get('/', async (req, res) => {
   const resultat = await withTransaction((client) =>
     listaArenden(client, TENANT_ID, { stateTyper: OPPNA, limit: TAK_ARENDEN }),
+    TENANT_ID,
   );
   const grupper = gruppera(resultat.arenden);
 
@@ -474,6 +475,7 @@ vyRouter.get('/digest', async (req, res) => {
   const valt = FONSTER.find((f) => f.varde === param(req.query['dagar'])) ?? FONSTER[0]!;
   const handelser = await withTransaction((client) =>
     listaSenasteHandelser(client, TENANT_ID, { dagar: valt.dagar, limit: TAK_DIGEST }),
+    TENANT_ID,
   );
 
   // Händelserna kommer nyaste först — Map:en bevarar den ordningen per dag.
@@ -610,6 +612,7 @@ vyRouter.get('/mitt', async (req, res) => {
       await aktorerMedSpar(client, TENANT_ID),
       idag,
     ),
+    TENANT_ID,
   );
 
   const aktorlankar = lage.aktorer_med_spar
@@ -743,7 +746,7 @@ vyRouter.get('/sok', async (req, res) => {
   const fragor = nummer.flatMap((t) => t.slag === 'nummer' ? [{ teamKey: t.teamKey, nummer: t.nummer }] : []);
   const svar = fragor.length === 0
     ? []
-    : await withTransaction((client) => hittaArendenMedNummer(client, TENANT_ID, fragor));
+    : await withTransaction((client) => hittaArendenMedNummer(client, TENANT_ID, fragor), TENANT_ID);
   let plats = 0;
   const nummertraffar = nummer.map((t) => ({
     tolkat: t,
@@ -780,7 +783,7 @@ vyRouter.get('/sok', async (req, res) => {
     projektnamn: await listaProjektnamn(client, TENANT_ID),
     etikettnamn: await listaEtikettnamn(client, TENANT_ID),
     aktorer: await listaAktorer(client, TENANT_ID, TAK_FASETTER),
-  }));
+  }), TENANT_ID);
 
   let resultat = '';
   let antal = 0;
@@ -990,6 +993,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
         insatserLage(t.insatser, index, uppslag);
         for (const h of t.handelser) handelsensDetaljer(h, index, uppslag);
       })),
+    TENANT_ID,
   ).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
     if (err instanceof NotFoundError) return null;
@@ -1161,6 +1165,7 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
   const dokumentet = (uppslag: Uppslag): string => renderaMarkdown(innehall, index, uppslag);
   const befintliga = await withTransaction((client) =>
     befintligaArenden(client, TENANT_ID, arendekandidater(dokumentet)),
+    TENANT_ID,
   );
   const namn = rel.slice(rel.lastIndexOf('/') + 1);
   const obsidian =

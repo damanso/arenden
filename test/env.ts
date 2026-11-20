@@ -1,5 +1,6 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { TENANT_ID } from '../src/lib/tenant.js';
 
 // Testmiljö för globalSetup (huvudprocessen) och setup.ts (varje testworker).
 //
@@ -34,6 +35,16 @@ export const TEST_CRM_KONF = path.join(tmpdir(), 'arenden-test-crm-mcp.json');
 // .invalid är en reserverad toppdomän, så ingen länk i sviten kan nå något.
 export const TEST_VY_PUBLIK_URL = 'https://arenden-prov.invalid';
 
+// pg läser PGOPTIONS när en ny anslutning öppnas och gör värdet till anslutningens
+// standard. Provens egna direkta frågor får Locollabs tenant; driften sätter aldrig valet.
+export const PROVETS_TENANTVAL = `-c app.tenant_id=${TENANT_ID}`;
+
+// En fil som prövar tenantgränsen anropar detta på filnivå före sin första
+// anslutning, så att den körs som i drift.
+export function utanProvetsTenant(): void {
+  delete process.env.PGOPTIONS;
+}
+
 export function applyTestEnv(): void {
   process.env.NODE_ENV = 'test';
   process.env.VAULT_PATH = TEST_VAULT;
@@ -50,4 +61,5 @@ export function applyTestEnv(): void {
   // Adaptern kräver en aktörsnyckel vid import (KRAV-10). Värdet är en
   // uppenbar attrapp — tester som verkligen skriver skapar egna nycklar.
   process.env.ARENDEN_API_KEY = 'test-nyckel-ej-giltig';
+  process.env.PGOPTIONS = PROVETS_TENANTVAL;
 }

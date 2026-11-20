@@ -1155,12 +1155,22 @@ describe('FR-3/Story 7.4 AK 1 och AK 2: tenants och ledgern bär tenant_id, och 
   }, 60_000);
 
   it('F21 (AK 2): inga policyer eller radsäkerhet införs, och kontrollen fäller båda', async () => {
-    expect(await rlsfel(pool)).toEqual([]);
     const sql = readFileSync(path.join(ROT, 'migrations', NY_MIGRATION), 'utf8');
     expect(sql).not.toMatch(/\bPOLICY\b/i);
     expect(sql).not.toMatch(/ROW\s+LEVEL\s+SECURITY/i);
-    const admin = await adminKlient();
-    try {
+    // F21 gäller Story 7.4 och tidigare migrationer; radsäkerheten prövas i test/rls.test.ts.
+    await tomDatabas(`${TEST_DB_NAME}_f21`, async (adress, admin) => {
+      const tidigare = (await loadMigrations()).filter((m) => m.version < 20);
+      const dir = mkdtempSync(path.join(tmpdir(), 'schema-f21-migrationer-'));
+      try {
+        for (const fil of tidigare) {
+          copyFileSync(path.join(ROT, 'migrations', fil.filename), path.join(dir, fil.filename));
+        }
+        await migrate(adress, { dir });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      expect(await rlsfel(admin)).toEqual([]);
       await admin.query('BEGIN');
       try {
         await admin.query('ALTER TABLE labels ENABLE ROW LEVEL SECURITY');
@@ -1169,9 +1179,7 @@ describe('FR-3/Story 7.4 AK 1 och AK 2: tenants och ledgern bär tenant_id, och 
       } finally {
         await admin.query('ROLLBACK');
       }
-    } finally {
-      await admin.end();
-    }
-    expect(await rlsfel(pool)).toEqual([]);
-  });
+      expect(await rlsfel(admin)).toEqual([]);
+    });
+  }, 60_000);
 });

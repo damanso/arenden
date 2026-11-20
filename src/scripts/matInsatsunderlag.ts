@@ -31,10 +31,10 @@ import { matInsatsunderlag } from '../services/insats.js';
 
 try {
   const matning = await withTransaction(async (client) => {
-    // Första satsen efter BEGIN; därefter avvisar Postgres varje skrivning i transaktionen.
+    // Första satsen efter tenantens inställning (B-27); därefter avvisar Postgres varje skrivning i transaktionen.
     await client.query('SET TRANSACTION READ ONLY');
     return matInsatsunderlag(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   // Id:na är uuid och ärendenumren identifierare, så inget fält kan bära en tabb eller en radbrytning.
   const rader = [
     ...matning.arende_uppfoljning.map((id) => ['arende_uppfoljning', id]),

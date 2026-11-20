@@ -29,10 +29,10 @@ import { matDelresultat } from '../services/atagande.js';
 
 try {
   const sparrar = await withTransaction(async (client) => {
-    // Första satsen efter BEGIN; därefter avvisar Postgres varje skrivning i transaktionen.
+    // Första satsen efter tenantens inställning (B-27); därefter avvisar Postgres varje skrivning i transaktionen.
     await client.query('SET TRANSACTION READ ONLY');
     return matDelresultat(client, TENANT_ID);
-  });
+  }, TENANT_ID);
   for (const s of sparrar) {
     const delarenden = s.delarenden.map((d) => `${d.identifier} ${d.lage}`).join(', ');
     console.log(`${s.identifier} ${s.lage}: ${delarenden}`);

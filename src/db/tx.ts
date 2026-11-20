@@ -8,11 +8,13 @@ import { pool } from './pool.js';
  *
  * Det är den här transaktionen som gör KRAV-8 sant: mutationen och dess
  * event-rad skrivs eller rullas tillbaka tillsammans.
- * B-27: en angiven tenants inställning gäller bara den här transaktionen.
+ * B-27, Story 9.2: varje anrop i src anger tenant; tsc fäller ett anrop utan.
+ * Inställningen är lokal. Proven typkontrolleras inte, och N2 i Story 9.1
+ * prövar att ett saknat värde lämnar inställningen orörd.
  */
 export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
-  tenantId?: string,
+  tenantId: string,
 ): Promise<T> {
   const client = await pool.connect();
   let rollbackMisslyckades = false;

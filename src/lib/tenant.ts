@@ -13,11 +13,12 @@ export const TENANT_ID = '00000000-0000-0000-0000-000000000001';
  * B-27, tillägg och leads besked 2026-11-19: aktören lämnas orörd. Nyckelraden
  * finns alltid kvar: inget DELETE och bara aktiv får ändras. Återkallade rader
  * räknas därför också. null betyder en aktör utan nyckel; flera tenanter nekas.
- * Under RLS går läsningen genom Story 9.2:s uppslagsfunktion.
+ * B-27, tillägg 2026-11-19: läsningen går genom uppslagsfunktionen, eftersom
+ * app utan tenant inte ser några rader i api_keys under RLS (Story 9.2).
  */
 export async function lasNyckelnsTenant(db: Pool, aktor: Aktor): Promise<string | null> {
   const { rows } = await db.query<{ tenant_id: string }>(
-    'SELECT DISTINCT tenant_id FROM api_keys WHERE aktor_typ = $1 AND aktor_namn = $2',
+    'SELECT tenant_id FROM aktorens_tenanter($1, $2)',
     [aktor.typ, aktor.namn],
   );
   if (rows.length > 1) {
