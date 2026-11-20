@@ -50,26 +50,40 @@ export async function executeAction(params: {
   const input = action.parse(params.input);
   const tenantId = await transaktionensTenant(params);
 
-  const result = await withTransaction(async (client) => {
-    let antalHandelser = 0;
-    const ctx: ActionContext = {
-      client,
-      tenantId,
-      aktor: params.aktor,
-      skrivHandelse: async (handelse) => {
-        antalHandelser += 1;
-        await skrivHandelse(client, tenantId, params.aktor, handelse);
-      },
-    };
-    const varde = await action.handler(ctx, input);
-    if (action.sensitivity === 'write' && antalHandelser === 0) {
-      throw new Error(
-        `actionen "${action.name}" muterade utan att skriva en event-rad — ` +
-          'proveniens är obligatorisk (KRAV-8), transaktionen rullas tillbaka',
-      );
+  const avbrottsatgarder: (() => Promise<void>)[] = [];
+  let result: unknown;
+  try {
+    result = await withTransaction(async (client) => {
+      let antalHandelser = 0;
+      const ctx: ActionContext = {
+        client,
+        tenantId,
+        aktor: params.aktor,
+        vidAvbrott: (atgard) => { avbrottsatgarder.push(atgard); },
+        skrivHandelse: async (handelse) => {
+          antalHandelser += 1;
+          await skrivHandelse(client, tenantId, params.aktor, handelse);
+        },
+      };
+      const varde = await action.handler(ctx, input);
+      if (action.sensitivity === 'write' && antalHandelser === 0) {
+        throw new Error(
+          `actionen "${action.name}" muterade utan att skriva en event-rad — ` +
+            'proveniens är obligatorisk (KRAV-8), transaktionen rullas tillbaka',
+        );
+      }
+      return varde;
+    }, tenantId);
+  } catch (err) {
+    for (const atgard of avbrottsatgarder) {
+      try {
+        await atgard();
+      } catch {
+        // Städningen får aldrig ersätta transaktionens ursprungliga fel.
+      }
     }
-    return varde;
-  }, tenantId);
+    throw err;
+  }
 
   return { status: 'ok', action: action.name, result };
 }

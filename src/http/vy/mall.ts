@@ -1184,6 +1184,8 @@ export const VERB: Readonly<Record<string, string>> = {
   // D-2, B-22 (Story 11.3): kopplingen av en insats till sitt ärende i efterhand, med sitt no-op.
   kopplade_insats_till_arende: 'kopplade en insats till ärendet',
   insatsen_var_redan_kopplad: 'insatsen var redan kopplad till ärendet',
+  // FR-25, Story 9.4: operatörssteget.
+  tog_emot_tenant: 'tog emot en ny tenant',
 };
 
 /**

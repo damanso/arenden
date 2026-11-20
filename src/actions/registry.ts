@@ -82,6 +82,7 @@ import {
 } from '../services/kommentarer.js';
 import { aterkallaNyckel } from '../services/nycklar.js';
 import { listaStates } from '../services/team.js';
+import { taEmotTenant, skrivNyckelfil, taBortNyckelfil } from '../services/onboarding.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -94,6 +95,8 @@ export interface ActionContext {
    * som inte lämnat proveniens efter sig.
    */
   skrivHandelse: (handelse: { issueId: string | null; verb: string; payload?: unknown }) => Promise<void>;
+  /** Registrerar städning som körs om transaktionen inte blir committad (FR-25, Story 9.4). */
+  vidAvbrott: (atgard: () => Promise<void>) => void;
 }
 
 // read = ingen mutation. write = muterar och MÅSTE skriva minst en event-rad.
@@ -845,6 +848,51 @@ export const ACTIONS: RegistreradAction[] = [
         },
       });
       return { nyckel_id: nyckel.id, aktiv: nyckel.aktiv, andrad };
+    },
+  }),
+
+  // FR-25, FR-4, B-27, Davids svar 2026-10-16 13.21: bara en systemnyckel; klartext aldrig i payload eller svar.
+  def({
+    name: 'ta_emot_tenant',
+    title: 'Ta emot en ny tenant (operatörssteget)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      namn: safeText(200),
+      team_key: TeamKeySchema,
+      team_namn: safeText(100),
+      forsta_manniska: safeText(100),
+      beslut: safeText(300),
+    }).strict(),
+    handler: async (ctx, input) => {
+      const mottagen = await taEmotTenant(ctx.client, ctx.tenantId, ctx.aktor, {
+        namn: input.namn, team_key: input.team_key, team_namn: input.team_namn,
+        forsta_manniska: input.forsta_manniska,
+      });
+      await ctx.skrivHandelse({
+        issueId: null,
+        verb: 'tog_emot_tenant',
+        payload: {
+          tenant_id: mottagen.tenant_id,
+          tenant_namn: mottagen.tenant_namn,
+          team_key: mottagen.team_key,
+          team_namn: mottagen.team_namn,
+          nyckel_id: mottagen.nyckel_id,
+          ny_aktor_typ: 'manniska',
+          ny_aktor_namn: mottagen.manniska,
+          beslut: input.beslut,
+        },
+      });
+      const nyckelfil = await skrivNyckelfil(mottagen.tenant_id, mottagen.nyckel);
+      ctx.vidAvbrott(() => taBortNyckelfil(nyckelfil));
+      return {
+        tenant_id: mottagen.tenant_id,
+        tenant_namn: mottagen.tenant_namn,
+        team_key: mottagen.team_key,
+        team_namn: mottagen.team_namn,
+        nyckel_id: mottagen.nyckel_id,
+        manniska: mottagen.manniska,
+        nyckelfil,
+      };
     },
   }),
 
