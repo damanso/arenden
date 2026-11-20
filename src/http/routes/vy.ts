@@ -7,6 +7,7 @@
 //      precis som för ytor_server (KRAV-8).
 //   2. INGEN SQL i det här lagret. All datahämtning går via tjänstelagret
 //      (src/services/) — samma funktioner som actions-API:t använder.
+//      Varje läsning sker i tenanten ur vynsTenant (B-27, Story 9.3).
 //   3. ALL dynamisk text går genom esc() i ../vy/mall.js (KRAV-6), och varje
 //      kommentar/händelse skrivs ut med proveniens() (KRAV-5).
 import path from 'node:path';
@@ -16,7 +17,6 @@ import { config } from '../../config.js';
 import { withTransaction } from '../../db/tx.js';
 import { arendeSokvag } from '../../lib/arendelank.js';
 import { NotFoundError } from '../../lib/errors.js';
-import { TENANT_ID } from '../../lib/tenant.js';
 import {
   StateTypSchema,
   safeText,
@@ -79,7 +79,7 @@ import {
   tomtLage,
   verbText,
 } from '../vy/mall.js';
-import { sessionsAktor } from '../vy/session.js';
+import { sessionsAktor, vynsTenant } from '../vy/session.js';
 import {
   borttagnaAvsnitt,
   etikettrad,
@@ -418,9 +418,10 @@ function gruppera(arenden: Arende[]): Grupp[] {
 }
 
 vyRouter.get('/', async (req, res) => {
+  const tenant = await vynsTenant(req);
   const resultat = await withTransaction((client) =>
-    listaArenden(client, TENANT_ID, { stateTyper: OPPNA, limit: TAK_ARENDEN }),
-    TENANT_ID,
+    listaArenden(client, tenant, { stateTyper: OPPNA, limit: TAK_ARENDEN }),
+    tenant,
   );
   const grupper = gruppera(resultat.arenden);
 
@@ -473,9 +474,10 @@ const KALLRUBRIK: Record<string, string> = {
 
 vyRouter.get('/digest', async (req, res) => {
   const valt = FONSTER.find((f) => f.varde === param(req.query['dagar'])) ?? FONSTER[0]!;
+  const tenant = await vynsTenant(req);
   const handelser = await withTransaction((client) =>
-    listaSenasteHandelser(client, TENANT_ID, { dagar: valt.dagar, limit: TAK_DIGEST }),
-    TENANT_ID,
+    listaSenasteHandelser(client, tenant, { dagar: valt.dagar, limit: TAK_DIGEST }),
+    tenant,
   );
 
   // Händelserna kommer nyaste först — Map:en bevarar den ordningen per dag.
@@ -605,14 +607,15 @@ vyRouter.get('/mitt', async (req, res) => {
   // new Date() själv, så provet kan mäta deadlinegränsen utan att vänta.
   const idag = new Date().toISOString().slice(0, 10);
 
+  const tenant = await vynsTenant(req);
   const lage = await withTransaction(async (client) =>
     byggMittLage(
-      await oppnaMedSpar(client, TENANT_ID, valdAktor),
+      await oppnaMedSpar(client, tenant, valdAktor),
       valdAktor,
-      await aktorerMedSpar(client, TENANT_ID),
+      await aktorerMedSpar(client, tenant),
       idag,
     ),
-    TENANT_ID,
+    tenant,
   );
 
   const aktorlankar = lage.aktorer_med_spar
@@ -739,6 +742,8 @@ vyRouter.get('/sok', async (req, res) => {
   if (projekt !== undefined) val.projekt = projekt;
   if (aktor !== undefined) val.aktor = aktor;
 
+  const tenant = await vynsTenant(req);
+
   // B-20, D-1: numret ligger utanför fritextindexet och vinner över fasetterna.
   // Vanlig fritext öppnar ingen extra transaktion; för stora nummer slås aldrig upp.
   const helt = q === undefined ? null : tolkaArendenummer(q);
@@ -746,7 +751,7 @@ vyRouter.get('/sok', async (req, res) => {
   const fragor = nummer.flatMap((t) => t.slag === 'nummer' ? [{ teamKey: t.teamKey, nummer: t.nummer }] : []);
   const svar = fragor.length === 0
     ? []
-    : await withTransaction((client) => hittaArendenMedNummer(client, TENANT_ID, fragor), TENANT_ID);
+    : await withTransaction((client) => hittaArendenMedNummer(client, tenant, fragor), tenant);
   let plats = 0;
   const nummertraffar = nummer.map((t) => ({
     tolkat: t,
@@ -765,11 +770,11 @@ vyRouter.get('/sok', async (req, res) => {
   const behoverLista = harArendefilter || (q === undefined && aktor !== undefined);
 
   const data = await withTransaction(async (client) => ({
-    traffar: q === undefined ? null : await sokArendenIVy(client, TENANT_ID, q, TAK_SOK),
+    traffar: q === undefined ? null : await sokArendenIVy(client, tenant, q, TAK_SOK),
     // Status/etikett/projekt är SAMMA filter som list_issues.
     filtrerade: behoverLista
       ? (
-          await listaArenden(client, TENANT_ID, {
+          await listaArenden(client, tenant, {
             ...(status ? { stateTyper: [status] } : {}),
             ...(etikett ? { label: etikett } : {}),
             ...(projekt ? { projekt } : {}),
@@ -779,11 +784,11 @@ vyRouter.get('/sok', async (req, res) => {
       : null,
     // KRAV-3: aktör filtrerar på AKTIVITET (händelser/kommentarer) — ärenden
     // har ingen aktör, och det är aktiviteten David vill kunna söka i.
-    aktivaFor: aktor === undefined ? null : new Set(await arendenMedAktivitetAv(client, TENANT_ID, aktor)),
-    projektnamn: await listaProjektnamn(client, TENANT_ID),
-    etikettnamn: await listaEtikettnamn(client, TENANT_ID),
-    aktorer: await listaAktorer(client, TENANT_ID, TAK_FASETTER),
-  }), TENANT_ID);
+    aktivaFor: aktor === undefined ? null : new Set(await arendenMedAktivitetAv(client, tenant, aktor)),
+    projektnamn: await listaProjektnamn(client, tenant),
+    etikettnamn: await listaEtikettnamn(client, tenant),
+    aktorer: await listaAktorer(client, tenant, TAK_FASETTER),
+  }), tenant);
 
   let resultat = '';
   let antal = 0;
@@ -976,6 +981,7 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   }
   const identifier = tolkat.text;
 
+  const tenant = await vynsTenant(req);
   // Autolänkningen läser bara cachen (KRAV-5) — inga filsystemssökningar här.
   const index = await hamtaIndex();
   // D-3, D-5, B-23 (Story 11.4): all kortets data hämtas av läsmodellen hamtaArendekort, i en
@@ -986,14 +992,14 @@ vyRouter.get('/arende/:identifier', async (req, res) => {
   // ett ärende, genom samma lägesfunktioner som kortet sedan visar dem med. D-3 (Story 11.6):
   // likaså historikens detaljer, genom samma funktion som historiklistan nedan.
   const kort = await withTransaction((client) =>
-    hamtaArendekort(client, TENANT_ID, identifier, (t) =>
+    hamtaArendekort(client, tenant, identifier, (t) =>
       arendekandidater((uppslag) => {
         arendetexter(t.arende, t.kommentarer, t.bilagor, index, uppslag);
         atagandeLage(t.arende, t.atagande, index, uppslag);
         insatserLage(t.insatser, index, uppslag);
         for (const h of t.handelser) handelsensDetaljer(h, index, uppslag);
       })),
-    TENANT_ID,
+    tenant,
   ).catch((err: unknown) => {
     // Okänt ärende ska bli en vanlig HTML-sida, inte API:ts JSON-404.
     if (err instanceof NotFoundError) return null;
@@ -1163,9 +1169,10 @@ vyRouter.get('/dok/*sokvag', async (req, res) => {
   // 404-svaret för allt utanför området. Samma rendering ger kandidaterna och
   // sidan, så varje nummer som sidan slår upp är en kandidat.
   const dokumentet = (uppslag: Uppslag): string => renderaMarkdown(innehall, index, uppslag);
+  const tenant = await vynsTenant(req);
   const befintliga = await withTransaction((client) =>
-    befintligaArenden(client, TENANT_ID, arendekandidater(dokumentet)),
-    TENANT_ID,
+    befintligaArenden(client, tenant, arendekandidater(dokumentet)),
+    tenant,
   );
   const namn = rel.slice(rel.lastIndexOf('/') + 1);
   const obsidian =

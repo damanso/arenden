@@ -27,6 +27,8 @@ import { randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Aktor } from '../../lib/aktor.js';
 import { ForbiddenError, UnauthenticatedError } from '../../lib/errors.js';
+import { pool } from '../../db/pool.js';
+import { lasNyckelnsTenant, TENANT_ID } from '../../lib/tenant.js';
 
 export const SESSIONSKAKA = 'arenden_vy';
 
@@ -99,6 +101,16 @@ export function sessionsAktor(req: Request): Aktor | null {
   }
   session.senast = nu;
   return session.aktor;
+}
+
+// B-27, tillägget 2026-11-19, Story 9.3: sessionen bär aktören och tenanten
+// läses ur aktörens nycklar. Utan session läser vyn i Locollabs tenant
+// (Davids svar 2026-10-16 13.21). En aktör utan nyckel finns bara i proven
+// och får Locollabs som i executeAction; en aktör i flera tenanter nekas.
+export async function vynsTenant(req: Request): Promise<string> {
+  const aktor = sessionsAktor(req);
+  if (!aktor) return TENANT_ID;
+  return (await lasNyckelnsTenant(pool, aktor)) ?? TENANT_ID;
 }
 
 /** Skrivvägens krav: utan session finns ingen aktör, och då sker ingen skrivning. */

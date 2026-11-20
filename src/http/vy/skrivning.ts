@@ -25,7 +25,6 @@ import { withTransaction } from '../../db/tx.js';
 import type { Aktor } from '../../lib/aktor.js';
 import { arendeSokvag } from '../../lib/arendelank.js';
 import { AppError, BadRequestError, UnauthenticatedError } from '../../lib/errors.js';
-import { TENANT_ID } from '../../lib/tenant.js';
 import { IdentifierSchema, StateTypSchema, type StateTyp } from '../../lib/validation.js';
 import { listaEtikettnamn, listaProjektnamn, type Arende } from '../../services/arenden.js';
 // Åtagande- och ärendemodulen importerar varandra: tabellen läses bara inne i tillatnaMal().
@@ -44,6 +43,7 @@ import {
   sattSessionskaka,
   sessionsAktor,
   startaSession,
+  vynsTenant,
 } from './session.js';
 
 // ---- Indata ----------------------------------------------------------------
@@ -772,11 +772,13 @@ export function monteraSkrivrutter(router: Router): void {
 
   router.get('/rattelser', async (req, res) => {
     const aktor = sessionsAktor(req);
+    // Varje läsning sker i tenanten ur vynsTenant (B-27, Story 9.3).
+    const tenant = await vynsTenant(req);
     const data = await withTransaction(async (client) => ({
-      projekt: await listaProjektnamn(client, TENANT_ID),
-      etiketter: await listaEtikettnamn(client, TENANT_ID),
-      nycklar: await listaNycklar(client, TENANT_ID),
-    }), TENANT_ID);
+      projekt: await listaProjektnamn(client, tenant),
+      etiketter: await listaEtikettnamn(client, tenant),
+      nycklar: await listaNycklar(client, tenant),
+    }), tenant);
 
     const namnform = (vag: string, sort: string, namn: string, nr: number): string =>
       `<li class=rad><form class=namnform method=post action="${esc(vag)}">` +
