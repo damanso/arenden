@@ -1,7 +1,8 @@
 import { withTransaction } from '../db/tx.js';
+import { pool } from '../db/pool.js';
 import type { Aktor } from '../lib/aktor.js';
 import { NotFoundError } from '../lib/errors.js';
-import { TENANT_ID } from '../lib/tenant.js';
+import { lasNyckelnsTenant, TENANT_ID } from '../lib/tenant.js';
 import { skrivHandelse } from '../services/handelser.js';
 import { getAction, type ActionContext } from './registry.js';
 
@@ -9,6 +10,18 @@ export interface ActionResult {
   status: 'ok';
   action: string;
   result: unknown;
+}
+
+async function transaktionensTenant(params: { aktor: Aktor; tenantId?: string }): Promise<string> {
+  const nyckelns = await lasNyckelnsTenant(pool, params.aktor);
+  if (nyckelns !== null && params.tenantId !== undefined && nyckelns !== params.tenantId) {
+    throw new Error('Nyckelns tenant och den angivna tenanten skiljer sig.');
+  }
+  if (nyckelns !== null) return nyckelns;
+  if (params.tenantId !== undefined) return params.tenantId;
+  // Bara provens direktanrop och direktfödda sessioner har aktörer utan nyckel.
+  // Produktionsanroparna ger antingen en nyckelaktör eller anger tenanten.
+  return TENANT_ID;
 }
 
 /**
@@ -23,25 +36,29 @@ export interface ActionResult {
  *
  * Aktören kommer från API-nyckeln (KRAV-10) och skickas hit av transportlagret;
  * indata kan aldrig påverka vem skrivningen tillskrivs.
+ * Tenanten läses ur aktörens nycklar (B-27, tillägget 2026-11-19), medan
+ * aktören skickas vidare oförändrad.
  */
 export async function executeAction(params: {
   aktor: Aktor;
+  tenantId?: string;
   actionName: string;
   input: unknown;
 }): Promise<ActionResult> {
   const action = getAction(params.actionName);
   if (!action) throw new NotFoundError('action');
   const input = action.parse(params.input);
+  const tenantId = await transaktionensTenant(params);
 
   const result = await withTransaction(async (client) => {
     let antalHandelser = 0;
     const ctx: ActionContext = {
       client,
-      tenantId: TENANT_ID,
+      tenantId,
       aktor: params.aktor,
       skrivHandelse: async (handelse) => {
         antalHandelser += 1;
-        await skrivHandelse(client, TENANT_ID, params.aktor, handelse);
+        await skrivHandelse(client, tenantId, params.aktor, handelse);
       },
     };
     const varde = await action.handler(ctx, input);
@@ -52,7 +69,7 @@ export async function executeAction(params: {
       );
     }
     return varde;
-  });
+  }, tenantId);
 
   return { status: 'ok', action: action.name, result };
 }

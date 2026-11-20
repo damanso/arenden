@@ -143,7 +143,7 @@ export async function importeraArkiv(
     if (resultat.hogsta_nummer > 0) {
       await sattSekvens(client, team.sekvensnamn, resultat.hogsta_nummer);
     }
-  });
+  }, TENANT_ID);
 
   log(
     `OK: ${resultat.filer} arkivfiler — ${resultat.nya_arenden} nya ärenden, ` +

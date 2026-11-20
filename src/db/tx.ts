@@ -8,12 +8,19 @@ import { pool } from './pool.js';
  *
  * Det är den här transaktionen som gör KRAV-8 sant: mutationen och dess
  * event-rad skrivs eller rullas tillbaka tillsammans.
+ * B-27: en angiven tenants inställning gäller bara den här transaktionen.
  */
-export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+  tenantId?: string,
+): Promise<T> {
   const client = await pool.connect();
   let rollbackMisslyckades = false;
   try {
     await client.query('BEGIN');
+    if (tenantId !== undefined) {
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    }
     const resultat = await fn(client);
     await client.query('COMMIT');
     return resultat;

@@ -155,12 +155,13 @@ function tomtResultat(): AterlasResultat {
 async function plattformskarta(sourceRefs: string[]): Promise<Map<string, Arende>> {
   const arenden = await withTransaction((client) =>
     listaArendenMedSourceRef(client, TENANT_ID, sourceRefs),
+    TENANT_ID,
   );
   return new Map(arenden.map((a) => [a.source_ref!, a]));
 }
 
 async function kor(actionName: string, input: unknown): Promise<unknown> {
-  const { result } = await executeAction({ aktor: ATERLASAKTOR, actionName, input });
+  const { result } = await executeAction({ aktor: ATERLASAKTOR, tenantId: TENANT_ID, actionName, input });
   return result;
 }
 
@@ -255,7 +256,7 @@ export async function aterlasLinear(
   // ---- K-3: relationer ----------------------------------------------------
   if (gor('relationer')) {
     karta = await plattformskarta(refs);
-    const redan = await withTransaction((client) => befintligaRelationsRefs(client, TENANT_ID));
+    const redan = await withTransaction((client) => befintligaRelationsRefs(client, TENANT_ID), TENANT_ID);
     for (const kalla of kallan) {
       const arende = karta.get(sourceRef(kalla.identifier));
       if (!arende) continue;
@@ -296,7 +297,7 @@ export async function aterlasLinear(
   // ---- K-3: bilagor -------------------------------------------------------
   if (gor('bilagor')) {
     karta = await plattformskarta(refs);
-    const redan = await withTransaction((client) => befintligaBilageRefs(client, TENANT_ID));
+    const redan = await withTransaction((client) => befintligaBilageRefs(client, TENANT_ID), TENANT_ID);
     for (const kalla of kallan) {
       const arende = karta.get(sourceRef(kalla.identifier));
       if (!arende) continue;
