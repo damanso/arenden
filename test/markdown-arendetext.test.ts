@@ -415,6 +415,37 @@ describe('KRAV-5: autolänkningen är oförändrad', () => {
 });
 
 describe('KRAV-12: renderingen kostar högst 5 ms per 10 000 tecken', () => {
+  // Tidsprov (architecture.md, Pattern Enforcement, Story 9.6): en tillfällig störning drabbar en
+  // körning, inte alla fem. En verklig försämring gör varje körning långsammare, också den snabbaste.
+  // Därför döms den snabbaste körningen mot den oförändrade gränsen.
+  const KORNINGAR = 5;
+  const GRANS = 5;
+  const KONTROLLENS_KOSTNAD = 6;
+
+  function mat(fn: (text: string) => unknown, text: string): number[] {
+    const matningar: number[] = [];
+    for (let i = 0; i < KORNINGAR; i++) {
+      const start = process.hrtime.bigint();
+      fn(text);
+      const slut = process.hrtime.bigint();
+      const ms = Number(slut - start) / 1e6;
+      matningar.push((ms / text.length) * 10_000);
+    }
+    return matningar;
+  }
+
+  function dom(matningar: readonly number[]): number {
+    return Math.min(...matningar);
+  }
+
+  function vanta(text: string): void {
+    const nanosekunder = BigInt(Math.ceil(((KONTROLLENS_KOSTNAD * text.length) / 10_000) * 1e6));
+    const mal = process.hrtime.bigint() + nanosekunder;
+    while (process.hrtime.bigint() < mal) {
+      // Kontrollen väntar på klockan utan att rendera; belastning kan bara förlänga väntan.
+    }
+  }
+
   it('mäter på en realistisk blandning', () => {
     const block = [
       '## Sammanfattning',
@@ -434,17 +465,33 @@ describe('KRAV-12: renderingen kostar högst 5 ms per 10 000 tecken', () => {
     const text = block.repeat(Math.ceil(100_000 / block.length));
     const tecken = text.length;
 
-    rendera(text.slice(0, 10_000)); // uppvärmning
-    const start = process.hrtime.bigint();
-    rendera(text);
-    const ms = Number(process.hrtime.bigint() - start) / 1e6;
-    const perTiotusen = (ms / tecken) * 10_000;
+    expect(tecken).toBeGreaterThanOrEqual(100_000);
+    expect(dom([7, 6, 4.5, 8, 9])).toBe(4.5);
+    expect(dom([5.4, 5.3, 5.2, 5.1, 4.9])).toBe(4.9);
+    expect(dom([])).not.toBeLessThan(GRANS);
 
-    // Talet skrivs ut oavsett utfall — KRAV-12 kräver siffran i rapporten.
+    rendera(text.slice(0, 10_000)); // uppvärmning
+    const matningar = mat(rendera, text);
+
+    // Talen skrivs ut oavsett utfall — KRAV-12 kräver siffran i rapporten.
+    matningar.forEach((tal, i) => {
+      const ms = (tal * tecken) / 10_000;
+      console.log(
+        `KRAV-12 körning ${i + 1} av ${KORNINGAR}: ${tecken} tecken på ${ms.toFixed(1)} ms = ` +
+          `${tal.toFixed(3)} ms per 10 000 tecken`,
+      );
+    });
+    const snabbast = dom(matningar);
+    const ms = (snabbast * tecken) / 10_000;
     console.log(
       `KRAV-12: ${tecken} tecken på ${ms.toFixed(1)} ms = ` +
-        `${perTiotusen.toFixed(3)} ms per 10 000 tecken`,
+        `${snabbast.toFixed(3)} ms per 10 000 tecken (snabbast av ${KORNINGAR})`,
     );
-    expect(perTiotusen).toBeLessThan(5);
+
+    const kontroll = mat(vanta, text);
+    expect(kontroll).toHaveLength(KORNINGAR);
+    expect(dom(kontroll)).toBeGreaterThanOrEqual(GRANS);
+    expect(matningar).toHaveLength(KORNINGAR);
+    expect(dom(matningar)).toBeLessThan(GRANS);
   });
 });
